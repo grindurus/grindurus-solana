@@ -1,0 +1,30 @@
+.cursor
+.vscode
+# Anchor / Solana
+.anchor
+target
+test-ledger
+.surfpool
+
+# Rust
+**/*.rs.bk
+
+# Node / TypeScript
+node_modules
+.yarn
+dist
+coverage
+*.tsbuildinfo
+
+# Docker build cache
+docker-target
+
+# OS
+.DS_Store
+
+# Secrets & local env
+.env
+.env.*
+
+# Logs
+*.log
