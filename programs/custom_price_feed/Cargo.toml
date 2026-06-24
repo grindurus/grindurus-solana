@@ -1,12 +1,12 @@
 [package]
-name = "grindurus"
+name = "custom_price_feed"
 version = "0.1.0"
-description = "Created with Anchor"
+description = "Test / dev custom price feeds for GRAI"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "grindurus"
+name = "custom_price_feed"
 
 [features]
 default = []
@@ -14,7 +14,7 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+idl-build = ["anchor-lang/idl-build"]
 custom-heap = []
 custom-panic = []
 anchor-debug = []
@@ -25,7 +25,4 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [dependencies]
-anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-anchor-spl = { version = "0.31.1", features = ["token"] }
-chainlink_solana = "2.0.8"
-
+anchor-lang = { version = "0.31.1" }

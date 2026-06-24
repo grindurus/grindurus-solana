@@ -1,17 +1,22 @@
 #![allow(deprecated)]
 
 mod chainlink_price;
+mod custom_price_feed;
 mod custody;
 mod asset_vault;
+mod errors;
 mod internal_value;
 mod ix_accounts;
+mod metadata;
 mod redeem;
 mod tokenomics;
+
+pub use errors::ErrorCode;
 
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
 
-use chainlink_price::fetch_chainlink_price_from_feed;
+use chainlink_price::fetch_price_from_feed;
 use ix_accounts::*;
 use redeem::process_remaining_assets;
 use tokenomics::{deposit_value_usd, grai_burn_value, grai_mint_amount, yield_split};
@@ -19,23 +24,30 @@ use tokenomics::{deposit_value_usd, grai_burn_value, grai_mint_amount, yield_spl
 declare_id!("14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k");
 
 #[program]
-pub mod grindurus {
+pub mod grai {
     use super::*;
 
     pub fn initialize_token(ctx: Context<InitializeToken>) -> Result<()> {
-        let mint_config = &mut ctx.accounts.mint_config;
+        let mint_config: &mut Account<'_, MintConfig> = &mut ctx.accounts.mint_config;
         mint_config.authority = ctx.accounts.authority.key();
         mint_config.bump = ctx.bumps.mint_config;
 
-        let grai_state = &mut ctx.accounts.grai_state;
+        let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
         grai_state.authority = ctx.accounts.authority.key();
-        grai_state.total_value_usd = 0;
         grai_state.treasury_wallet = ctx.accounts.authority.key();
+        grai_state.total_value_usd = 0;
         grai_state.bump = ctx.bumps.grai_state;
 
-        let asset_registry = &mut ctx.accounts.asset_registry;
-        asset_registry.authority = ctx.accounts.authority.key();
-        asset_registry.bump = ctx.bumps.asset_registry;
+        metadata::create_grai_metadata(
+            ctx.accounts.metadata.to_account_info(),
+            ctx.accounts.grai_mint.to_account_info(),
+            ctx.accounts.mint_config.to_account_info(),
+            ctx.accounts.authority.to_account_info(),
+            ctx.accounts.token_metadata_program.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.rent.to_account_info(),
+            ctx.bumps.mint_config,
+        )?;
 
         msg!("GRAI mint initialized");
         Ok(())
@@ -50,71 +62,51 @@ pub mod grindurus {
         Ok(())
     }
 
-    pub fn set_pause(
-        ctx: Context<SetPauseAssetVault>,
-        mint_pubkey: Pubkey,
-        paused: bool,
-    ) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
+    pub fn set_price_feed(ctx: Context<SetPriceFeed>) -> Result<()> {
+        asset_vault::set_price_feed(
+            &mut ctx.accounts.asset_vault_state,
+            &ctx.accounts.price_feed.key(),
+        )
+    }
 
+    pub fn set_minting(ctx: Context<SetMinting>, minting: bool) -> Result<()> {
         let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
-        if paused {
+        if minting {
             require!(
-                asset_vault_state.minting_enabled,
-                ErrorCode::AssetMintingPaused
-            );
-            asset_vault_state.minting_enabled = false;
-            msg!("assetVault paused: mint={}", mint_pubkey);
-        } else {
-            require!(
-                !asset_vault_state.minting_enabled,
+                !asset_vault_state.minting,
                 ErrorCode::AssetMintingEnabled
             );
-            asset_vault_state.minting_enabled = true;
-            msg!("assetVault unpaused: mint={}", mint_pubkey);
+            asset_vault_state.minting = true;
+            msg!("assetVault minting enabled: mint={}", ctx.accounts.asset_mint.key());
+        } else {
+            require!(
+                asset_vault_state.minting,
+                ErrorCode::AssetMintingPaused
+            );
+            asset_vault_state.minting = false;
+            msg!("assetVault minting disabled: mint={}", ctx.accounts.asset_mint.key());
         }
         Ok(())
     }
 
-    pub fn add_asset_vault(
-        ctx: Context<AddAssetVault>,
-        mint_pubkey: Pubkey,
-        asset_kind: u8,
-    ) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
-
+    pub fn add_asset_vault(ctx: Context<AddAssetVault>) -> Result<()> {
         asset_vault::register(
             &ctx.accounts.authority,
             &mut ctx.accounts.asset_vault_state,
-            &mint_pubkey,
-            &ctx.accounts.chainlink_feed.key(),
+            &ctx.accounts.asset_mint.key(),
+            &ctx.accounts.price_feed.key(),
             &ctx.accounts.grai_vault.key(),
             ctx.bumps.grai_vault,
             &ctx.accounts.asset_vault.key(),
             ctx.bumps.asset_vault,
             ctx.bumps.asset_vault_state,
-            asset_kind,
         )
     }
 
-    pub fn remove_asset_vault(ctx: Context<RemoveAssetVault>, mint_pubkey: Pubkey) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
-
+    pub fn remove_asset_vault(ctx: Context<RemoveAssetVault>) -> Result<()> {
         asset_vault::remove(
             &ctx.accounts.authority,
-            &ctx.accounts.asset_registry,
+            &ctx.accounts.grai_state,
             &ctx.accounts.asset_vault_state,
             &ctx.accounts.grai_vault,
             &ctx.accounts.asset_vault,
@@ -122,12 +114,7 @@ pub mod grindurus {
         )
     }
 
-    pub fn mint(ctx: Context<MintGrai>, amount: u64, mint_pubkey: Pubkey) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
+    pub fn mint(ctx: Context<MintGrai>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
         let idle_amount: u64 = amount / 2;
@@ -159,13 +146,14 @@ pub mod grindurus {
             asset_amount,
         )?;
 
-        let price: chainlink_price::ChainlinkPrice = fetch_chainlink_price_from_feed(
-            &ctx.accounts.chainlink_feed.to_account_info(),
-            asset_vault_state.chainlink_feed,
+        let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
+        let price: chainlink_price::ChainlinkPrice = fetch_price_from_feed(
+            &price_feed_account,
+            asset_vault_state.price_feed,
             &ctx.accounts.clock,
         )?;
 
-        let deposit_value: u128 = deposit_value_usd(amount, ctx.accounts.accepted_mint.decimals, &price)?;
+        let deposit_value: u128 = deposit_value_usd(amount, ctx.accounts.asset_mint.decimals, &price)?;
         let total_supply: u64 = ctx.accounts.grai_mint.supply;
         let total_value: u128 = ctx.accounts.grai_state.total_value_usd;
         let mint_amount: u64 = grai_mint_amount(deposit_value, total_supply, total_value)?;
@@ -197,14 +185,11 @@ pub mod grindurus {
             .idle_amount
             .checked_add(idle_amount)
             .ok_or(ErrorCode::MathOverflow)?;
-        asset_vault_state.asset_amount = asset_vault_state
-            .asset_amount
-            .checked_add(asset_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
 
         msg!(
-            "Minted {} GRAI (deposit_value={}, idle={}, asset={}, total_value={})",
+            "Minted {} GRAI for mint={} (deposit_value={}, idle={}, asset={}, total_value={})",
             mint_amount,
+            ctx.accounts.asset_mint.key(),
             deposit_value,
             idle_amount,
             asset_amount,
@@ -230,8 +215,8 @@ pub mod grindurus {
             ctx.remaining_accounts,
             grai_amount,
             total_supply,
-            ctx.accounts.asset_registry.to_account_info(),
-            ctx.accounts.asset_registry.bump,
+            ctx.accounts.grai_state.to_account_info(),
+            ctx.accounts.grai_state.bump,
             ctx.accounts.token_program.to_account_info(),
         )?;
 
@@ -264,14 +249,8 @@ pub mod grindurus {
     pub fn allocate(
         ctx: Context<Allocate>,
         amount: u64,
-        mint_pubkey: Pubkey,
         custody_wallet: Pubkey,
     ) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
         require!(amount > 0, ErrorCode::InvalidAmount);
 
         let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
@@ -279,7 +258,7 @@ pub mod grindurus {
             custody::init_allocation(
                 allocation,
                 &custody_wallet,
-                &mint_pubkey,
+                &ctx.accounts.asset_mint.key(),
                 ctx.bumps.custody_allocation,
             )?;
         }
@@ -290,9 +269,9 @@ pub mod grindurus {
             ErrorCode::InsufficientIdleLiquidity
         );
 
-        let registry_bump: u8 = ctx.accounts.asset_registry.bump;
-        let registry_seeds: &[&[u8]; 2] = &[AssetRegistry::SEED, &[registry_bump]];
-        let registry_signer: &[&[&[u8]]; 1] = &[&registry_seeds[..]];
+        let grai_state_bump: u8 = ctx.accounts.grai_state.bump;
+        let grai_state_seeds: &[&[u8]; 2] = &[GraiState::SEED, &[grai_state_bump]];
+        let grai_state_signer: &[&[&[u8]]; 1] = &[&grai_state_seeds[..]];
 
         token::transfer(
             CpiContext::new_with_signer(
@@ -300,9 +279,9 @@ pub mod grindurus {
                 Transfer {
                     from: ctx.accounts.grai_vault.to_account_info(),
                     to: ctx.accounts.custody_token_account.to_account_info(),
-                    authority: ctx.accounts.asset_registry.to_account_info(),
+                    authority: ctx.accounts.grai_state.to_account_info(),
                 },
-                registry_signer,
+                grai_state_signer,
             ),
             amount,
         )?;
@@ -335,14 +314,8 @@ pub mod grindurus {
     pub fn deallocate(
         ctx: Context<Deallocate>,
         amount: u64,
-        mint_pubkey: Pubkey,
         custody_wallet: Pubkey,
     ) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
         require!(amount > 0, ErrorCode::InvalidAmount);
 
         token::transfer(
@@ -392,14 +365,8 @@ pub mod grindurus {
     pub fn distribute(
         ctx: Context<Distribute>,
         yield_amount: u64,
-        mint_pubkey: Pubkey,
         custody_wallet: Pubkey,
     ) -> Result<()> {
-        require_keys_eq!(
-            ctx.accounts.accepted_mint.key(),
-            mint_pubkey,
-            ErrorCode::InvalidGraiVault
-        );
         require!(yield_amount > 0, ErrorCode::InvalidAmount);
 
         let (grai_vault_yield, treasury_yield) = yield_split(yield_amount)?;
@@ -432,14 +399,15 @@ pub mod grindurus {
             )?;
         }
 
-        let price = fetch_chainlink_price_from_feed(
-            &ctx.accounts.chainlink_feed.to_account_info(),
-            ctx.accounts.asset_vault_state.chainlink_feed,
+        let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
+        let price: chainlink_price::ChainlinkPrice = fetch_price_from_feed(
+            &price_feed_account,
+            ctx.accounts.asset_vault_state.price_feed,
             &ctx.accounts.clock,
         )?;
         let yield_value = deposit_value_usd(
             grai_vault_yield,
-            ctx.accounts.accepted_mint.decimals,
+            ctx.accounts.asset_mint.decimals,
             &price,
         )?;
 
@@ -450,10 +418,6 @@ pub mod grindurus {
             .ok_or(ErrorCode::MathOverflow)?;
 
         let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
-        asset_vault_state.yield_amount = asset_vault_state
-            .yield_amount
-            .checked_add(grai_vault_yield)
-            .ok_or(ErrorCode::MathOverflow)?;
         asset_vault_state.idle_amount = asset_vault_state
             .idle_amount
             .checked_add(grai_vault_yield)
@@ -484,7 +448,7 @@ pub mod grindurus {
     }
 
     /// View: sum of grai_vault balances priced via Chainlink.
-    /// Remaining accounts per asset: asset_vault_state, grai_vault, chainlink_feed, mint.
+    /// Remaining accounts per asset: asset_vault_state, grai_vault, price_feed, mint.
     pub fn calc_internal_value<'info>(
         ctx: Context<'_, '_, 'info, 'info, CalcInternalValue<'info>>,
     ) -> Result<u128> {
@@ -518,40 +482,24 @@ impl MintConfig {
 }
 
 #[account]
-pub struct AssetRegistry {
-    pub authority: Pubkey,
-    pub bump: u8,
-}
-
-impl AssetRegistry {
-    pub const SEED: &'static [u8] = b"asset_registry";
-    pub const LEN: usize = 32 + 1;
-}
-
-#[account]
 pub struct AssetVaultState {
     pub asset_mint: Pubkey,
-    pub chainlink_feed: Pubkey,
+    pub price_feed: Pubkey,
     pub grai_vault: Pubkey,
     pub asset_vault: Pubkey,
     pub idle_amount: u64,
     pub active_amount: u64,
-    pub asset_amount: u64,
-    pub yield_amount: u64,
-    pub asset_kind: u8,
-    pub minting_enabled: bool,
+    pub minting: bool,
     pub grai_vault_bump: u8,
     pub asset_vault_bump: u8,
     pub bump: u8,
 }
 
 impl AssetVaultState {
-    pub const SEED: &'static [u8] = b"grai_vault";
-    pub const GRAI_VAULT_SEED: &'static [u8] = b"idle_vault";
+    pub const SEED: &'static [u8] = b"asset_vault_state";
+    pub const GRAI_VAULT_SEED: &'static [u8] = b"grai_vault";
     pub const ASSET_VAULT_SEED: &'static [u8] = b"asset_vault";
-    pub const KIND_STABLECOIN: u8 = 0;
-    pub const KIND_BASE: u8 = 1;
-    pub const LEN: usize = 32 + 32 + 32 + 1 + 32 + 1 + 8 + 8 + 8 + 8 + 1 + 1 + 1;
+    pub const LEN: usize = 32 + 32 + 32 + 32 + 8 + 8 + 1 + 1 + 1 + 1;
 }
 
 #[account]
@@ -566,60 +514,4 @@ pub struct CustodyAllocation {
 impl CustodyAllocation {
     pub const SEED: &'static [u8] = b"custody_alloc";
     pub const LEN: usize = 32 + 32 + 8 + 8 + 1;
-}
-
-#[error_code]
-pub enum ErrorCode {
-    #[msg("Only the configured authority can perform this action")]
-    Unauthorized,
-    #[msg("Amount must be greater than zero")]
-    InvalidAmount,
-    #[msg("GRAI mint authority does not match program config")]
-    InvalidMint,
-    #[msg("Token account is invalid for this operation")]
-    InvalidDestination,
-    #[msg("Failed to read Chainlink feed account")]
-    ChainlinkReadError,
-    #[msg("Chainlink feed has no latest round data")]
-    ChainlinkRoundMissing,
-    #[msg("Chainlink price must be positive")]
-    InvalidChainlinkPrice,
-    #[msg("Chainlink price is stale")]
-    StaleChainlinkPrice,
-    #[msg("Chainlink feed does not match graiVault config")]
-    InvalidChainlinkFeed,
-    #[msg("Minting is paused for this graiVault")]
-    AssetMintingPaused,
-    #[msg("Minting must be paused before removing graiVault")]
-    AssetMintingEnabled,
-    #[msg("Vault must be empty before removing graiVault")]
-    VaultNotEmpty,
-    #[msg("graiVault does not match mint")]
-    InvalidGraiVault,
-    #[msg("Custody wallet does not match")]
-    InvalidCustody,
-    #[msg("Vault does not match graiVault")]
-    InvalidVault,
-    #[msg("Depositor token account is invalid")]
-    InvalidDepositSource,
-    #[msg("Arithmetic overflow")]
-    MathOverflow,
-    #[msg("Asset kind must be stablecoin (0) or base (1)")]
-    InvalidAssetKind,
-    #[msg("Insufficient idle liquidity for redemption")]
-    InsufficientIdleLiquidity,
-    #[msg("Insufficient active capital in custody")]
-    InsufficientActiveCapital,
-    #[msg("Cannot remove graiVault while capital is deployed")]
-    ActiveCapitalDeployed,
-    #[msg("Cannot remove graiVault while yield is not zero")]
-    YieldNotRealized,
-    #[msg("Redeem requires at least one graiVault in remaining accounts")]
-    NoRedeemAssets,
-    #[msg("Redeem remaining accounts must be asset_vault_state, grai_vault, redeemer_ata triplets")]
-    InvalidRedeemAccounts,
-    #[msg("calc_internal_value remaining accounts must be asset_vault_state, grai_vault, chainlink_feed, mint quadruplets")]
-    InvalidInternalValueAccounts,
-    #[msg("Treasury wallet must be a valid pubkey")]
-    InvalidTreasuryWallet,
 }

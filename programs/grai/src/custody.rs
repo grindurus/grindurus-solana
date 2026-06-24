@@ -30,7 +30,7 @@ pub fn close_allocation_if_empty<'info>(
             .ok_or(ErrorCode::MathOverflow)?;
         **allocation_info.lamports.borrow_mut() = 0;
         allocation_info.assign(&anchor_lang::system_program::ID);
-        allocation_info.realloc(0, false)?;
+        allocation_info.resize(0)?;
     }
     Ok(())
 }

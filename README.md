@@ -9,7 +9,7 @@ Tokenomics: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/overview/tok
 - Anchor `0.31.1`
 - Solana CLI `2.3.x`
 - Rust `1.89.0` (host + IDE via `rust-toolchain.toml`)
-- Program: `grindurus` (`14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k` on localnet)
+- Program: `grai` (`14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k` on localnet)
 
 ## IDE (rust-analyzer)
 
@@ -35,7 +35,7 @@ anchor deploy         # deploy to configured cluster
 ## Layout
 
 ```
-programs/grindurus/   # on-chain program (Rust)
+programs/grai/           # on-chain GRAI program (Rust)
 tests/                # integration tests (TypeScript)
 migrations/           # deploy scripts
 target/idl/           # generated IDL

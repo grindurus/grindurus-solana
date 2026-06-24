@@ -1,58 +1,65 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Token, TokenAccount};
 
-use crate::{AssetRegistry, ErrorCode, AssetVaultState};
+use crate::{AssetVaultState, ErrorCode, GraiState};
 
 pub fn register(
     authority: &Signer,
     asset_vault_state: &mut Account<AssetVaultState>,
-    accepted_mint: &Pubkey,
-    chainlink_feed: &Pubkey,
+    asset_mint: &Pubkey,
+    price_feed: &Pubkey,
     grai_vault: &Pubkey,
     grai_vault_bump: u8,
     asset_vault: &Pubkey,
     asset_vault_bump: u8,
     asset_vault_state_bump: u8,
-    asset_kind: u8,
 ) -> Result<()> {
-    require!(
-        asset_kind == AssetVaultState::KIND_STABLECOIN || asset_kind == AssetVaultState::KIND_BASE,
-        ErrorCode::InvalidAssetKind
-    );
-
-    asset_vault_state.asset_mint = *accepted_mint;
-    asset_vault_state.chainlink_feed = *chainlink_feed;
+    asset_vault_state.asset_mint = *asset_mint;
+    asset_vault_state.price_feed = *price_feed;
     asset_vault_state.grai_vault = *grai_vault;
     asset_vault_state.grai_vault_bump = grai_vault_bump;
     asset_vault_state.asset_vault = *asset_vault;
     asset_vault_state.asset_vault_bump = asset_vault_bump;
     asset_vault_state.idle_amount = 0;
-    asset_vault_state.asset_amount = 0;
     asset_vault_state.active_amount = 0;
-    asset_vault_state.yield_amount = 0;
-    asset_vault_state.asset_kind = asset_kind;
-    asset_vault_state.minting_enabled = true;
+    asset_vault_state.minting = true;
     asset_vault_state.bump = asset_vault_state_bump;
 
     msg!(
         "assetVault registered: mint={}, authority={}",
-        accepted_mint,
+        asset_mint,
         authority.key()
+    );
+    Ok(())
+}
+
+pub fn set_price_feed(
+    asset_vault_state: &mut Account<AssetVaultState>,
+    price_feed: &Pubkey,
+) -> Result<()> {
+    require_keys_neq!(*price_feed, Pubkey::default(), ErrorCode::InvalidChainlinkFeed);
+
+    asset_vault_state.price_feed = *price_feed;
+
+    msg!(
+        "Price feed set: mint={}, feed={}",
+        asset_vault_state.asset_mint,
+        price_feed
     );
     Ok(())
 }
 
 pub fn remove<'info>(
     authority: &Signer<'info>,
-    asset_registry: &Account<'info, AssetRegistry>,
+    grai_state: &Account<'info, GraiState>,
     asset_vault_state: &AssetVaultState,
     grai_vault: &Account<'info, TokenAccount>,
     asset_vault: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
 ) -> Result<()> {
-    let registry_bump = asset_registry.bump;
-    let registry_seeds = &[AssetRegistry::SEED, &[registry_bump]];
-    let registry_signer = &[&registry_seeds[..]];
+    let grai_state_bump: u8 = grai_state.bump;
+    let grai_state_seeds: &[&[u8]; 2] = &[GraiState::SEED, &[grai_state_bump]];
+    let grai_state_signer: &[&[&[u8]]; 1] = &[&grai_state_seeds[..]];
 
     for vault in [grai_vault, asset_vault] {
         token::close_account(CpiContext::new_with_signer(
@@ -60,9 +67,9 @@ pub fn remove<'info>(
             CloseAccount {
                 account: vault.to_account_info(),
                 destination: authority.to_account_info(),
-                authority: asset_registry.to_account_info(),
+                authority: grai_state.to_account_info(),
             },
-            registry_signer,
+            grai_state_signer,
         ))?;
     }
 

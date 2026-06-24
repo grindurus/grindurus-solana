@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use chainlink_solana::v2::read_feed_v2;
 
+use crate::custom_price_feed;
 use crate::ErrorCode;
 
 pub const MAX_PRICE_STALENESS_SECS: i64 = 3_600;
@@ -13,24 +14,36 @@ pub struct ChainlinkPrice {
     pub updated_slot: u64,
 }
 
-pub fn fetch_chainlink_price_from_feed(
-    chainlink_feed: &AccountInfo,
+/// Reads a configured price feed — program-owned custom feed or Chainlink v2 account.
+pub fn fetch_price_from_feed(
+    price_feed: &AccountInfo<'_>,
     expected_feed: Pubkey,
     clock: &Clock,
 ) -> Result<ChainlinkPrice> {
     require_keys_eq!(
-        chainlink_feed.key(),
+        price_feed.key(),
         expected_feed,
         ErrorCode::InvalidChainlinkFeed
     );
 
-    let feed = read_feed_v2(
+    if price_feed.owner == &custom_price_feed::PROGRAM_ID {
+        return custom_price_feed::fetch_from_account(price_feed, clock);
+    }
+
+    fetch_chainlink_price_from_feed(price_feed, clock)
+}
+
+pub fn fetch_chainlink_price_from_feed(
+    chainlink_feed: &AccountInfo<'_>,
+    clock: &Clock,
+) -> Result<ChainlinkPrice> {
+    let feed: chainlink_solana::v2::Feed = read_feed_v2(
         chainlink_feed.try_borrow_data()?,
         chainlink_feed.owner.to_bytes(),
     )
     .map_err(|_| error!(ErrorCode::ChainlinkReadError))?;
 
-    let round = feed
+    let round: chainlink_solana::v2::Round = feed
         .latest_round_data()
         .ok_or(error!(ErrorCode::ChainlinkRoundMissing))?;
 

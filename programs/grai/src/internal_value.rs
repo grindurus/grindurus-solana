@@ -1,11 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, TokenAccount};
 
-use crate::chainlink_price::fetch_chainlink_price_from_feed;
+use crate::chainlink_price::fetch_price_from_feed;
 use crate::tokenomics::value_usd;
 use crate::{ErrorCode, AssetVaultState};
 
-/// Per asset: asset_vault_state, grai_vault, chainlink_feed, mint.
+/// Per asset: asset_vault_state, grai_vault, price_feed, mint.
 pub const INTERNAL_VALUE_ACCOUNTS: usize = 4;
 
 pub fn from_remaining_accounts<'info>(
@@ -38,7 +38,7 @@ pub fn from_remaining_accounts<'info>(
 pub fn single_asset<'info>(
     asset_vault_state: &AssetVaultState,
     grai_vault: &Account<'info, TokenAccount>,
-    chainlink_feed: &AccountInfo<'info>,
+    price_feed: &AccountInfo<'info>,
     mint: &Account<'info, Mint>,
     clock: &Clock,
 ) -> Result<u128> {
@@ -54,9 +54,9 @@ pub fn single_asset<'info>(
     );
     require_keys_eq!(mint.key(), asset_vault_state.asset_mint, ErrorCode::InvalidGraiVault);
 
-    let price = fetch_chainlink_price_from_feed(
-        chainlink_feed,
-        asset_vault_state.chainlink_feed,
+    let price = fetch_price_from_feed(
+        price_feed,
+        asset_vault_state.price_feed,
         clock,
     )?;
     value_usd(grai_vault.amount, mint.decimals, &price)
@@ -65,7 +65,7 @@ pub fn single_asset<'info>(
 fn asset_internal_value<'info>(
     asset_vault_state_info: &'info AccountInfo<'info>,
     grai_vault_info: &'info AccountInfo<'info>,
-    chainlink_feed_info: &'info AccountInfo<'info>,
+    price_feed_info: &'info AccountInfo<'info>,
     mint_info: &'info AccountInfo<'info>,
     clock: &Clock,
 ) -> Result<u128> {
@@ -87,7 +87,7 @@ fn asset_internal_value<'info>(
     single_asset(
         &asset_vault_state,
         &grai_vault,
-        chainlink_feed_info,
+        price_feed_info,
         &mint,
         clock,
     )

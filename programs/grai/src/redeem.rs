@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, TokenAccount};
 
 use crate::tokenomics::redeem_asset_amount;
-use crate::{AssetRegistry, ErrorCode, AssetVaultState};
+use crate::{ErrorCode, AssetVaultState, GraiState};
 
 /// Per asset in `burn` remaining_accounts: asset_vault_state, grai_vault, redeemer_ata.
 pub const REDEEM_ASSET_ACCOUNTS: usize = 3;
@@ -11,8 +11,8 @@ pub fn process_remaining_assets<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
     grai_amount: u64,
     total_supply: u64,
-    asset_registry: AccountInfo<'info>,
-    registry_bump: u8,
+    grai_state: AccountInfo<'info>,
+    grai_state_bump: u8,
     token_program: AccountInfo<'info>,
 ) -> Result<()> {
     require!(!remaining_accounts.is_empty(), ErrorCode::NoRedeemAssets);
@@ -21,8 +21,8 @@ pub fn process_remaining_assets<'info>(
         ErrorCode::InvalidRedeemAccounts
     );
 
-    let registry_seeds = &[AssetRegistry::SEED, &[registry_bump]];
-    let registry_signer = &[&registry_seeds[..]];
+    let grai_state_seeds = &[GraiState::SEED, &[grai_state_bump]];
+    let grai_state_signer = &[&grai_state_seeds[..]];
 
     for chunk in remaining_accounts.chunks(REDEEM_ASSET_ACCOUNTS) {
         let asset_vault_state_info = &chunk[0];
@@ -72,9 +72,9 @@ pub fn process_remaining_assets<'info>(
                 token::Transfer {
                     from: grai_vault_info.clone(),
                     to: redeemer_ata_info.clone(),
-                    authority: asset_registry.clone(),
+                    authority: grai_state.clone(),
                 },
-                registry_signer,
+                grai_state_signer,
             ),
             redeem_amount,
         )?;
@@ -83,6 +83,7 @@ pub fn process_remaining_assets<'info>(
             .idle_amount
             .checked_sub(redeem_amount)
             .ok_or(ErrorCode::MathOverflow)?;
+        asset_vault_state.exit(&crate::ID)?;
     }
 
     Ok(())
