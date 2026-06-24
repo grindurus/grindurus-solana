@@ -2,9 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, TokenAccount};
 
 use crate::tokenomics::redeem_asset_amount;
-use crate::{ErrorCode, AssetVaultState, GraiState};
+use crate::{ErrorCode, GraiState, GraiVaultState};
 
-/// Per asset in `burn` remaining_accounts: asset_vault_state, grai_vault, redeemer_ata.
+/// Per asset in `burn` remaining_accounts: grai_vault_state, grai_vault, redeemer_ata.
 pub const REDEEM_ASSET_ACCOUNTS: usize = 3;
 
 pub fn process_remaining_assets<'info>(
@@ -25,42 +25,46 @@ pub fn process_remaining_assets<'info>(
     let grai_state_signer = &[&grai_state_seeds[..]];
 
     for chunk in remaining_accounts.chunks(REDEEM_ASSET_ACCOUNTS) {
-        let asset_vault_state_info = &chunk[0];
+        let grai_vault_state_info = &chunk[0];
         let grai_vault_info = &chunk[1];
         let redeemer_ata_info = &chunk[2];
 
-        let mut asset_vault_state: Account<AssetVaultState> =
-            Account::try_from(asset_vault_state_info)?;
+        let mut grai_vault_state: Account<GraiVaultState> =
+            Account::try_from(grai_vault_state_info)?;
         let (expected_pda, _) = Pubkey::find_program_address(
-            &[AssetVaultState::SEED, asset_vault_state.asset_mint.as_ref()],
+            &[GraiVaultState::STATE_SEED, grai_vault_state.asset_mint.as_ref()],
             &crate::ID,
         );
         require_keys_eq!(
-            asset_vault_state_info.key(),
+            grai_vault_state_info.key(),
             expected_pda,
             ErrorCode::InvalidGraiVault
         );
         require_keys_eq!(
             grai_vault_info.key(),
-            asset_vault_state.grai_vault,
+            Pubkey::find_program_address(
+                &[GraiVaultState::SEED, grai_vault_state.asset_mint.as_ref()],
+                &crate::ID,
+            )
+            .0,
             ErrorCode::InvalidVault
         );
 
         let redeemer_ata: Account<TokenAccount> = Account::try_from(redeemer_ata_info)?;
         require_keys_eq!(
             redeemer_ata.mint,
-            asset_vault_state.asset_mint,
+            grai_vault_state.asset_mint,
             ErrorCode::InvalidDestination
         );
 
-        if asset_vault_state.idle_amount == 0 {
+        if grai_vault_state.idle_amount == 0 {
             continue;
         }
 
         let redeem_amount = redeem_asset_amount(
             grai_amount,
             total_supply,
-            asset_vault_state.idle_amount,
+            grai_vault_state.idle_amount,
         )?;
         if redeem_amount == 0 {
             continue;
@@ -79,11 +83,11 @@ pub fn process_remaining_assets<'info>(
             redeem_amount,
         )?;
 
-        asset_vault_state.idle_amount = asset_vault_state
+        grai_vault_state.idle_amount = grai_vault_state
             .idle_amount
             .checked_sub(redeem_amount)
             .ok_or(ErrorCode::MathOverflow)?;
-        asset_vault_state.exit(&crate::ID)?;
+        grai_vault_state.exit(&crate::ID)?;
     }
 
     Ok(())

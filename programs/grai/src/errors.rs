@@ -6,6 +6,8 @@ pub enum ErrorCode {
     Unauthorized,
     #[msg("Amount must be greater than zero")]
     InvalidAmount,
+    #[msg("Insufficient GRAI balance")]
+    InsufficientGraiBalance,
     #[msg("GRAI mint authority does not match program config")]
     InvalidMint,
     #[msg("Token account is invalid for this operation")]
@@ -46,9 +48,9 @@ pub enum ErrorCode {
     ActiveCapitalDeployed,
     #[msg("Redeem requires at least one graiVault in remaining accounts")]
     NoRedeemAssets,
-    #[msg("Redeem remaining accounts must be asset_vault_state, grai_vault, redeemer_ata triplets")]
+    #[msg("Redeem remaining accounts must be grai_vault_state, grai_vault, redeemer_ata triplets")]
     InvalidRedeemAccounts,
-    #[msg("calc_internal_value remaining accounts must be asset_vault_state, grai_vault, price_feed, mint quadruplets")]
+    #[msg("calc_internal_value remaining accounts must be grai_vault_state, grai_vault, price_feed, mint quadruplets")]
     InvalidInternalValueAccounts,
     #[msg("Custom price feed does not match asset mint")]
     InvalidCustomPriceFeed,
@@ -56,4 +58,6 @@ pub enum ErrorCode {
     InvalidPriceDecimals,
     #[msg("Treasury wallet must be a valid pubkey")]
     InvalidTreasuryWallet,
+    #[msg("Deposit split must be <= 10_000 bps")]
+    InvalidSplit,
 }

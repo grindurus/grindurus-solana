@@ -163,6 +163,13 @@ function assetVaultStatePda(mint: PublicKey, programId: PublicKey) {
   );
 }
 
+function graiVaultStatePda(mint: PublicKey, programId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("grai_vault_state"), mint.toBuffer()],
+    programId,
+  );
+}
+
 function graiVaultPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("grai_vault"), mint.toBuffer()],
@@ -175,6 +182,13 @@ function assetVaultPda(mint: PublicKey, programId: PublicKey) {
     [Buffer.from("asset_vault"), mint.toBuffer()],
     programId,
   );
+}
+
+const SPLIT_BPS_MAX = 10_000n;
+
+function mintSplit(amount: bigint, mintSplitBps: number): [bigint, bigint] {
+  const idleAmount = (amount * BigInt(mintSplitBps)) / SPLIT_BPS_MAX;
+  return [idleAmount, amount - idleAmount];
 }
 
 function redeemAssetAmount(
@@ -197,16 +211,13 @@ describe("GRAI tokenomics", () => {
     [Buffer.from("protocol")],
     program.programId,
   );
-  const [mintConfig] = PublicKey.findProgramAddressSync(
-    [Buffer.from("mint_config")],
-    program.programId,
-  );
 
   const graiMint = Keypair.generate();
   const usdcMint = Keypair.generate();
   const usdcDecimals = 6;
 
   const [assetVaultState] = assetVaultStatePda(usdcMint.publicKey, program.programId);
+  const [graiVaultState] = graiVaultStatePda(usdcMint.publicKey, program.programId);
   const [graiVault] = graiVaultPda(usdcMint.publicKey, program.programId);
   const [assetVault] = assetVaultPda(usdcMint.publicKey, program.programId);
   const [usdcUsdFeed] = customPriceFeedPda(usdcMint.publicKey, feedProgram.programId);
@@ -260,11 +271,10 @@ describe("GRAI tokenomics", () => {
     const metadata = graiMetadataPda(graiMint.publicKey);
 
     await program.methods
-      .initializeToken()
+      .initialize()
       .accountsPartial({
         authority,
         graiState,
-        mintConfig,
         graiMint: graiMint.publicKey,
         metadata,
         tokenProgram: TOKEN_PROGRAM_ID,
@@ -276,7 +286,7 @@ describe("GRAI tokenomics", () => {
       .rpc();
 
     const grai = await program.account.graiState.fetch(graiState);
-    expect(grai.totalValueUsd.toString()).to.equal("0");
+    expect(grai.totalValue.toString()).to.equal("0");
     expect(grai.treasuryWallet.toBase58()).to.equal(authority.toBase58());
     expect(grai.authority.toBase58()).to.equal(authority.toBase58());
 
@@ -330,8 +340,9 @@ describe("GRAI tokenomics", () => {
         assetMint: usdcMint.publicKey,
         graiState,
         assetVaultState,
-        graiVault,
-        assetVault,
+        graiVaultState,
+        graiVaultAta: graiVault,
+        assetVaultAta: assetVault,
         priceFeed: usdcUsdFeed,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -340,9 +351,12 @@ describe("GRAI tokenomics", () => {
       .rpc();
 
     const vault = await program.account.assetVaultState.fetch(assetVaultState);
+    const graiVaultStateAccount = await program.account.graiVaultState.fetch(graiVaultState);
     expect(vault.assetMint.toBase58()).to.equal(usdcMint.publicKey.toBase58());
     expect(vault.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
     expect(vault.minting).to.be.true;
+    expect(graiVaultStateAccount.mintSplit).to.equal(5_000);
+    expect(graiVaultStateAccount.yieldSplit).to.equal(8_000);
   });
 
   it("disables and enables assetVault minting", async () => {
@@ -384,162 +398,208 @@ describe("GRAI tokenomics", () => {
         minter: authority,
         graiState,
         assetMint: usdcMint.publicKey,
-        graiVault,
-        assetVault,
+        graiVaultState,
+        graiVaultAta: graiVault,
+        assetVaultAta: assetVault,
         priceFeed: usdcUsdFeed,
         assetVaultState,
-        minterTokenAccount,
-        mintConfig,
+        minterAta: minterTokenAccount,
         graiMint: graiMint.publicKey,
-        minterGraiAccount,
+        minterGraiAta: minterGraiAccount,
         clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .rpc();
 
-    const idleShare = depositAmount / 2n;
-    const assetShare = depositAmount - idleShare;
+    const graiVaultBeforeMint = await program.account.graiVaultState.fetch(graiVaultState);
+    const [idleAmount, assetAmount] = mintSplit(depositAmount, graiVaultBeforeMint.mintSplit);
 
-    const vault = await program.account.assetVaultState.fetch(assetVaultState);
-    expect(vault.idleAmount.toString()).to.equal(idleShare.toString());
+    const graiVaultAfterMint = await program.account.graiVaultState.fetch(graiVaultState);
+    expect(graiVaultAfterMint.idleAmount.toString()).to.equal(idleAmount.toString());
 
-    const assetVaultBalance = await provider.connection.getTokenAccountBalance(
+    const idleUsdcVaultBalance = await provider.connection.getTokenAccountBalance(
+      graiVault,
+    );
+    expect(idleUsdcVaultBalance.value.amount).to.equal(idleAmount.toString());
+
+    const activeUsdcVaultBalance = await provider.connection.getTokenAccountBalance(
       assetVault,
     );
-    expect(assetVaultBalance.value.amount).to.equal(assetShare.toString());
+    expect(activeUsdcVaultBalance.value.amount).to.equal(assetAmount.toString());
 
     const grai = await program.account.graiState.fetch(graiState);
-    expect(grai.totalValueUsd.gt(new anchor.BN(0))).to.be.true;
+    expect(grai.totalValue.gt(new anchor.BN(0))).to.be.true;
 
     const graiMintAccount = await provider.connection.getTokenAccountBalance(
       minterGraiAccount,
     );
     expect(graiMintAccount.value.amount).to.equal("2000000000");
-    expect(grai.totalValueUsd.toString()).to.equal("2000000000");
+    expect(grai.totalValue.toString()).to.equal("2000000000");
   });
 
-  it("burns GRAI and redeems USDC from idle vault", async () => {
-    const vaultBefore = await program.account.assetVaultState.fetch(assetVaultState);
-    const graiBefore = await program.account.graiState.fetch(graiState);
-    const minterGraiAccount = await ensureAta(graiMint.publicKey, authority);
-    const redeemerUsdcAccount = await ensureAta(usdcMint.publicKey, authority);
+  it("burns GRAI and retrieves USDC from idle vault", async () => {
+    const assetVaultBefore = await program.account.assetVaultState.fetch(assetVaultState);
+    const graiVaultBefore = await program.account.graiVaultState.fetch(graiVaultState);
+    const graiStateBefore = await program.account.graiState.fetch(graiState);
+    const burnerGraiAccount = await ensureAta(graiMint.publicKey, authority);
+    const burnerUsdcAccount = await ensureAta(usdcMint.publicKey, authority);
 
-    const graiBalance = BigInt(
-      (await provider.connection.getTokenAccountBalance(minterGraiAccount)).value
-        .amount,
+    const burnerGraiBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerGraiAccount)).value.amount,
     );
-    const totalSupply = BigInt(
+    const graiTotalSupplyBefore = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
     );
-    const idleBefore = BigInt(vaultBefore.idleAmount.toString());
-    const totalValueBefore = BigInt(graiBefore.totalValueUsd.toString());
+    const idleUsdcBefore = BigInt(graiVaultBefore.idleAmount.toString());
+    const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
 
-    const burnAmount = graiBalance / 2n;
+    const burnAmount = burnerGraiBalanceBefore / 2n;
     expect(burnAmount > 0n).to.be.true;
 
-    const expectedRedeem = redeemAssetAmount(
+    const expectedRedeemUsdc = redeemAssetAmount(
       burnAmount,
-      totalSupply,
-      idleBefore,
+      graiTotalSupplyBefore,
+      idleUsdcBefore,
     );
-    expect(expectedRedeem > 0n).to.be.true;
+    expect(expectedRedeemUsdc > 0n).to.be.true;
 
-    const usdcBefore = BigInt(
-      (await provider.connection.getTokenAccountBalance(redeemerUsdcAccount)).value
-        .amount,
+    const burnerUsdcBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
+    );
+    const idleUsdcVaultBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
     );
 
     await program.methods
       .burn(new anchor.BN(burnAmount.toString()))
       .accountsPartial({
-        redeemer: authority,
+        burner: authority,
         graiState,
-        redeemerGraiAccount: minterGraiAccount,
-        mintConfig,
+        burnerGraiAta: burnerGraiAccount,
         graiMint: graiMint.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .remainingAccounts([
-        { pubkey: assetVaultState, isWritable: true, isSigner: false },
+        { pubkey: graiVaultState, isWritable: true, isSigner: false },
         { pubkey: graiVault, isWritable: true, isSigner: false },
-        { pubkey: redeemerUsdcAccount, isWritable: true, isSigner: false },
+        { pubkey: burnerUsdcAccount, isWritable: true, isSigner: false },
       ])
       .rpc();
 
-    const vaultAfter = await program.account.assetVaultState.fetch(assetVaultState);
-    const graiAfter = await program.account.graiState.fetch(graiState);
-    const supplyAfter = BigInt(
+    const graiVaultAfter = await program.account.graiVaultState.fetch(graiVaultState);
+    const graiStateAfter = await program.account.graiState.fetch(graiState);
+    const graiTotalSupplyAfter = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
     );
-    const graiAfterBalance = BigInt(
-      (await provider.connection.getTokenAccountBalance(minterGraiAccount)).value
-        .amount,
+    const burnerGraiBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerGraiAccount)).value.amount,
     );
-    const usdcAfter = BigInt(
-      (await provider.connection.getTokenAccountBalance(redeemerUsdcAccount)).value
-        .amount,
+    const burnerUsdcBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
+    );
+    const idleUsdcVaultBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
     );
 
-    expect(graiAfterBalance).to.equal(graiBalance - burnAmount);
-    expect(supplyAfter).to.equal(totalSupply - burnAmount);
-    expect(BigInt(vaultAfter.idleAmount.toString())).to.equal(
-      idleBefore - expectedRedeem,
+    expect(burnerGraiBalanceAfter).to.equal(burnerGraiBalanceBefore - burnAmount);
+    expect(graiTotalSupplyAfter).to.equal(graiTotalSupplyBefore - burnAmount);
+    expect(BigInt(graiVaultAfter.idleAmount.toString())).to.equal(
+      idleUsdcBefore - expectedRedeemUsdc,
     );
-    expect(usdcAfter - usdcBefore).to.equal(expectedRedeem);
+    expect(idleUsdcVaultBalanceAfter).to.equal(
+      idleUsdcVaultBalanceBefore - expectedRedeemUsdc,
+    );
+    expect(burnerUsdcBalanceAfter - burnerUsdcBalanceBefore).to.equal(
+      expectedRedeemUsdc,
+    );
 
-    const expectedBurnValue = (burnAmount * totalValueBefore) / totalSupply;
-    expect(BigInt(graiAfter.totalValueUsd.toString())).to.equal(
-      totalValueBefore - expectedBurnValue,
+    const expectedBurnValueUsd =
+      (burnAmount * totalValueBefore) / graiTotalSupplyBefore;
+    expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
+      totalValueBefore - expectedBurnValueUsd,
     );
   });
 
   it("burns remaining GRAI in a second redeem", async () => {
-    const minterGraiAccount = await ensureAta(graiMint.publicKey, authority);
-    const redeemerUsdcAccount = await ensureAta(usdcMint.publicKey, authority);
+    const burnerGraiAccount = await ensureAta(graiMint.publicKey, authority);
+    const burnerUsdcAccount = await ensureAta(usdcMint.publicKey, authority);
 
-    const graiBalance = BigInt(
-      (await provider.connection.getTokenAccountBalance(minterGraiAccount)).value
-        .amount,
+    const assetVaultBefore = await program.account.assetVaultState.fetch(assetVaultState);
+    const graiVaultBefore = await program.account.graiVaultState.fetch(graiVaultState);
+    const graiStateBefore = await program.account.graiState.fetch(graiState);
+
+    const burnerGraiBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerGraiAccount)).value.amount,
     );
-    expect(graiBalance > 0n).to.be.true;
+    expect(burnerGraiBalanceBefore > 0n).to.be.true;
 
-    const vaultBefore = await program.account.assetVaultState.fetch(assetVaultState);
-    const totalSupply = BigInt(
+    const graiTotalSupplyBefore = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
     );
-    const idleBefore = BigInt(vaultBefore.idleAmount.toString());
-    const expectedRedeem = redeemAssetAmount(
-      graiBalance,
-      totalSupply,
-      idleBefore,
+    const idleUsdcBefore = BigInt(graiVaultBefore.idleAmount.toString());
+    const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
+
+    const burnAmount = burnerGraiBalanceBefore;
+    const expectedRedeemUsdc = redeemAssetAmount(
+      burnAmount,
+      graiTotalSupplyBefore,
+      idleUsdcBefore,
+    );
+
+    const burnerUsdcBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
+    );
+    const idleUsdcVaultBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
     );
 
     await program.methods
-      .burn(new anchor.BN(graiBalance.toString()))
+      .burn(new anchor.BN(burnAmount.toString()))
       .accountsPartial({
-        redeemer: authority,
+        burner: authority,
         graiState,
-        redeemerGraiAccount: minterGraiAccount,
-        mintConfig,
+        burnerGraiAta: burnerGraiAccount,
         graiMint: graiMint.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .remainingAccounts([
-        { pubkey: assetVaultState, isWritable: true, isSigner: false },
+        { pubkey: graiVaultState, isWritable: true, isSigner: false },
         { pubkey: graiVault, isWritable: true, isSigner: false },
-        { pubkey: redeemerUsdcAccount, isWritable: true, isSigner: false },
+        { pubkey: burnerUsdcAccount, isWritable: true, isSigner: false },
       ])
       .rpc();
 
-    const vaultAfter = await program.account.assetVaultState.fetch(assetVaultState);
-    expect(BigInt(vaultAfter.idleAmount.toString())).to.equal(
-      idleBefore - expectedRedeem,
+    const graiVaultAfter = await program.account.graiVaultState.fetch(graiVaultState);
+    const graiStateAfter = await program.account.graiState.fetch(graiState);
+    const graiTotalSupplyAfter = BigInt(
+      (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
+    );
+    const burnerGraiBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerGraiAccount)).value.amount,
+    );
+    const burnerUsdcBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
+    );
+    const idleUsdcVaultBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
     );
 
-    const graiAfterBalance = BigInt(
-      (await provider.connection.getTokenAccountBalance(minterGraiAccount)).value
-        .amount,
+    expect(burnerGraiBalanceAfter).to.equal(0n);
+    expect(graiTotalSupplyAfter).to.equal(graiTotalSupplyBefore - burnAmount);
+    expect(BigInt(graiVaultAfter.idleAmount.toString())).to.equal(
+      idleUsdcBefore - expectedRedeemUsdc,
     );
-    expect(graiAfterBalance).to.equal(0n);
+    expect(idleUsdcVaultBalanceAfter).to.equal(
+      idleUsdcVaultBalanceBefore - expectedRedeemUsdc,
+    );
+    expect(burnerUsdcBalanceAfter - burnerUsdcBalanceBefore).to.equal(
+      expectedRedeemUsdc,
+    );
+
+    const expectedBurnValueUsd =
+      (burnAmount * totalValueBefore) / graiTotalSupplyBefore;
+    expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
+      totalValueBefore - expectedBurnValueUsd,
+    );
   });
 });

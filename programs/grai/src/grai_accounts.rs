@@ -4,11 +4,11 @@ use anchor_spl::metadata::Metadata;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
 use crate::{
-    CustodyAllocation, ErrorCode, AssetVaultState, MintConfig, GraiState,
+    CustodyAllocation, ErrorCode, AssetVaultState, GraiVaultState, GraiState,
 };
 
 #[derive(Accounts)]
-pub struct InitializeToken<'info> {
+pub struct Initialize<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
@@ -24,17 +24,8 @@ pub struct InitializeToken<'info> {
     #[account(
         init,
         payer = authority,
-        space = 8 + MintConfig::LEN,
-        seeds = [MintConfig::SEED],
-        bump,
-    )]
-    pub mint_config: Account<'info, MintConfig>,
-
-    #[account(
-        init,
-        payer = authority,
-        mint::decimals = MintConfig::DECIMALS,
-        mint::authority = mint_config,
+        mint::decimals = GraiState::DECIMALS,
+        mint::authority = grai_state,
     )]
     pub grai_mint: Account<'info, Mint>,
 
@@ -119,22 +110,31 @@ pub struct AddAssetVault<'info> {
     #[account(
         init,
         payer = authority,
-        token::mint = asset_mint,
-        token::authority = grai_state,
-        seeds = [AssetVaultState::GRAI_VAULT_SEED, asset_mint.key().as_ref()],
+        space = 8 + GraiVaultState::LEN,
+        seeds = [GraiVaultState::STATE_SEED, asset_mint.key().as_ref()],
         bump,
     )]
-    pub grai_vault: Account<'info, TokenAccount>,
+    pub grai_vault_state: Account<'info, GraiVaultState>,
 
     #[account(
         init,
         payer = authority,
         token::mint = asset_mint,
         token::authority = grai_state,
-        seeds = [AssetVaultState::ASSET_VAULT_SEED, asset_mint.key().as_ref()],
+        seeds = [GraiVaultState::SEED, asset_mint.key().as_ref()],
         bump,
     )]
-    pub asset_vault: Account<'info, TokenAccount>,
+    pub grai_vault_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = authority,
+        token::mint = asset_mint,
+        token::authority = grai_state,
+        seeds = [b"asset_vault", asset_mint.key().as_ref()],
+        bump,
+    )]
+    pub asset_vault_ata: Account<'info, TokenAccount>,
 
     /// CHECK: Chainlink v2 feed or program-owned custom price feed.
     pub price_feed: UncheckedAccount<'info>,
@@ -171,21 +171,29 @@ pub struct RemoveAssetVault<'info> {
 
     #[account(
         mut,
-        seeds = [AssetVaultState::GRAI_VAULT_SEED, asset_mint.key().as_ref()],
+        close = authority,
+        seeds = [GraiVaultState::STATE_SEED, asset_mint.key().as_ref()],
         bump,
-        constraint = grai_vault.key() == asset_vault_state.grai_vault @ ErrorCode::InvalidVault,
-        constraint = grai_vault.amount == 0 @ ErrorCode::VaultNotEmpty,
+        constraint = grai_vault_state.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = grai_vault_state.idle_amount == 0 @ ErrorCode::VaultNotEmpty,
     )]
-    pub grai_vault: Account<'info, TokenAccount>,
+    pub grai_vault_state: Account<'info, GraiVaultState>,
 
     #[account(
         mut,
-        seeds = [AssetVaultState::ASSET_VAULT_SEED, asset_mint.key().as_ref()],
+        seeds = [GraiVaultState::SEED, asset_mint.key().as_ref()],
         bump,
-        constraint = asset_vault.key() == asset_vault_state.asset_vault @ ErrorCode::InvalidVault,
-        constraint = asset_vault.amount == 0 @ ErrorCode::VaultNotEmpty,
+        constraint = grai_vault_ata.amount == 0 @ ErrorCode::VaultNotEmpty,
     )]
-    pub asset_vault: Account<'info, TokenAccount>,
+    pub grai_vault_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"asset_vault", asset_mint.key().as_ref()],
+        bump,
+        constraint = asset_vault_ata.amount == 0 @ ErrorCode::VaultNotEmpty,
+    )]
+    pub asset_vault_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -227,32 +235,38 @@ pub struct MintGrai<'info> {
 
     pub asset_mint: Box<Account<'info, Mint>>,
 
-    #[account(
-        mut,
-        seeds = [AssetVaultState::GRAI_VAULT_SEED, asset_mint.key().as_ref()],
-        bump,
-        constraint = grai_vault.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-    )]
-    pub grai_vault: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        seeds = [AssetVaultState::ASSET_VAULT_SEED, asset_mint.key().as_ref()],
-        bump,
-        constraint = asset_vault.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-    )]
-    pub asset_vault: Box<Account<'info, TokenAccount>>,
-
     /// CHECK: Chainlink v2 feed or program-owned custom price feed.
     pub price_feed: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiVaultState::STATE_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault_state.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub grai_vault_state: Box<Account<'info, GraiVaultState>>,
+
+    #[account(
+        mut,
+        seeds = [GraiVaultState::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub grai_vault_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        seeds = [b"asset_vault", asset_mint.key().as_ref()],
+        bump,
+        constraint = asset_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub asset_vault_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         seeds = [AssetVaultState::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = asset_vault_state.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-        has_one = grai_vault @ ErrorCode::InvalidVault,
-        constraint = asset_vault.key() == asset_vault_state.asset_vault @ ErrorCode::InvalidVault,
         has_one = price_feed @ ErrorCode::InvalidChainlinkFeed,
         constraint = asset_vault_state.minting @ ErrorCode::AssetMintingPaused,
     )]
@@ -260,29 +274,23 @@ pub struct MintGrai<'info> {
 
     #[account(
         mut,
-        constraint = minter_token_account.mint == asset_mint.key() @ ErrorCode::InvalidDepositSource,
-        constraint = minter_token_account.owner == minter.key() @ ErrorCode::InvalidDepositSource,
+        constraint = minter_ata.mint == asset_mint.key() @ ErrorCode::InvalidDepositSource,
+        constraint = minter_ata.owner == minter.key() @ ErrorCode::InvalidDepositSource,
     )]
-    pub minter_token_account: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        seeds = [MintConfig::SEED],
-        bump = mint_config.bump,
-    )]
-    pub mint_config: Box<Account<'info, MintConfig>>,
+    pub minter_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
-        constraint = grai_mint.mint_authority == COption::Some(mint_config.key()) @ ErrorCode::InvalidMint,
+        constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
 
     #[account(
         mut,
-        constraint = minter_grai_account.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = minter_grai_account.owner == minter.key() @ ErrorCode::InvalidDestination,
+        constraint = minter_grai_ata.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
+        constraint = minter_grai_ata.owner == minter.key() @ ErrorCode::InvalidDestination,
     )]
-    pub minter_grai_account: Box<Account<'info, TokenAccount>>,
+    pub minter_grai_ata: Box<Account<'info, TokenAccount>>,
 
     pub clock: Sysvar<'info, Clock>,
     pub token_program: Program<'info, Token>,
@@ -290,7 +298,7 @@ pub struct MintGrai<'info> {
 
 #[derive(Accounts)]
 pub struct BurnGrai<'info> {
-    pub redeemer: Signer<'info>,
+    pub burner: Signer<'info>,
 
     #[account(
         mut,
@@ -301,18 +309,15 @@ pub struct BurnGrai<'info> {
 
     #[account(
         mut,
-        constraint = redeemer_grai_account.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = redeemer_grai_account.owner == redeemer.key() @ ErrorCode::InvalidDestination,
+        constraint = burner_grai_ata.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
+        constraint = burner_grai_ata.owner == burner.key() @ ErrorCode::InvalidDestination,
     )]
-    pub redeemer_grai_account: Account<'info, TokenAccount>,
+    pub burner_grai_ata: Account<'info, TokenAccount>,
 
     #[account(
-        seeds = [MintConfig::SEED],
-        bump = mint_config.bump,
+        mut,
+        constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
-    pub mint_config: Account<'info, MintConfig>,
-
-    #[account(mut)]
     pub grai_mint: Account<'info, Mint>,
 
     pub token_program: Program<'info, Token>,
@@ -342,6 +347,25 @@ pub struct Allocate<'info> {
     pub asset_vault_state: Account<'info, AssetVaultState>,
 
     #[account(
+        mut,
+        seeds = [GraiVaultState::STATE_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault_state.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = amount > 0 @ ErrorCode::InvalidAmount,
+        constraint = grai_vault_state.idle_amount >= amount @ ErrorCode::InsufficientIdleLiquidity,
+    )]
+    pub grai_vault_state: Account<'info, GraiVaultState>,
+
+    #[account(
+        mut,
+        seeds = [GraiVaultState::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = grai_vault_ata.amount >= amount @ ErrorCode::InsufficientIdleLiquidity,
+    )]
+    pub grai_vault_ata: Account<'info, TokenAccount>,
+
+    #[account(
         init_if_needed,
         payer = authority,
         space = 8 + CustodyAllocation::LEN,
@@ -352,82 +376,18 @@ pub struct Allocate<'info> {
         ],
         bump,
         constraint = custody_wallet != Pubkey::default() @ ErrorCode::InvalidCustody,
-        constraint = custody_allocation.asset_mint == Pubkey::default()
-            || custody_allocation.custody_wallet == custody_wallet @ ErrorCode::InvalidCustody,
-        constraint = custody_allocation.asset_mint == Pubkey::default()
-            || custody_allocation.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
     )]
     pub custody_allocation: Account<'info, CustodyAllocation>,
 
     #[account(
         mut,
-        constraint = grai_vault.key() == asset_vault_state.grai_vault @ ErrorCode::InvalidVault,
+        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
+        constraint = custody_ata.owner == custody_wallet @ ErrorCode::InvalidCustody,
     )]
-    pub grai_vault: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        constraint = custody_token_account.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = custody_token_account.owner == custody_wallet @ ErrorCode::InvalidCustody,
-    )]
-    pub custody_token_account: Account<'info, TokenAccount>,
+    pub custody_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(amount: u64, custody_wallet: Pubkey)]
-pub struct Deallocate<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-
-    pub custody_wallet: Signer<'info>,
-
-    pub asset_mint: Account<'info, Mint>,
-
-    #[account(
-        seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
-    )]
-    pub grai_state: Account<'info, GraiState>,
-
-    #[account(
-        mut,
-        seeds = [AssetVaultState::SEED, asset_mint.key().as_ref()],
-        bump,
-        constraint = asset_vault_state.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-    )]
-    pub asset_vault_state: Account<'info, AssetVaultState>,
-
-    #[account(
-        mut,
-        seeds = [
-            CustodyAllocation::SEED,
-            custody_wallet.key().as_ref(),
-            asset_mint.key().as_ref(),
-        ],
-        bump,
-        constraint = custody_allocation.custody_wallet == custody_wallet.key() @ ErrorCode::InvalidCustody,
-        constraint = custody_allocation.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-    )]
-    pub custody_allocation: Account<'info, CustodyAllocation>,
-
-    #[account(
-        mut,
-        constraint = grai_vault.key() == asset_vault_state.grai_vault @ ErrorCode::InvalidVault,
-    )]
-    pub grai_vault: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        constraint = custody_token_account.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = custody_token_account.owner == custody_wallet.key() @ ErrorCode::InvalidCustody,
-    )]
-    pub custody_token_account: Account<'info, TokenAccount>,
-
-    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -458,14 +418,20 @@ pub struct Distribute<'info> {
 
     #[account(
         mut,
+        seeds = [GraiVaultState::STATE_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault_state.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub grai_vault_state: Account<'info, GraiVaultState>,
+
+    #[account(
+        mut,
         seeds = [
             CustodyAllocation::SEED,
             custody_wallet.key().as_ref(),
             asset_mint.key().as_ref(),
         ],
-        bump,
-        constraint = custody_allocation.custody_wallet == custody_wallet.key() @ ErrorCode::InvalidCustody,
-        constraint = custody_allocation.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        bump = custody_allocation.bump,
     )]
     pub custody_allocation: Account<'info, CustodyAllocation>,
 
@@ -478,7 +444,9 @@ pub struct Distribute<'info> {
 
     #[account(
         mut,
-        constraint = grai_vault.key() == asset_vault_state.grai_vault @ ErrorCode::InvalidVault,
+        seeds = [GraiVaultState::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
     )]
     pub grai_vault: Account<'info, TokenAccount>,
 

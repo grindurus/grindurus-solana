@@ -1,26 +1,27 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Token, TokenAccount};
 
-use crate::{AssetVaultState, ErrorCode, GraiState};
+use crate::{AssetVaultState, ErrorCode, GraiState, GraiVaultState};
 
 pub fn register(
     authority: &Signer,
     asset_vault_state: &mut Account<AssetVaultState>,
+    grai_vault_state: &mut Account<GraiVaultState>,
     asset_mint: &Pubkey,
     price_feed: &Pubkey,
-    grai_vault: &Pubkey,
-    grai_vault_bump: u8,
-    asset_vault: &Pubkey,
+    grai_vault_state_bump: u8,
     asset_vault_bump: u8,
     asset_vault_state_bump: u8,
 ) -> Result<()> {
+    grai_vault_state.asset_mint = *asset_mint;
+    grai_vault_state.idle_amount = 0;
+    grai_vault_state.mint_split = GraiVaultState::DEFAULT_MINT_SPLIT_BPS;
+    grai_vault_state.yield_split = GraiVaultState::DEFAULT_YIELD_SPLIT_BPS;
+    grai_vault_state.bump = grai_vault_state_bump;
+
     asset_vault_state.asset_mint = *asset_mint;
     asset_vault_state.price_feed = *price_feed;
-    asset_vault_state.grai_vault = *grai_vault;
-    asset_vault_state.grai_vault_bump = grai_vault_bump;
-    asset_vault_state.asset_vault = *asset_vault;
     asset_vault_state.asset_vault_bump = asset_vault_bump;
-    asset_vault_state.idle_amount = 0;
     asset_vault_state.active_amount = 0;
     asset_vault_state.minting = true;
     asset_vault_state.bump = asset_vault_state_bump;
