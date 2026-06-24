@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_option::COption;
+use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::metadata::Metadata;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
@@ -53,7 +54,7 @@ pub struct SetTreasury<'info> {
     #[account(
         mut,
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
@@ -67,7 +68,7 @@ pub struct SetPriceFeed<'info> {
 
     #[account(
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
@@ -93,7 +94,7 @@ pub struct AddAssetVault<'info> {
 
     #[account(
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
@@ -153,7 +154,7 @@ pub struct RemoveAssetVault<'info> {
 
     #[account(
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
@@ -207,7 +208,7 @@ pub struct SetMinting<'info> {
 
     #[account(
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
@@ -229,7 +230,7 @@ pub struct MintGrai<'info> {
     #[account(
         mut,
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
     )]
     pub grai_state: Box<Account<'info, GraiState>>,
 
@@ -303,7 +304,7 @@ pub struct BurnGrai<'info> {
     #[account(
         mut,
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
     )]
     pub grai_state: Account<'info, GraiState>,
 
@@ -324,7 +325,7 @@ pub struct BurnGrai<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(amount: u64, custody_wallet: Pubkey)]
+#[instruction(amount: u64)]
 pub struct Allocate<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -333,7 +334,7 @@ pub struct Allocate<'info> {
 
     #[account(
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
+        bump,
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
@@ -365,44 +366,47 @@ pub struct Allocate<'info> {
     )]
     pub grai_vault_ata: Account<'info, TokenAccount>,
 
+    /// CHECK: custody wallet; ATA owner and custody_allocation seed.
+    #[account(
+        constraint = custody_wallet.key() != Pubkey::default() @ ErrorCode::InvalidCustody,
+    )]
+    pub custody_wallet: UncheckedAccount<'info>,
+
+    #[account(
+        init_if_needed,
+        payer = authority,
+        associated_token::mint = asset_mint,
+        associated_token::authority = custody_wallet,
+    )]
+    pub custody_ata: Account<'info, TokenAccount>,
+    
     #[account(
         init_if_needed,
         payer = authority,
         space = 8 + CustodyAllocation::LEN,
         seeds = [
             CustodyAllocation::SEED,
-            custody_wallet.as_ref(),
+            custody_wallet.key().as_ref(),
             asset_mint.key().as_ref(),
         ],
         bump,
-        constraint = custody_wallet != Pubkey::default() @ ErrorCode::InvalidCustody,
     )]
     pub custody_allocation: Account<'info, CustodyAllocation>,
 
-    #[account(
-        mut,
-        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = custody_ata.owner == custody_wallet @ ErrorCode::InvalidCustody,
-    )]
-    pub custody_ata: Account<'info, TokenAccount>,
-
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-#[instruction(yield_amount: u64, custody_wallet: Pubkey)]
+#[instruction(yield_amount: u64)]
 pub struct Distribute<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-
     pub custody_wallet: Signer<'info>,
 
     #[account(
         mut,
         seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
+        bump,
     )]
     pub grai_state: Account<'info, GraiState>,
 
@@ -431,16 +435,16 @@ pub struct Distribute<'info> {
             custody_wallet.key().as_ref(),
             asset_mint.key().as_ref(),
         ],
-        bump = custody_allocation.bump,
+        bump,
     )]
     pub custody_allocation: Account<'info, CustodyAllocation>,
 
     #[account(
         mut,
-        constraint = custody_token_account.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = custody_token_account.owner == custody_wallet.key() @ ErrorCode::InvalidCustody,
+        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
+        constraint = custody_ata.owner == custody_wallet.key() @ ErrorCode::InvalidCustody,
     )]
-    pub custody_token_account: Account<'info, TokenAccount>,
+    pub custody_ata: Account<'info, TokenAccount>,
 
     #[account(
         mut,

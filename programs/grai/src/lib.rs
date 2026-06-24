@@ -30,7 +30,6 @@ pub mod grai {
         grai_state.authority = ctx.accounts.authority.key();
         grai_state.treasury_wallet = ctx.accounts.authority.key();
         grai_state.total_value = 0;
-        grai_state.bump = ctx.bumps.grai_state;
 
         metadata::create_grai_metadata(
             ctx.accounts.metadata.to_account_info(),
@@ -90,9 +89,6 @@ pub mod grai {
             &mut ctx.accounts.grai_vault_state,
             &ctx.accounts.asset_mint.key(),
             &ctx.accounts.price_feed.key(),
-            ctx.bumps.grai_vault_state,
-            ctx.bumps.asset_vault_ata,
-            ctx.bumps.asset_vault_state,
         )
     }
 
@@ -100,6 +96,7 @@ pub mod grai {
         asset_vault::remove(
             &ctx.accounts.authority,
             &ctx.accounts.grai_state,
+            ctx.bumps.grai_state,
             &ctx.accounts.asset_vault_state,
             &ctx.accounts.grai_vault_ata,
             &ctx.accounts.asset_vault_ata,
@@ -153,8 +150,7 @@ pub mod grai {
         let total_value: u128 = ctx.accounts.grai_state.total_value;
         let mint_amount: u64 = grai_mint_amount(deposit_value, total_supply, total_value)?;
 
-        let grai_state_bump = ctx.accounts.grai_state.bump;
-        let seeds: &[&[u8]; 2] = &[GraiState::SEED, &[grai_state_bump]];
+        let seeds: &[&[u8]; 2] = &[GraiState::SEED, &[ctx.bumps.grai_state]];
         let signer: &[&[&[u8]]; 1] = &[&seeds[..]];
 
         token::mint_to(
@@ -198,7 +194,7 @@ pub mod grai {
             grai_amount,
             total_supply,
             ctx.accounts.grai_state.to_account_info(),
-            ctx.accounts.grai_state.bump,
+            ctx.bumps.grai_state,
             ctx.accounts.token_program.to_account_info(),
         )?;
 
@@ -223,15 +219,10 @@ pub mod grai {
     pub fn allocate(
         ctx: Context<Allocate>,
         amount: u64,
-        _custody_wallet: Pubkey,
     ) -> Result<()> {
-        let custody_allocation = &mut ctx.accounts.custody_allocation;
-        if custody_allocation.bump == 0 {
-            custody_allocation.bump = ctx.bumps.custody_allocation;
-        }
+        let custody_allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
 
-        let grai_state_bump = ctx.accounts.grai_state.bump;
-        let grai_state_seeds: &[&[u8]; 2] = &[GraiState::SEED, &[grai_state_bump]];
+        let grai_state_seeds: &[&[u8]; 2] = &[GraiState::SEED, &[ctx.bumps.grai_state]];
         let grai_state_signer: &[&[&[u8]]; 1] = &[&grai_state_seeds[..]];
 
         token::transfer(
@@ -247,16 +238,11 @@ pub mod grai {
             amount,
         )?;
 
-        let asset_vault_state = &mut ctx.accounts.asset_vault_state;
-        let grai_vault_state = &mut ctx.accounts.grai_vault_state;
-        grai_vault_state.idle_amount = grai_vault_state
-            .idle_amount
-            .checked_sub(amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-        asset_vault_state.active_amount = asset_vault_state
-            .active_amount
-            .checked_add(amount)
-            .ok_or(ErrorCode::MathOverflow)?;
+        let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
+        let grai_vault_state: &mut Account<'_, GraiVaultState> = &mut ctx.accounts.grai_vault_state;
+        
+        grai_vault_state.idle_amount = grai_vault_state.idle_amount.checked_sub(amount).ok_or(ErrorCode::MathOverflow)?;
+        asset_vault_state.active_amount = asset_vault_state.active_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
         custody_allocation.allocated_amount = custody_allocation.allocated_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
 
         Ok(())
@@ -265,7 +251,6 @@ pub mod grai {
     pub fn distribute(
         ctx: Context<Distribute>,
         yield_amount: u64,
-        custody_wallet: Pubkey,
     ) -> Result<()> {
         require!(yield_amount > 0, ErrorCode::InvalidAmount);
 
@@ -277,7 +262,7 @@ pub mod grai {
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
-                        from: ctx.accounts.custody_token_account.to_account_info(),
+                        from: ctx.accounts.custody_ata.to_account_info(),
                         to: ctx.accounts.treasury_token_account.to_account_info(),
                         authority: ctx.accounts.custody_wallet.to_account_info(),
                     },
@@ -291,7 +276,7 @@ pub mod grai {
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
-                        from: ctx.accounts.custody_token_account.to_account_info(),
+                        from: ctx.accounts.custody_ata.to_account_info(),
                         to: ctx.accounts.grai_vault.to_account_info(),
                         authority: ctx.accounts.custody_wallet.to_account_info(),
                     },
@@ -317,32 +302,14 @@ pub mod grai {
 
         let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
         let grai_vault_state: &mut Account<'_, GraiVaultState> = &mut ctx.accounts.grai_vault_state;
-        grai_vault_state.idle_amount = grai_vault_state
-            .idle_amount
-            .checked_add(grai_vault_yield)
-            .ok_or(ErrorCode::MathOverflow)?;
-        asset_vault_state.active_amount = asset_vault_state
-            .active_amount
-            .checked_sub(yield_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
+        
+        grai_vault_state.idle_amount = grai_vault_state.idle_amount.checked_add(grai_vault_yield).ok_or(ErrorCode::MathOverflow)?;
+        asset_vault_state.active_amount = asset_vault_state.active_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
 
         let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
-        allocation.yield_amount = allocation
-            .yield_amount
-            .checked_add(grai_vault_yield)
-            .ok_or(ErrorCode::MathOverflow)?;
-        allocation.allocated_amount = allocation
-            .allocated_amount
-            .checked_sub(yield_amount)
-            .ok_or(ErrorCode::MathOverflow)?;
-
-        msg!(
-            "Distributed yield {} from custody {} (grai_nav+={}, treasury={})",
-            yield_amount,
-            custody_wallet,
-            grai_vault_yield,
-            treasury_yield
-        );
+        allocation.yield_amount = allocation.yield_amount.checked_add(grai_vault_yield).ok_or(ErrorCode::MathOverflow)?;
+        allocation.allocated_amount = allocation.allocated_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
+        
         Ok(())
     }
 
@@ -360,13 +327,12 @@ pub struct GraiState {
     pub authority: Pubkey,
     pub total_value: u128,
     pub treasury_wallet: Pubkey,
-    pub bump: u8,
 }
 
 impl GraiState {
     pub const SEED: &'static [u8] = b"protocol";
     pub const DECIMALS: u8 = 9;
-    pub const LEN: usize = 32 + 16 + 32 + 1;
+    pub const LEN: usize = 32 + 16 + 32;
 }
 
 #[account]
@@ -375,7 +341,6 @@ pub struct GraiVaultState {
     pub idle_amount: u64,
     pub mint_split: u16,
     pub yield_split: u16,
-    pub bump: u8,
 }
 
 impl GraiVaultState {
@@ -384,7 +349,7 @@ impl GraiVaultState {
     pub const SPLIT_BPS_MAX: u16 = 100_00;
     pub const DEFAULT_MINT_SPLIT_BPS: u16 = 50_00;
     pub const DEFAULT_YIELD_SPLIT_BPS: u16 = 80_00;
-    pub const LEN: usize = 32 + 8 + 2 + 2 + 1;
+    pub const LEN: usize = 32 + 8 + 2 + 2;
 }
 
 #[account]
@@ -393,23 +358,20 @@ pub struct AssetVaultState {
     pub price_feed: Pubkey,
     pub active_amount: u64,
     pub minting: bool,
-    pub asset_vault_bump: u8,
-    pub bump: u8,
 }
 
 impl AssetVaultState {
     pub const SEED: &'static [u8] = b"asset_vault_state";
-    pub const LEN: usize = 32 + 32 + 8 + 1 + 1 + 1;
+    pub const LEN: usize = 32 + 32 + 8 + 1;
 }
 
 #[account]
 pub struct CustodyAllocation {
     pub allocated_amount: u64,
     pub yield_amount: u64,
-    pub bump: u8,
 }
 
 impl CustodyAllocation {
     pub const SEED: &'static [u8] = b"custody_alloc";
-    pub const LEN: usize = 8 + 8 + 1;
+    pub const LEN: usize = 8 + 8;
 }

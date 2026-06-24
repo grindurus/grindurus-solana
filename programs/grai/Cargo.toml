@@ -26,6 +26,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-anchor-spl = { version = "0.31.1", features = ["token", "metadata"] }
+anchor-spl = { version = "0.31.1", features = ["token", "metadata", "associated_token"] }
 chainlink_solana = "2.0.8"
 
