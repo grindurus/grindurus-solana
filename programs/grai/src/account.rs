@@ -222,7 +222,7 @@ pub struct RemoveAssetVault<'info> {
 
 #[derive(Accounts)]
 #[instruction(amount: u64)]
-pub struct MintGrai<'info> {
+pub struct MintToken<'info> {
     #[account(mut)]
     pub minter: Signer<'info>,
 
@@ -276,6 +276,81 @@ pub struct MintGrai<'info> {
         constraint = minter_ata.owner == minter.key() @ ErrorCode::InvalidDepositSource,
     )]
     pub minter_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = minter,
+        associated_token::mint = grai_mint,
+        associated_token::authority = minter,
+    )]
+    pub minter_grai_ata: Box<Account<'info, TokenAccount>>,
+
+    pub clock: Sysvar<'info, Clock>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(amount: u64)]
+pub struct MintSol<'info> {
+    #[account(mut)]
+    pub minter: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiState::SEED],
+        bump,
+    )]
+    pub grai_state: Box<Account<'info, GraiState>>,
+
+    #[account(
+        address = anchor_spl::token::spl_token::native_mint::ID @ ErrorCode::InvalidMint,
+    )]
+    pub asset_mint: Box<Account<'info, Mint>>,
+
+    #[account(
+        mut,
+        constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
+    )]
+    pub grai_mint: Box<Account<'info, Mint>>,
+
+    /// CHECK: Chainlink v2 feed or program-owned custom price feed.
+    pub price_feed: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = !senior_vault.pause @ ErrorCode::AssetMintingPaused,
+        has_one = price_feed @ ErrorCode::InvalidChainlinkFeed,
+    )]
+    pub senior_vault: Box<Account<'info, SeniorVault>>,
+
+    #[account(
+        mut,
+        seeds = [SeniorVault::ATA_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = senior_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub senior_vault_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        seeds = [JuniorVault::ATA_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = junior_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub junior_vault_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        init_if_needed,
+        payer = minter,
+        associated_token::mint = asset_mint,
+        associated_token::authority = minter,
+    )]
+    pub minter_wsol_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         init_if_needed,

@@ -4,20 +4,22 @@ mod price_feed;
 mod asset_vault;
 mod errors;
 mod internal_value;
-mod grai_accounts;
+mod account;
 mod metadata;
-mod redeem;
+mod mint;
+mod allocate;
+mod burn;
 mod tokenomics;
 
 pub use errors::ErrorCode;
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, MintTo, Transfer};
+use anchor_spl::token::{self, Burn, Transfer};
 
 use price_feed::fetch_price_from_feed;
-use grai_accounts::*;
-use redeem::process_remaining_assets;
-use tokenomics::{deposit_value_usd, grai_burn_value, grai_mint_amount, mint_split, yield_split};
+use account::*;
+use burn::process_remaining_assets;
+use tokenomics::{deposit_value_usd, grai_burn_value, yield_split};
 
 declare_id!("14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k");
 
@@ -90,69 +92,54 @@ pub mod grai {
         )
     }
 
-    pub fn mint(ctx: Context<MintGrai>, amount: u64) -> Result<()> {
+    pub fn mint(ctx: Context<MintToken>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
-        
-        let senior_vault: &Account<'_, SeniorVault> = &ctx.accounts.senior_vault;
 
-        let (idle_amount, asset_amount) = mint_split(amount, senior_vault.mint_split)?;
-
-        token::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.minter_ata.to_account_info(),
-                    to: ctx.accounts.senior_vault_ata.to_account_info(),
-                    authority: ctx.accounts.minter.to_account_info(),
-                },
-            ),
-            idle_amount,
-        )?;
-
-        token::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.minter_ata.to_account_info(),
-                    to: ctx.accounts.junior_vault_ata.to_account_info(),
-                    authority: ctx.accounts.minter.to_account_info(),
-                },
-            ),
-            asset_amount,
-        )?;
-
-        let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
-        let price = fetch_price_from_feed(
-            &price_feed_account,
-            senior_vault.price_feed,
+        mint::execute_mint(
+            amount,
+            &ctx.accounts.senior_vault,
+            &ctx.accounts.asset_mint,
+            &ctx.accounts.grai_mint,
+            &mut ctx.accounts.grai_state,
+            &ctx.accounts.senior_vault_ata,
+            &ctx.accounts.junior_vault_ata,
+            &ctx.accounts.minter_ata,
+            &ctx.accounts.minter,
+            &ctx.accounts.minter_grai_ata,
+            &ctx.accounts.price_feed,
             &ctx.accounts.clock,
+            &ctx.accounts.token_program,
+            ctx.bumps.grai_state,
+        )
+    }
+
+    pub fn mint_sol(ctx: Context<MintSol>, amount: u64) -> Result<()> {
+        require!(amount > 0, ErrorCode::InvalidAmount);
+
+        mint::wrap_sol(
+            &ctx.accounts.minter,
+            &ctx.accounts.minter_wsol_ata,
+            &ctx.accounts.system_program,
+            &ctx.accounts.token_program,
+            amount,
         )?;
 
-        let deposit_value: u128 = deposit_value_usd(amount, ctx.accounts.asset_mint.decimals, &price)?;
-        let total_supply: u64 = ctx.accounts.grai_mint.supply;
-        let total_value: u128 = ctx.accounts.grai_state.total_value;
-        let mint_amount: u64 = grai_mint_amount(deposit_value, total_supply, total_value)?;
-
-        let seeds: &[&[u8]; 2] = &[GraiState::SEED, &[ctx.bumps.grai_state]];
-        let signer: &[&[&[u8]]; 1] = &[&seeds[..]];
-
-        token::mint_to(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                MintTo {
-                    mint: ctx.accounts.grai_mint.to_account_info(),
-                    to: ctx.accounts.minter_grai_ata.to_account_info(),
-                    authority: ctx.accounts.grai_state.to_account_info(),
-                },
-                signer,
-            ),
-            mint_amount,
-        )?;
-
-        let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
-        grai_state.total_value = grai_state.total_value.checked_add(deposit_value).ok_or(ErrorCode::MathOverflow)?;
-       
-        Ok(())
+        mint::execute_mint(
+            amount,
+            &ctx.accounts.senior_vault,
+            &ctx.accounts.asset_mint,
+            &ctx.accounts.grai_mint,
+            &mut ctx.accounts.grai_state,
+            &ctx.accounts.senior_vault_ata,
+            &ctx.accounts.junior_vault_ata,
+            &ctx.accounts.minter_wsol_ata,
+            &ctx.accounts.minter,
+            &ctx.accounts.minter_grai_ata,
+            &ctx.accounts.price_feed,
+            &ctx.accounts.clock,
+            &ctx.accounts.token_program,
+            ctx.bumps.grai_state,
+        )
     }
 
     pub fn burn<'info>(
@@ -199,34 +186,17 @@ pub mod grai {
         Ok(())
     }
 
-    pub fn allocate(
-        ctx: Context<Allocate>,
-        amount: u64,
-    ) -> Result<()> {
-        let custody_allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
-
-        let grai_state_seeds: &[&[u8]; 2] = &[GraiState::SEED, &[ctx.bumps.grai_state]];
-        let grai_state_signer: &[&[&[u8]]; 1] = &[&grai_state_seeds[..]];
-
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.junior_vault_ata.to_account_info(),
-                    to: ctx.accounts.custody_ata.to_account_info(),
-                    authority: ctx.accounts.grai_state.to_account_info(),
-                },
-                grai_state_signer,
-            ),
+    pub fn allocate(ctx: Context<Allocate>, amount: u64) -> Result<()> {
+        allocate::execute_allocate(
             amount,
-        )?;
-
-        let junior_vault: &mut Account<'_, JuniorVault> = &mut ctx.accounts.junior_vault;
-        
-        junior_vault.active_amount = junior_vault.active_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
-        custody_allocation.allocated_amount = custody_allocation.allocated_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
-
-        Ok(())
+            &ctx.accounts.grai_state,
+            &mut ctx.accounts.junior_vault,
+            &ctx.accounts.junior_vault_ata,
+            &ctx.accounts.custody_ata,
+            &mut ctx.accounts.custody_allocation,
+            &ctx.accounts.token_program,
+            ctx.bumps.grai_state,
+        )
     }
 
     pub fn distribute(
