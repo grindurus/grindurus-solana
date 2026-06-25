@@ -3,9 +3,9 @@ use anchor_spl::token::{Mint, TokenAccount};
 
 use crate::price_feed::fetch_price_from_feed;
 use crate::tokenomics::value_usd;
-use crate::{ErrorCode, GraiVaultState};
+use crate::{ErrorCode, SeniorVault};
 
-/// Per asset: grai_vault_state, grai_vault, price_feed, mint.
+/// Per asset: senior_vault, senior_vault_ata, price_feed, mint.
 pub const INTERNAL_VALUE_ACCOUNTS: usize = 4;
 
 pub fn from_remaining_accounts<'info>(
@@ -36,56 +36,52 @@ pub fn from_remaining_accounts<'info>(
 }
 
 pub fn single_asset<'info>(
-    grai_vault_state: &GraiVaultState,
-    grai_vault: &Account<'info, TokenAccount>,
+    senior_vault: &SeniorVault,
+    senior_vault_ata: &Account<'info, TokenAccount>,
     price_feed: &AccountInfo<'info>,
     mint: &Account<'info, Mint>,
     clock: &Clock,
 ) -> Result<u128> {
     require_keys_eq!(
-        grai_vault.key(),
-        Pubkey::find_program_address(
-            &[GraiVaultState::SEED, grai_vault_state.asset_mint.as_ref()],
-            &crate::ID,
-        )
-        .0,
+        senior_vault_ata.key(),
+        SeniorVault::ata_address(&senior_vault.asset_mint),
         ErrorCode::InvalidVault
     );
     require_keys_eq!(
-        grai_vault.mint,
-        grai_vault_state.asset_mint,
+        senior_vault_ata.mint,
+        senior_vault.asset_mint,
         ErrorCode::InvalidGraiVault
     );
-    require_keys_eq!(mint.key(), grai_vault_state.asset_mint, ErrorCode::InvalidGraiVault);
+    require_keys_eq!(mint.key(), senior_vault.asset_mint, ErrorCode::InvalidGraiVault);
 
     let price = fetch_price_from_feed(price_feed, price_feed.key(), clock)?;
-    value_usd(grai_vault.amount, mint.decimals, &price)
+    value_usd(senior_vault_ata.amount, mint.decimals, &price)
 }
 
 fn asset_internal_value<'info>(
-    grai_vault_state_info: &'info AccountInfo<'info>,
-    grai_vault_info: &'info AccountInfo<'info>,
+    senior_vault_info: &'info AccountInfo<'info>,
+    senior_vault_ata_info: &'info AccountInfo<'info>,
     price_feed_info: &'info AccountInfo<'info>,
     mint_info: &'info AccountInfo<'info>,
     clock: &Clock,
 ) -> Result<u128> {
-    let grai_vault_state: Account<GraiVaultState> = Account::try_from(grai_vault_state_info)?;
+    let senior_vault: Account<SeniorVault> = Account::try_from(senior_vault_info)?;
     let (expected_pda, _) = Pubkey::find_program_address(
-        &[GraiVaultState::STATE_SEED, grai_vault_state.asset_mint.as_ref()],
+        &[SeniorVault::SEED, senior_vault.asset_mint.as_ref()],
         &crate::ID,
     );
     require_keys_eq!(
-        grai_vault_state_info.key(),
+        senior_vault_info.key(),
         expected_pda,
         ErrorCode::InvalidGraiVault
     );
 
-    let grai_vault: Account<TokenAccount> = Account::try_from(grai_vault_info)?;
+    let senior_vault_ata: Account<TokenAccount> = Account::try_from(senior_vault_ata_info)?;
     let mint: Account<Mint> = Account::try_from(mint_info)?;
 
     single_asset(
-        &grai_vault_state,
-        &grai_vault,
+        &senior_vault,
+        &senior_vault_ata,
         price_feed_info,
         &mint,
         clock,

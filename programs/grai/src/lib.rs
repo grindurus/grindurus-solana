@@ -57,36 +57,22 @@ pub mod grai {
 
     pub fn set_price_feed(ctx: Context<SetPriceFeed>) -> Result<()> {
         asset_vault::set_price_feed(
-            &mut ctx.accounts.asset_vault_state,
+            &mut ctx.accounts.senior_vault,
             &ctx.accounts.price_feed.key(),
         )
     }
 
-    pub fn set_minting(ctx: Context<SetMinting>, minting: bool) -> Result<()> {
-        let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
-        if minting {
-            require!(
-                !asset_vault_state.minting,
-                ErrorCode::AssetMintingEnabled
-            );
-            asset_vault_state.minting = true;
-            msg!("assetVault minting enabled: mint={}", ctx.accounts.asset_mint.key());
-        } else {
-            require!(
-                asset_vault_state.minting,
-                ErrorCode::AssetMintingPaused
-            );
-            asset_vault_state.minting = false;
-            msg!("assetVault minting disabled: mint={}", ctx.accounts.asset_mint.key());
-        }
+    pub fn set_pause(ctx: Context<SetPause>, pause: bool) -> Result<()> {
+        let senior_vault: &mut Account<'_, SeniorVault> = &mut ctx.accounts.senior_vault;
+        senior_vault.pause = pause;
         Ok(())
     }
 
     pub fn add_asset_vault(ctx: Context<AddAssetVault>) -> Result<()> {
         asset_vault::register(
             &ctx.accounts.authority,
-            &mut ctx.accounts.asset_vault_state,
-            &mut ctx.accounts.grai_vault_state,
+            &mut ctx.accounts.junior_vault,
+            &mut ctx.accounts.senior_vault,
             &ctx.accounts.asset_mint.key(),
             &ctx.accounts.price_feed.key(),
         )
@@ -97,9 +83,9 @@ pub mod grai {
             &ctx.accounts.authority,
             &ctx.accounts.grai_state,
             ctx.bumps.grai_state,
-            &ctx.accounts.asset_vault_state,
-            &ctx.accounts.grai_vault_ata,
-            &ctx.accounts.asset_vault_ata,
+            &ctx.accounts.junior_vault,
+            &ctx.accounts.senior_vault_ata,
+            &ctx.accounts.junior_vault_ata,
             &ctx.accounts.token_program,
         )
     }
@@ -107,31 +93,28 @@ pub mod grai {
     pub fn mint(ctx: Context<MintGrai>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
         
-        let grai_vault_state: &mut Account<'_, GraiVaultState> = &mut ctx.accounts.grai_vault_state;
-        let asset_vault_state: &Account<'_, AssetVaultState> = &ctx.accounts.asset_vault_state;
+        let senior_vault: &Account<'_, SeniorVault> = &ctx.accounts.senior_vault;
 
-        let (idle_amount, asset_amount) = mint_split(amount, grai_vault_state.mint_split)?;
+        let (idle_amount, asset_amount) = mint_split(amount, senior_vault.mint_split)?;
 
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.minter_ata.to_account_info(),
-                    to: ctx.accounts.grai_vault_ata.to_account_info(),
+                    to: ctx.accounts.senior_vault_ata.to_account_info(),
                     authority: ctx.accounts.minter.to_account_info(),
                 },
             ),
             idle_amount,
         )?;
 
-        grai_vault_state.idle_amount = grai_vault_state.idle_amount.checked_add(idle_amount).ok_or(ErrorCode::MathOverflow)?;
-
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
                     from: ctx.accounts.minter_ata.to_account_info(),
-                    to: ctx.accounts.asset_vault_ata.to_account_info(),
+                    to: ctx.accounts.junior_vault_ata.to_account_info(),
                     authority: ctx.accounts.minter.to_account_info(),
                 },
             ),
@@ -141,7 +124,7 @@ pub mod grai {
         let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
         let price = fetch_price_from_feed(
             &price_feed_account,
-            asset_vault_state.price_feed,
+            senior_vault.price_feed,
             &ctx.accounts.clock,
         )?;
 
@@ -229,7 +212,7 @@ pub mod grai {
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 Transfer {
-                    from: ctx.accounts.grai_vault_ata.to_account_info(),
+                    from: ctx.accounts.junior_vault_ata.to_account_info(),
                     to: ctx.accounts.custody_ata.to_account_info(),
                     authority: ctx.accounts.grai_state.to_account_info(),
                 },
@@ -238,11 +221,9 @@ pub mod grai {
             amount,
         )?;
 
-        let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
-        let grai_vault_state: &mut Account<'_, GraiVaultState> = &mut ctx.accounts.grai_vault_state;
+        let junior_vault: &mut Account<'_, JuniorVault> = &mut ctx.accounts.junior_vault;
         
-        grai_vault_state.idle_amount = grai_vault_state.idle_amount.checked_sub(amount).ok_or(ErrorCode::MathOverflow)?;
-        asset_vault_state.active_amount = asset_vault_state.active_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
+        junior_vault.active_amount = junior_vault.active_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
         custody_allocation.allocated_amount = custody_allocation.allocated_amount.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
 
         Ok(())
@@ -254,8 +235,8 @@ pub mod grai {
     ) -> Result<()> {
         require!(yield_amount > 0, ErrorCode::InvalidAmount);
 
-        let yield_split_bps = ctx.accounts.grai_vault_state.yield_split;
-        let (grai_vault_yield, treasury_yield) = yield_split(yield_amount, yield_split_bps)?;
+        let yield_split_bps: u16 = ctx.accounts.senior_vault.yield_split;
+        let (senior_vault_yield, treasury_yield) = yield_split(yield_amount, yield_split_bps)?;
 
         if treasury_yield > 0 {
             token::transfer(
@@ -263,7 +244,7 @@ pub mod grai {
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
                         from: ctx.accounts.custody_ata.to_account_info(),
-                        to: ctx.accounts.treasury_token_account.to_account_info(),
+                        to: ctx.accounts.treasury_ata.to_account_info(),
                         authority: ctx.accounts.custody_wallet.to_account_info(),
                     },
                 ),
@@ -271,28 +252,28 @@ pub mod grai {
             )?;
         }
 
-        if grai_vault_yield > 0 {
+        if senior_vault_yield > 0 {
             token::transfer(
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
                     Transfer {
                         from: ctx.accounts.custody_ata.to_account_info(),
-                        to: ctx.accounts.grai_vault.to_account_info(),
+                        to: ctx.accounts.senior_vault_ata.to_account_info(),
                         authority: ctx.accounts.custody_wallet.to_account_info(),
                     },
                 ),
-                grai_vault_yield,
+                senior_vault_yield,
             )?;
         }
 
         let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
         let price: price_feed::ChainlinkPrice = fetch_price_from_feed(
             &price_feed_account,
-            ctx.accounts.asset_vault_state.price_feed,
+            ctx.accounts.senior_vault.price_feed,
             &ctx.accounts.clock,
         )?;
         let yield_value = deposit_value_usd(
-            grai_vault_yield,
+            senior_vault_yield,
             ctx.accounts.asset_mint.decimals,
             &price,
         )?;
@@ -300,21 +281,19 @@ pub mod grai {
         let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
         grai_state.total_value = grai_state.total_value.checked_add(yield_value).ok_or(ErrorCode::MathOverflow)?;
 
-        let asset_vault_state: &mut Account<'_, AssetVaultState> = &mut ctx.accounts.asset_vault_state;
-        let grai_vault_state: &mut Account<'_, GraiVaultState> = &mut ctx.accounts.grai_vault_state;
-        
-        grai_vault_state.idle_amount = grai_vault_state.idle_amount.checked_add(grai_vault_yield).ok_or(ErrorCode::MathOverflow)?;
-        asset_vault_state.active_amount = asset_vault_state.active_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
+        let junior_vault: &mut Account<'_, JuniorVault> = &mut ctx.accounts.junior_vault;
+
+        junior_vault.active_amount = junior_vault.active_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
 
         let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
-        allocation.yield_amount = allocation.yield_amount.checked_add(grai_vault_yield).ok_or(ErrorCode::MathOverflow)?;
+        allocation.yield_amount = allocation.yield_amount.checked_add(senior_vault_yield).ok_or(ErrorCode::MathOverflow)?;
         allocation.allocated_amount = allocation.allocated_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
         
         Ok(())
     }
 
     /// View: sum of grai_vault balances priced via Chainlink.
-    /// Remaining accounts per asset: grai_vault_state, grai_vault, price_feed, mint.
+    /// Remaining accounts per asset: senior_vault, senior_vault_ata, price_feed, mint.
     pub fn calc_internal_value<'info>(
         ctx: Context<'_, '_, 'info, 'info, CalcInternalValue<'info>>,
     ) -> Result<u128> {
@@ -336,33 +315,41 @@ impl GraiState {
 }
 
 #[account]
-pub struct GraiVaultState {
+pub struct SeniorVault {
     pub asset_mint: Pubkey,
-    pub idle_amount: u64,
-    pub mint_split: u16,
-    pub yield_split: u16,
+    pub price_feed: Pubkey,
+    pub mint_split: u16,    // how much mint_split goes to senior vault
+    pub yield_split: u16,   // how much yield_split goes to senior vault
+    pub pause: bool,
 }
 
-impl GraiVaultState {
-    pub const SEED: &'static [u8] = b"grai_vault";
-    pub const STATE_SEED: &'static [u8] = b"grai_vault_state";
+impl SeniorVault {
+    pub const SEED: &'static [u8] = b"senior_vault_state";
+    pub const ATA_SEED: &'static [u8] = b"senior_vault_ata";
     pub const SPLIT_BPS_MAX: u16 = 100_00;
     pub const DEFAULT_MINT_SPLIT_BPS: u16 = 50_00;
     pub const DEFAULT_YIELD_SPLIT_BPS: u16 = 80_00;
-    pub const LEN: usize = 32 + 8 + 2 + 2;
+    pub const LEN: usize = 32 + 32 + 2 + 2 + 1;
+
+    pub fn ata_address(asset_mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[Self::ATA_SEED, asset_mint.as_ref()],
+            &crate::ID,
+        )
+        .0
+    }
 }
 
 #[account]
-pub struct AssetVaultState {
+pub struct JuniorVault {
     pub asset_mint: Pubkey,
-    pub price_feed: Pubkey,
     pub active_amount: u64,
-    pub minting: bool,
 }
 
-impl AssetVaultState {
-    pub const SEED: &'static [u8] = b"asset_vault_state";
-    pub const LEN: usize = 32 + 32 + 8 + 1;
+impl JuniorVault {
+    pub const SEED: &'static [u8] = b"junior_vault_state";
+    pub const ATA_SEED: &'static [u8] = b"junior_vault_ata";
+    pub const LEN: usize = 32 + 8;
 }
 
 #[account]

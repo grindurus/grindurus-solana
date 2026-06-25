@@ -156,30 +156,41 @@ async function setupUsdcWithPriceFeed(
   );
 }
 
-function assetVaultStatePda(mint: PublicKey, programId: PublicKey) {
+function juniorVaultPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("asset_vault_state"), mint.toBuffer()],
+    [Buffer.from("junior_vault_state"), mint.toBuffer()],
     programId,
   );
 }
 
-function graiVaultStatePda(mint: PublicKey, programId: PublicKey) {
+function seniorVaultPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("grai_vault_state"), mint.toBuffer()],
+    [Buffer.from("senior_vault_state"), mint.toBuffer()],
     programId,
   );
 }
 
-function graiVaultPda(mint: PublicKey, programId: PublicKey) {
+function seniorVaultAtaPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("grai_vault"), mint.toBuffer()],
+    [Buffer.from("senior_vault_ata"), mint.toBuffer()],
     programId,
   );
 }
 
-function assetVaultPda(mint: PublicKey, programId: PublicKey) {
+function juniorVaultAtaPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("asset_vault"), mint.toBuffer()],
+    [Buffer.from("junior_vault_ata"), mint.toBuffer()],
+    programId,
+  );
+}
+
+function custodyAllocationPda(
+  custodyWallet: PublicKey,
+  mint: PublicKey,
+  programId: PublicKey,
+) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("custody_alloc"), custodyWallet.toBuffer(), mint.toBuffer()],
     programId,
   );
 }
@@ -189,6 +200,22 @@ const SPLIT_BPS_MAX = 10_000n;
 function mintSplit(amount: bigint, mintSplitBps: number): [bigint, bigint] {
   const idleAmount = (amount * BigInt(mintSplitBps)) / SPLIT_BPS_MAX;
   return [idleAmount, amount - idleAmount];
+}
+
+function yieldSplit(amount: bigint, yieldSplitBps: number): [bigint, bigint] {
+  const graiShare = (amount * BigInt(yieldSplitBps)) / SPLIT_BPS_MAX;
+  return [graiShare, amount - graiShare];
+}
+
+function depositValueUsd(
+  amount: bigint,
+  assetDecimals: number,
+  price: bigint,
+  priceDecimals: number,
+): bigint {
+  const numerator = amount * price * 10n ** 9n;
+  const denominator = 10n ** BigInt(assetDecimals) * 10n ** BigInt(priceDecimals);
+  return numerator / denominator;
 }
 
 function redeemAssetAmount(
@@ -216,13 +243,14 @@ describe("GRAI tokenomics", () => {
   const usdcMint = Keypair.generate();
   const usdcDecimals = 6;
 
-  const [assetVaultState] = assetVaultStatePda(usdcMint.publicKey, program.programId);
-  const [graiVaultState] = graiVaultStatePda(usdcMint.publicKey, program.programId);
-  const [graiVault] = graiVaultPda(usdcMint.publicKey, program.programId);
-  const [assetVault] = assetVaultPda(usdcMint.publicKey, program.programId);
+  const [juniorVault] = juniorVaultPda(usdcMint.publicKey, program.programId);
+  const [seniorVault] = seniorVaultPda(usdcMint.publicKey, program.programId);
+  const [seniorVaultAta] = seniorVaultAtaPda(usdcMint.publicKey, program.programId);
+  const [juniorVaultAta] = juniorVaultAtaPda(usdcMint.publicKey, program.programId);
   const [usdcUsdFeed] = customPriceFeedPda(usdcMint.publicKey, feedProgram.programId);
 
   const treasuryWallet = Keypair.generate();
+  const custodyWallet = Keypair.generate();
 
   async function ensureAta(mint: PublicKey, owner: PublicKey): Promise<PublicKey> {
     const ata = getAssociatedTokenAddressSync(
@@ -339,10 +367,10 @@ describe("GRAI tokenomics", () => {
         authority,
         assetMint: usdcMint.publicKey,
         graiState,
-        assetVaultState,
-        graiVaultState,
-        graiVaultAta: graiVault,
-        assetVaultAta: assetVault,
+        juniorVault,
+        seniorVault,
+        seniorVaultAta: seniorVaultAta,
+        juniorVaultAta: juniorVaultAta,
         priceFeed: usdcUsdFeed,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -350,47 +378,53 @@ describe("GRAI tokenomics", () => {
       })
       .rpc();
 
-    const vault = await program.account.assetVaultState.fetch(assetVaultState);
-    const graiVaultStateAccount = await program.account.graiVaultState.fetch(graiVaultState);
+    const vault = await program.account.juniorVault.fetch(juniorVault);
+    const seniorVaultAccount = await program.account.seniorVault.fetch(seniorVault);
     expect(vault.assetMint.toBase58()).to.equal(usdcMint.publicKey.toBase58());
-    expect(vault.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
-    expect(vault.minting).to.be.true;
-    expect(graiVaultStateAccount.mintSplit).to.equal(5_000);
-    expect(graiVaultStateAccount.yieldSplit).to.equal(8_000);
+    expect(seniorVaultAccount.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
+    expect(seniorVaultAccount.pause).to.be.false;
+    expect(seniorVaultAccount.mintSplit).to.equal(5_000);
+    expect(seniorVaultAccount.yieldSplit).to.equal(8_000);
   });
 
-  it("disables and enables assetVault minting", async () => {
+  it("pauses and unpauses assetVault", async () => {
     await program.methods
-      .setMinting(false)
+      .setPause(true)
       .accountsPartial({
         authority,
         assetMint: usdcMint.publicKey,
         graiState,
-        assetVaultState,
+        seniorVault,
       })
       .rpc();
 
-    let vault = await program.account.assetVaultState.fetch(assetVaultState);
-    expect(vault.minting).to.be.false;
+    let senior = await program.account.seniorVault.fetch(seniorVault);
+    expect(senior.pause).to.be.true;
 
     await program.methods
-      .setMinting(true)
+      .setPause(false)
       .accountsPartial({
         authority,
         assetMint: usdcMint.publicKey,
         graiState,
-        assetVaultState,
+        seniorVault,
       })
       .rpc();
 
-    vault = await program.account.assetVaultState.fetch(assetVaultState);
-    expect(vault.minting).to.be.true;
+    senior = await program.account.seniorVault.fetch(seniorVault);
+    expect(senior.pause).to.be.false;
   });
 
   it("mints GRAI using custom USDC/USD feed", async () => {
     const depositAmount = 2_000_000n;
     const minterTokenAccount = await mintUsdcTo(authority, depositAmount);
-    const minterGraiAccount = await ensureAta(graiMint.publicKey, authority);
+    const minterGraiAccount = getAssociatedTokenAddressSync(
+      graiMint.publicKey,
+      authority,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
 
     await program.methods
       .mint(new anchor.BN(depositAmount.toString()))
@@ -398,32 +432,30 @@ describe("GRAI tokenomics", () => {
         minter: authority,
         graiState,
         assetMint: usdcMint.publicKey,
-        graiVaultState,
-        graiVaultAta: graiVault,
-        assetVaultAta: assetVault,
+        seniorVault,
+        seniorVaultAta: seniorVaultAta,
+        juniorVaultAta: juniorVaultAta,
         priceFeed: usdcUsdFeed,
-        assetVaultState,
         minterAta: minterTokenAccount,
         graiMint: graiMint.publicKey,
         minterGraiAta: minterGraiAccount,
         clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
       })
       .rpc();
 
-    const graiVaultBeforeMint = await program.account.graiVaultState.fetch(graiVaultState);
-    const [idleAmount, assetAmount] = mintSplit(depositAmount, graiVaultBeforeMint.mintSplit);
-
-    const graiVaultAfterMint = await program.account.graiVaultState.fetch(graiVaultState);
-    expect(graiVaultAfterMint.idleAmount.toString()).to.equal(idleAmount.toString());
+    const seniorVaultBeforeMint = await program.account.seniorVault.fetch(seniorVault);
+    const [idleAmount, assetAmount] = mintSplit(depositAmount, seniorVaultBeforeMint.mintSplit);
 
     const idleUsdcVaultBalance = await provider.connection.getTokenAccountBalance(
-      graiVault,
+      seniorVaultAta,
     );
     expect(idleUsdcVaultBalance.value.amount).to.equal(idleAmount.toString());
 
     const activeUsdcVaultBalance = await provider.connection.getTokenAccountBalance(
-      assetVault,
+      juniorVaultAta,
     );
     expect(activeUsdcVaultBalance.value.amount).to.equal(assetAmount.toString());
 
@@ -437,9 +469,171 @@ describe("GRAI tokenomics", () => {
     expect(grai.totalValue.toString()).to.equal("2000000000");
   });
 
+  it("allocates active USDC from junior vault to custody", async () => {
+    const [custodyAllocation] = custodyAllocationPda(
+      custodyWallet.publicKey,
+      usdcMint.publicKey,
+      program.programId,
+    );
+    const custodyAta = getAssociatedTokenAddressSync(
+      usdcMint.publicKey,
+      custodyWallet.publicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+
+    const juniorVaultBefore = await program.account.juniorVault.fetch(juniorVault);
+    const juniorVaultAtaBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(juniorVaultAta)).value.amount,
+    );
+    const activeBefore = BigInt(juniorVaultBefore.activeAmount.toString());
+
+    const allocateAmount = 500_000n;
+    expect(juniorVaultAtaBalanceBefore >= allocateAmount).to.be.true;
+
+    await program.methods
+      .allocate(new anchor.BN(allocateAmount.toString()))
+      .accountsPartial({
+        authority,
+        assetMint: usdcMint.publicKey,
+        graiState,
+        juniorVault,
+        juniorVaultAta: juniorVaultAta,
+        custodyWallet: custodyWallet.publicKey,
+        custodyAta,
+        custodyAllocation,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const juniorVaultAfter = await program.account.juniorVault.fetch(juniorVault);
+    const allocation = await program.account.custodyAllocation.fetch(custodyAllocation);
+    const custodyBalance = BigInt(
+      (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
+    );
+    const juniorVaultAtaBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(juniorVaultAta)).value.amount,
+    );
+
+    expect(juniorVaultAtaBalanceAfter).to.equal(
+      juniorVaultAtaBalanceBefore - allocateAmount,
+    );
+    expect(BigInt(juniorVaultAfter.activeAmount.toString())).to.equal(
+      activeBefore + allocateAmount,
+    );
+    expect(allocation.allocatedAmount.toString()).to.equal(allocateAmount.toString());
+    expect(allocation.yieldAmount.toString()).to.equal("0");
+    expect(custodyBalance).to.equal(allocateAmount);
+  });
+
+  it("distributes custody yield to grai vault and treasury", async () => {
+    const airdropSig = await provider.connection.requestAirdrop(
+      custodyWallet.publicKey,
+      1_000_000_000,
+    );
+    await provider.connection.confirmTransaction(airdropSig);
+
+    const [custodyAllocation] = custodyAllocationPda(
+      custodyWallet.publicKey,
+      usdcMint.publicKey,
+      program.programId,
+    );
+    const custodyAta = getAssociatedTokenAddressSync(
+      usdcMint.publicKey,
+      custodyWallet.publicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+    const treasuryUsdcAta = await ensureAta(
+      usdcMint.publicKey,
+      treasuryWallet.publicKey,
+    );
+
+    const seniorVaultBefore = await program.account.seniorVault.fetch(seniorVault);
+    const juniorVaultBefore = await program.account.juniorVault.fetch(juniorVault);
+    const graiStateBefore = await program.account.graiState.fetch(graiState);
+    const allocationBefore = await program.account.custodyAllocation.fetch(custodyAllocation);
+
+    const yieldAmount = 100_000n;
+    const [seniorVaultYield, treasuryYield] = yieldSplit(
+      yieldAmount,
+      seniorVaultBefore.yieldSplit,
+    );
+    const expectedYieldValue = depositValueUsd(
+      seniorVaultYield,
+      usdcDecimals,
+      BigInt(USDC_USD_PRICE.toString()),
+      USD_PRICE_DECIMALS,
+    );
+
+    const activeBefore = BigInt(juniorVaultBefore.activeAmount.toString());
+    const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
+    const custodyBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
+    );
+    const treasuryBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(treasuryUsdcAta)).value.amount,
+    );
+    const seniorVaultAtaBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+
+    expect(custodyBalanceBefore >= yieldAmount).to.be.true;
+
+    await program.methods
+      .distribute(new anchor.BN(yieldAmount.toString()))
+      .accountsPartial({
+        custodyWallet: custodyWallet.publicKey,
+        graiState,
+        assetMint: usdcMint.publicKey,
+        juniorVault,
+        seniorVault,
+        custodyAllocation,
+        custodyAta,
+        seniorVaultAta,
+        treasuryAta: treasuryUsdcAta,
+        priceFeed: usdcUsdFeed,
+        clock: SYSVAR_CLOCK_PUBKEY,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([custodyWallet])
+      .rpc();
+
+    const juniorVaultAfter = await program.account.juniorVault.fetch(juniorVault);
+    const graiStateAfter = await program.account.graiState.fetch(graiState);
+    const allocationAfter = await program.account.custodyAllocation.fetch(custodyAllocation);
+    const custodyBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
+    );
+    const treasuryBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(treasuryUsdcAta)).value.amount,
+    );
+    const seniorVaultAtaBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+
+    expect(BigInt(juniorVaultAfter.activeAmount.toString())).to.equal(
+      activeBefore - yieldAmount,
+    );
+    expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
+      totalValueBefore + expectedYieldValue,
+    );
+    expect(allocationAfter.allocatedAmount.toString()).to.equal(
+      (BigInt(allocationBefore.allocatedAmount.toString()) - yieldAmount).toString(),
+    );
+    expect(allocationAfter.yieldAmount.toString()).to.equal(
+      (BigInt(allocationBefore.yieldAmount.toString()) + seniorVaultYield).toString(),
+    );
+    expect(custodyBalanceBefore - custodyBalanceAfter).to.equal(yieldAmount);
+    expect(treasuryBalanceAfter - treasuryBalanceBefore).to.equal(treasuryYield);
+    expect(seniorVaultAtaBalanceAfter - seniorVaultAtaBalanceBefore).to.equal(seniorVaultYield);
+  });
+
   it("burns GRAI and retrieves USDC from idle vault", async () => {
-    const assetVaultBefore = await program.account.assetVaultState.fetch(assetVaultState);
-    const graiVaultBefore = await program.account.graiVaultState.fetch(graiVaultState);
     const graiStateBefore = await program.account.graiState.fetch(graiState);
     const burnerGraiAccount = await ensureAta(graiMint.publicKey, authority);
     const burnerUsdcAccount = await ensureAta(usdcMint.publicKey, authority);
@@ -450,7 +644,9 @@ describe("GRAI tokenomics", () => {
     const graiTotalSupplyBefore = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
     );
-    const idleUsdcBefore = BigInt(graiVaultBefore.idleAmount.toString());
+    const idleUsdcBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
     const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
 
     const burnAmount = burnerGraiBalanceBefore / 2n;
@@ -467,7 +663,7 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
     );
     const idleUsdcVaultBalanceBefore = BigInt(
-      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
 
     await program.methods
@@ -480,13 +676,12 @@ describe("GRAI tokenomics", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .remainingAccounts([
-        { pubkey: graiVaultState, isWritable: true, isSigner: false },
-        { pubkey: graiVault, isWritable: true, isSigner: false },
+        { pubkey: seniorVault, isWritable: false, isSigner: false },
+        { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
         { pubkey: burnerUsdcAccount, isWritable: true, isSigner: false },
       ])
       .rpc();
 
-    const graiVaultAfter = await program.account.graiVaultState.fetch(graiVaultState);
     const graiStateAfter = await program.account.graiState.fetch(graiState);
     const graiTotalSupplyAfter = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
@@ -498,14 +693,11 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
     );
     const idleUsdcVaultBalanceAfter = BigInt(
-      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
 
     expect(burnerGraiBalanceAfter).to.equal(burnerGraiBalanceBefore - burnAmount);
     expect(graiTotalSupplyAfter).to.equal(graiTotalSupplyBefore - burnAmount);
-    expect(BigInt(graiVaultAfter.idleAmount.toString())).to.equal(
-      idleUsdcBefore - expectedRedeemUsdc,
-    );
     expect(idleUsdcVaultBalanceAfter).to.equal(
       idleUsdcVaultBalanceBefore - expectedRedeemUsdc,
     );
@@ -524,8 +716,6 @@ describe("GRAI tokenomics", () => {
     const burnerGraiAccount = await ensureAta(graiMint.publicKey, authority);
     const burnerUsdcAccount = await ensureAta(usdcMint.publicKey, authority);
 
-    const assetVaultBefore = await program.account.assetVaultState.fetch(assetVaultState);
-    const graiVaultBefore = await program.account.graiVaultState.fetch(graiVaultState);
     const graiStateBefore = await program.account.graiState.fetch(graiState);
 
     const burnerGraiBalanceBefore = BigInt(
@@ -536,7 +726,9 @@ describe("GRAI tokenomics", () => {
     const graiTotalSupplyBefore = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
     );
-    const idleUsdcBefore = BigInt(graiVaultBefore.idleAmount.toString());
+    const idleUsdcBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
     const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
 
     const burnAmount = burnerGraiBalanceBefore;
@@ -550,7 +742,7 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
     );
     const idleUsdcVaultBalanceBefore = BigInt(
-      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
 
     await program.methods
@@ -563,13 +755,12 @@ describe("GRAI tokenomics", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .remainingAccounts([
-        { pubkey: graiVaultState, isWritable: true, isSigner: false },
-        { pubkey: graiVault, isWritable: true, isSigner: false },
+        { pubkey: seniorVault, isWritable: false, isSigner: false },
+        { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
         { pubkey: burnerUsdcAccount, isWritable: true, isSigner: false },
       ])
       .rpc();
 
-    const graiVaultAfter = await program.account.graiVaultState.fetch(graiVaultState);
     const graiStateAfter = await program.account.graiState.fetch(graiState);
     const graiTotalSupplyAfter = BigInt(
       (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
@@ -581,14 +772,11 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
     );
     const idleUsdcVaultBalanceAfter = BigInt(
-      (await provider.connection.getTokenAccountBalance(graiVault)).value.amount,
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
 
     expect(burnerGraiBalanceAfter).to.equal(0n);
     expect(graiTotalSupplyAfter).to.equal(graiTotalSupplyBefore - burnAmount);
-    expect(BigInt(graiVaultAfter.idleAmount.toString())).to.equal(
-      idleUsdcBefore - expectedRedeemUsdc,
-    );
     expect(idleUsdcVaultBalanceAfter).to.equal(
       idleUsdcVaultBalanceBefore - expectedRedeemUsdc,
     );

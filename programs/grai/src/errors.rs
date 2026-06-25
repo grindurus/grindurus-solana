@@ -48,9 +48,9 @@ pub enum ErrorCode {
     ActiveCapitalDeployed,
     #[msg("Redeem requires at least one graiVault in remaining accounts")]
     NoRedeemAssets,
-    #[msg("Redeem remaining accounts must be grai_vault_state, grai_vault, redeemer_ata triplets")]
+    #[msg("Redeem remaining accounts must be senior_vault, senior_vault_ata, redeemer_ata triplets")]
     InvalidRedeemAccounts,
-    #[msg("calc_internal_value remaining accounts must be grai_vault_state, grai_vault, price_feed, mint quadruplets")]
+    #[msg("calc_internal_value remaining accounts must be senior_vault, senior_vault_ata, price_feed, mint quadruplets")]
     InvalidInternalValueAccounts,
     #[msg("Custom price feed does not match asset mint")]
     InvalidCustomPriceFeed,

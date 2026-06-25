@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 
 use crate::price_feed::ChainlinkPrice;
-use crate::{ErrorCode, GraiState, GraiVaultState};
+use crate::{ErrorCode, GraiState, SeniorVault};
 
 /// USD value scale — matches GRAI token decimals.
 pub const USD_SCALE: u8 = GraiState::DECIMALS;
@@ -100,13 +100,13 @@ pub fn redeem_asset_amount(grai_amount: u64, total_supply: u64, idle_amount: u64
 /// `idle = amount * split_bps / 10_000`, remainder to active vault.
 pub fn mint_split(amount: u64, mint_split_bps: u16) -> Result<(u64, u64)> {
     require!(
-        mint_split_bps <= GraiVaultState::SPLIT_BPS_MAX,
+        mint_split_bps <= SeniorVault::SPLIT_BPS_MAX,
         ErrorCode::InvalidSplit
     );
 
     let idle_amount = (amount as u128)
         .checked_mul(mint_split_bps as u128)
-        .and_then(|v| v.checked_div(GraiVaultState::SPLIT_BPS_MAX as u128))
+        .and_then(|v| v.checked_div(SeniorVault::SPLIT_BPS_MAX as u128))
         .ok_or(ErrorCode::MathOverflow)?;
 
     require!(idle_amount <= u64::MAX as u128, ErrorCode::MathOverflow);
@@ -120,13 +120,13 @@ pub fn mint_split(amount: u64, mint_split_bps: u16) -> Result<(u64, u64)> {
 
 pub fn yield_split(amount: u64, yield_split_bps: u16) -> Result<(u64, u64)> {
     require!(
-        yield_split_bps <= GraiVaultState::SPLIT_BPS_MAX,
+        yield_split_bps <= SeniorVault::SPLIT_BPS_MAX,
         ErrorCode::InvalidSplit
     );
 
     let grai_share = (amount as u128)
         .checked_mul(yield_split_bps as u128)
-        .and_then(|v| v.checked_div(GraiVaultState::SPLIT_BPS_MAX as u128))
+        .and_then(|v| v.checked_div(SeniorVault::SPLIT_BPS_MAX as u128))
         .ok_or(ErrorCode::MathOverflow)?;
 
     require!(grai_share <= u64::MAX as u128, ErrorCode::MathOverflow);
