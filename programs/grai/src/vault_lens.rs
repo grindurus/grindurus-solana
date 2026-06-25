@@ -1,11 +1,15 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::TokenAccount;
 
-use crate::{ErrorCode, JuniorVault, SeniorVault};
+use crate::{ErrorCode, GraiState, JuniorVault, SeniorVault};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct SeniorVaultInfo {
     pub asset_mint: Pubkey,
+    pub price_feed: Pubkey,
+    pub mint_split: u16,
+    pub yield_split: u16,
+    pub pause: bool,
     pub balance: u64,
 }
 
@@ -25,26 +29,31 @@ pub struct VaultsSnapshot {
 /// Per asset: senior_vault, senior_vault_ata, junior_vault, junior_vault_ata.
 pub const VAULT_BALANCE_ACCOUNTS: usize = 4;
 
-pub fn from_remaining_accounts<'info>(
+pub fn from_registry<'info>(
+    grai_state: &GraiState,
     remaining_accounts: &'info [AccountInfo<'info>],
 ) -> Result<VaultsSnapshot> {
-    if remaining_accounts.is_empty() {
+    let asset_count = grai_state.asset_mints.len();
+    if asset_count == 0 {
         return Ok(VaultsSnapshot {
             senior_vaults: vec![],
             junior_vaults: vec![],
         });
     }
+
     require!(
-        remaining_accounts.len() % VAULT_BALANCE_ACCOUNTS == 0,
-        ErrorCode::InvalidVaultBalanceAccounts
+        remaining_accounts.len() == asset_count * VAULT_BALANCE_ACCOUNTS,
+        ErrorCode::InvalidVaultBalanceAccountCount
     );
 
-    let asset_count = remaining_accounts.len() / VAULT_BALANCE_ACCOUNTS;
     let mut senior_vaults = Vec::with_capacity(asset_count);
     let mut junior_vaults = Vec::with_capacity(asset_count);
 
-    for chunk in remaining_accounts.chunks(VAULT_BALANCE_ACCOUNTS) {
+    for (index, asset_mint) in grai_state.asset_mints.iter().enumerate() {
+        let start = index * VAULT_BALANCE_ACCOUNTS;
+        let chunk = &remaining_accounts[start..start + VAULT_BALANCE_ACCOUNTS];
         let (senior, junior) = vault_balances(
+            asset_mint,
             &chunk[0],
             &chunk[1],
             &chunk[2],
@@ -61,6 +70,7 @@ pub fn from_remaining_accounts<'info>(
 }
 
 fn vault_balances<'info>(
+    expected_asset_mint: &Pubkey,
     senior_vault_info: &'info AccountInfo<'info>,
     senior_vault_ata_info: &'info AccountInfo<'info>,
     junior_vault_info: &'info AccountInfo<'info>,
@@ -69,8 +79,19 @@ fn vault_balances<'info>(
     let senior_vault: Account<SeniorVault> = Account::try_from(senior_vault_info)?;
     let junior_vault: Account<JuniorVault> = Account::try_from(junior_vault_info)?;
 
+    require_keys_eq!(
+        senior_vault.asset_mint,
+        *expected_asset_mint,
+        ErrorCode::InvalidGraiVault
+    );
+    require_keys_eq!(
+        junior_vault.asset_mint,
+        *expected_asset_mint,
+        ErrorCode::InvalidGraiVault
+    );
+
     let (expected_senior_pda, _) = Pubkey::find_program_address(
-        &[SeniorVault::SEED, senior_vault.asset_mint.as_ref()],
+        &[SeniorVault::SEED, expected_asset_mint.as_ref()],
         &crate::ID,
     );
     require_keys_eq!(
@@ -80,17 +101,12 @@ fn vault_balances<'info>(
     );
 
     let (expected_junior_pda, _) = Pubkey::find_program_address(
-        &[JuniorVault::SEED, junior_vault.asset_mint.as_ref()],
+        &[JuniorVault::SEED, expected_asset_mint.as_ref()],
         &crate::ID,
     );
     require_keys_eq!(
         junior_vault_info.key(),
         expected_junior_pda,
-        ErrorCode::InvalidGraiVault
-    );
-    require_keys_eq!(
-        senior_vault.asset_mint,
-        junior_vault.asset_mint,
         ErrorCode::InvalidGraiVault
     );
 
@@ -121,6 +137,10 @@ fn vault_balances<'info>(
     Ok((
         SeniorVaultInfo {
             asset_mint: senior_vault.asset_mint,
+            price_feed: senior_vault.price_feed,
+            mint_split: senior_vault.mint_split,
+            yield_split: senior_vault.yield_split,
+            pause: senior_vault.pause,
             balance: senior_vault_ata.amount,
         },
         JuniorVaultInfo {

@@ -16,7 +16,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = authority,
-        space = 8 + GraiState::LEN,
+        space = GraiState::space(0),
         seeds = [GraiState::SEED],
         bump,
     )]
@@ -116,9 +116,13 @@ pub struct AddAssetVault<'info> {
     pub asset_mint: Account<'info, Mint>,
 
     #[account(
+        mut,
         seeds = [GraiState::SEED],
         bump,
         has_one = authority @ ErrorCode::Unauthorized,
+        realloc = GraiState::space(grai_state.asset_mints.len() + 1),
+        realloc::payer = authority,
+        realloc::zero = false,
     )]
     pub grai_state: Account<'info, GraiState>,
 
@@ -176,9 +180,13 @@ pub struct RemoveAssetVault<'info> {
     pub asset_mint: Account<'info, Mint>,
 
     #[account(
+        mut,
         seeds = [GraiState::SEED],
         bump,
         has_one = authority @ ErrorCode::Unauthorized,
+        realloc = GraiState::space(grai_state.asset_mints.len().saturating_sub(1)),
+        realloc::payer = authority,
+        realloc::zero = false,
     )]
     pub grai_state: Account<'info, GraiState>,
 
@@ -218,6 +226,7 @@ pub struct RemoveAssetVault<'info> {
     pub junior_vault_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -529,7 +538,28 @@ pub struct Distribute<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CalcNav {}
+pub struct GetNav<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
 
 #[derive(Accounts)]
-pub struct GetVaults {}
+pub struct GetAssets<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+#[derive(Accounts)]
+pub struct GetVaults<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}

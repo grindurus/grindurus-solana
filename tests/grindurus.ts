@@ -253,36 +253,54 @@ function redeemAssetAmount(
   return (graiAmount * idleAmount) / totalSupply;
 }
 
-function calcNavRemainingAccounts(
-  assets: Array<{
-    seniorVault: PublicKey;
-    seniorVaultAta: PublicKey;
-    priceFeed: PublicKey;
-    mint: PublicKey;
-  }>,
+function getNavRemainingAccountsFromVaults(
+  programId: PublicKey,
+  seniorVaults: Array<{ assetMint: PublicKey; priceFeed: PublicKey }>,
 ): Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> {
-  return assets.flatMap((asset) => [
-    { pubkey: asset.seniorVault, isWritable: false, isSigner: false },
-    { pubkey: asset.seniorVaultAta, isWritable: false, isSigner: false },
-    { pubkey: asset.priceFeed, isWritable: false, isSigner: false },
-    { pubkey: asset.mint, isWritable: false, isSigner: false },
-  ]);
+  return seniorVaults.flatMap((senior) => {
+    const [seniorVault] = seniorVaultPda(senior.assetMint, programId);
+    const [seniorVaultAta] = seniorVaultAtaPda(senior.assetMint, programId);
+    return [
+      { pubkey: seniorVault, isWritable: false, isSigner: false },
+      { pubkey: seniorVaultAta, isWritable: false, isSigner: false },
+      { pubkey: senior.priceFeed, isWritable: false, isSigner: false },
+      { pubkey: senior.assetMint, isWritable: false, isSigner: false },
+    ];
+  });
+}
+
+async function getNavRemainingAccountsFromGraiState(
+  program: Program<Grai>,
+  graiState: PublicKey,
+): Promise<Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }>> {
+  const state = await program.account.graiState.fetch(graiState);
+  const vaults = await program.methods
+    .getVaults()
+    .accountsPartial({ graiState })
+    .remainingAccounts(
+      getVaultsRemainingAccounts(program.programId, state.assetMints),
+    )
+    .view();
+
+  return getNavRemainingAccountsFromVaults(program.programId, vaults.seniorVaults);
 }
 
 function getVaultsRemainingAccounts(
-  assets: Array<{
-    seniorVault: PublicKey;
-    seniorVaultAta: PublicKey;
-    juniorVault: PublicKey;
-    juniorVaultAta: PublicKey;
-  }>,
+  programId: PublicKey,
+  assetMints: PublicKey[],
 ): Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> {
-  return assets.flatMap((asset) => [
-    { pubkey: asset.seniorVault, isWritable: false, isSigner: false },
-    { pubkey: asset.seniorVaultAta, isWritable: false, isSigner: false },
-    { pubkey: asset.juniorVault, isWritable: false, isSigner: false },
-    { pubkey: asset.juniorVaultAta, isWritable: false, isSigner: false },
-  ]);
+  return assetMints.flatMap((mint) => {
+    const [seniorVault] = seniorVaultPda(mint, programId);
+    const [seniorVaultAta] = seniorVaultAtaPda(mint, programId);
+    const [juniorVault] = juniorVaultPda(mint, programId);
+    const [juniorVaultAta] = juniorVaultAtaPda(mint, programId);
+    return [
+      { pubkey: seniorVault, isWritable: false, isSigner: false },
+      { pubkey: seniorVaultAta, isWritable: false, isSigner: false },
+      { pubkey: juniorVault, isWritable: false, isSigner: false },
+      { pubkey: juniorVaultAta, isWritable: false, isSigner: false },
+    ];
+  });
 }
 
 describe("GRAI tokenomics", () => {
@@ -383,6 +401,9 @@ describe("GRAI tokenomics", () => {
     expect(grai.treasuryWallet.toBase58()).to.equal(authority.toBase58());
     expect(grai.authority.toBase58()).to.equal(authority.toBase58());
 
+    const registry = await program.account.graiState.fetch(graiState);
+    expect(registry.assetMints).to.have.length(0);
+
     const metadataAccount = await provider.connection.getAccountInfo(metadata);
     expect(metadataAccount).to.not.be.null;
     expect(metadataAccount!.owner.toBase58()).to.equal(
@@ -450,6 +471,10 @@ describe("GRAI tokenomics", () => {
     expect(seniorVaultAccount.pause).to.be.false;
     expect(seniorVaultAccount.mintSplit).to.equal(5_000);
     expect(seniorVaultAccount.yieldSplit).to.equal(8_000);
+
+    const usdcRegistry = await program.account.graiState.fetch(graiState);
+    expect(usdcRegistry.assetMints).to.have.length(1);
+    expect(usdcRegistry.assetMints[0].toBase58()).to.equal(usdcMint.publicKey.toBase58());
   });
 
   it("set_pause toggles USDC senior vault minting gate", async () => {
@@ -566,6 +591,13 @@ describe("GRAI tokenomics", () => {
     expect(seniorVaultAccount.pause).to.be.false;
     expect(seniorVaultAccount.mintSplit).to.equal(5_000);
     expect(seniorVaultAccount.yieldSplit).to.equal(8_000);
+
+    const registry = await program.account.graiState.fetch(graiState);
+    expect(registry.assetMints).to.have.length(2);
+    expect(registry.assetMints.map((mint) => mint.toBase58())).to.include.members([
+      usdcMint.publicKey.toBase58(),
+      NATIVE_MINT.toBase58(),
+    ]);
   });
 
   it("mint_sol wraps 1 SOL and mints GRAI at $150 custom oracle price", async () => {
@@ -645,7 +677,7 @@ describe("GRAI tokenomics", () => {
     ).to.equal(depositValue);
   });
 
-  it("calc_nav returns USD value of senior idle USDC and SOL balances", async () => {
+  it("get_nav returns USD value of senior idle USDC and SOL balances", async () => {
     const usdcIdle = BigInt(
       (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
@@ -668,28 +700,28 @@ describe("GRAI tokenomics", () => {
       );
 
     const nav = await program.methods
-      .calcNav()
-      .accountsPartial({})
+      .getNav()
+      .accountsPartial({ graiState })
       .remainingAccounts(
-        calcNavRemainingAccounts([
-          {
-            seniorVault,
-            seniorVaultAta,
-            priceFeed: usdcUsdFeed,
-            mint: usdcMint.publicKey,
-          },
-          {
-            seniorVault: solSeniorVault,
-            seniorVaultAta: solSeniorVaultAta,
-            priceFeed: solUsdFeed,
-            mint: NATIVE_MINT,
-          },
-        ]),
+        await getNavRemainingAccountsFromGraiState(program, graiState),
       )
       .view();
 
     expect(BigInt(nav.toString())).to.equal(expectedNav);
     expect(nav.gt(new anchor.BN(0))).to.be.true;
+  });
+
+  it("get_assets returns registered asset mints from on-chain registry", async () => {
+    const assets = await program.methods
+      .getAssets()
+      .accountsPartial({ graiState })
+      .view();
+
+    expect(assets).to.have.length(2);
+    expect(assets.map((mint) => mint.toBase58())).to.include.members([
+      usdcMint.publicKey.toBase58(),
+      NATIVE_MINT.toBase58(),
+    ]);
   });
 
   it("get_vaults returns senior and junior vault balances for registered assets", async () => {
@@ -709,24 +741,13 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(solJuniorVaultAta)).value.amount,
     );
 
+    const registry = await program.account.graiState.fetch(graiState);
+
     const snapshot = await program.methods
       .getVaults()
-      .accountsPartial({})
+      .accountsPartial({ graiState })
       .remainingAccounts(
-        getVaultsRemainingAccounts([
-          {
-            seniorVault,
-            seniorVaultAta,
-            juniorVault,
-            juniorVaultAta,
-          },
-          {
-            seniorVault: solSeniorVault,
-            seniorVaultAta: solSeniorVaultAta,
-            juniorVault: solJuniorVault,
-            juniorVaultAta: solJuniorVaultAta,
-          },
-        ]),
+        getVaultsRemainingAccounts(program.programId, registry.assetMints),
       )
       .view();
 
@@ -752,12 +773,20 @@ describe("GRAI tokenomics", () => {
     expect(solJuniorEntry).to.not.be.undefined;
 
     expect(usdcSenior!.balance.toString()).to.equal(usdcSeniorBalance.toString());
+    expect(usdcSenior!.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
+    expect(usdcSenior!.mintSplit).to.equal(5_000);
+    expect(usdcSenior!.yieldSplit).to.equal(8_000);
+    expect(usdcSenior!.pause).to.be.false;
     expect(usdcJuniorEntry!.balance.toString()).to.equal(usdcJuniorBalance.toString());
     expect(usdcJuniorEntry!.activeAmount.toString()).to.equal(
       usdcJunior.activeAmount.toString(),
     );
 
     expect(solSenior!.balance.toString()).to.equal(solSeniorBalance.toString());
+    expect(solSenior!.priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
+    expect(solSenior!.mintSplit).to.equal(5_000);
+    expect(solSenior!.yieldSplit).to.equal(8_000);
+    expect(solSenior!.pause).to.be.false;
     expect(solJuniorEntry!.balance.toString()).to.equal(solJuniorBalance.toString());
     expect(solJuniorEntry!.activeAmount.toString()).to.equal(
       solJunior.activeAmount.toString(),

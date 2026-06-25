@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 mod price_feed;
+mod asset_registry;
 mod asset_vault;
 mod errors;
 mod account;
@@ -78,10 +79,20 @@ pub mod grai {
             &mut ctx.accounts.senior_vault,
             &ctx.accounts.asset_mint.key(),
             &ctx.accounts.price_feed.key(),
+        )?;
+
+        asset_registry::register(
+            &mut ctx.accounts.grai_state,
+            ctx.accounts.asset_mint.key(),
         )
     }
 
     pub fn remove_asset_vault(ctx: Context<RemoveAssetVault>) -> Result<()> {
+        asset_registry::unregister(
+            &mut ctx.accounts.grai_state,
+            ctx.accounts.asset_mint.key(),
+        )?;
+
         asset_vault::remove(
             &ctx.accounts.authority,
             &ctx.accounts.grai_state,
@@ -263,21 +274,34 @@ pub mod grai {
         Ok(())
     }
 
-    /// View: sum of grai_vault balances priced via Chainlink.
-    /// Remaining accounts per asset: senior_vault, senior_vault_ata, price_feed, mint.
-    pub fn calc_nav<'info>(
-        ctx: Context<'_, '_, 'info, 'info, CalcNav>,
+    /// View: sum of senior idle balances priced via oracle for registered assets.
+    /// Remaining accounts per mint in `grai_state.asset_mints` order:
+    /// senior_vault, senior_vault_ata, price_feed, mint.
+    pub fn get_nav<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetNav<'info>>,
     ) -> Result<u128> {
         let clock = Clock::get()?;
-        value_lens::from_remaining_accounts(ctx.remaining_accounts, &clock)
+        value_lens::from_registry(
+            &ctx.accounts.grai_state,
+            ctx.remaining_accounts,
+            &clock,
+        )
     }
 
-    /// View: senior/junior vault token balances per asset.
-    /// Remaining accounts per asset: senior_vault, senior_vault_ata, junior_vault, junior_vault_ata.
+    /// View: registered asset mints from on-chain registry.
+    pub fn get_assets(ctx: Context<GetAssets>) -> Result<Vec<Pubkey>> {
+        Ok(ctx.accounts.grai_state.asset_mints.clone())
+    }
+
+    /// View: senior/junior vault token balances for registered assets.
+    /// Pass vault accounts in registry order: senior_vault, senior_vault_ata, junior_vault, junior_vault_ata per mint.
     pub fn get_vaults<'info>(
-        ctx: Context<'_, '_, 'info, 'info, GetVaults>,
+        ctx: Context<'_, '_, 'info, 'info, GetVaults<'info>>,
     ) -> Result<vault_lens::VaultsSnapshot> {
-        vault_lens::from_remaining_accounts(ctx.remaining_accounts)
+        vault_lens::from_registry(
+            &ctx.accounts.grai_state,
+            ctx.remaining_accounts,
+        )
     }
 }
 
@@ -286,12 +310,17 @@ pub struct GraiState {
     pub authority: Pubkey,
     pub total_value: u128,
     pub treasury_wallet: Pubkey,
+    pub asset_mints: Vec<Pubkey>,
 }
 
 impl GraiState {
     pub const SEED: &'static [u8] = b"protocol";
     pub const DECIMALS: u8 = 9;
-    pub const LEN: usize = 32 + 16 + 32;
+    pub const FIXED_LEN: usize = 32 + 16 + 32;
+
+    pub fn space(asset_count: usize) -> usize {
+        8 + Self::FIXED_LEN + 4 + asset_count * 32
+    }
 }
 
 #[account]
