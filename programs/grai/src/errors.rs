@@ -50,8 +50,10 @@ pub enum ErrorCode {
     NoRedeemAssets,
     #[msg("Redeem remaining accounts must be senior_vault, senior_vault_ata, redeemer_ata triplets")]
     InvalidRedeemAccounts,
-    #[msg("calc_internal_value remaining accounts must be senior_vault, senior_vault_ata, price_feed, mint quadruplets")]
+    #[msg("calc_nav remaining accounts must be senior_vault, senior_vault_ata, price_feed, mint quadruplets")]
     InvalidInternalValueAccounts,
+    #[msg("get_vaults remaining accounts must be senior_vault, senior_vault_ata, junior_vault, junior_vault_ata quadruplets")]
+    InvalidVaultBalanceAccounts,
     #[msg("Custom price feed does not match asset mint")]
     InvalidCustomPriceFeed,
     #[msg("Price decimals must be <= 18")]

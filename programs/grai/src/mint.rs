@@ -3,7 +3,7 @@ use anchor_lang::system_program;
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
 
 use crate::price_feed::fetch_price_from_feed;
-use crate::tokenomics::{deposit_value_usd, grai_mint_amount, mint_split};
+use crate::tokenomics::{deposit_value, grai_mint_amount, mint_split};
 use crate::{ErrorCode, GraiState, SeniorVault};
 
 pub fn wrap_sol<'info>(
@@ -82,7 +82,7 @@ pub fn execute_mint<'info>(
         clock,
     )?;
 
-    let deposit_value = deposit_value_usd(amount, asset_mint.decimals, &price)?;
+    let deposit_value = deposit_value(amount, asset_mint.decimals, &price)?;
     let total_supply = grai_mint.supply;
     let total_value = grai_state.total_value;
     let mint_amount = grai_mint_amount(deposit_value, total_supply, total_value)?;

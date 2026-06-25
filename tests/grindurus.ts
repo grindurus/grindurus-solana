@@ -253,6 +253,38 @@ function redeemAssetAmount(
   return (graiAmount * idleAmount) / totalSupply;
 }
 
+function calcNavRemainingAccounts(
+  assets: Array<{
+    seniorVault: PublicKey;
+    seniorVaultAta: PublicKey;
+    priceFeed: PublicKey;
+    mint: PublicKey;
+  }>,
+): Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> {
+  return assets.flatMap((asset) => [
+    { pubkey: asset.seniorVault, isWritable: false, isSigner: false },
+    { pubkey: asset.seniorVaultAta, isWritable: false, isSigner: false },
+    { pubkey: asset.priceFeed, isWritable: false, isSigner: false },
+    { pubkey: asset.mint, isWritable: false, isSigner: false },
+  ]);
+}
+
+function getVaultsRemainingAccounts(
+  assets: Array<{
+    seniorVault: PublicKey;
+    seniorVaultAta: PublicKey;
+    juniorVault: PublicKey;
+    juniorVaultAta: PublicKey;
+  }>,
+): Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> {
+  return assets.flatMap((asset) => [
+    { pubkey: asset.seniorVault, isWritable: false, isSigner: false },
+    { pubkey: asset.seniorVaultAta, isWritable: false, isSigner: false },
+    { pubkey: asset.juniorVault, isWritable: false, isSigner: false },
+    { pubkey: asset.juniorVaultAta, isWritable: false, isSigner: false },
+  ]);
+}
+
 describe("GRAI tokenomics", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -611,6 +643,125 @@ describe("GRAI tokenomics", () => {
     expect(
       BigInt(grai.totalValue.toString()) - BigInt(totalValueBefore.toString()),
     ).to.equal(depositValue);
+  });
+
+  it("calc_nav returns USD value of senior idle USDC and SOL balances", async () => {
+    const usdcIdle = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+    const solIdle = BigInt(
+      (await provider.connection.getTokenAccountBalance(solSeniorVaultAta)).value.amount,
+    );
+
+    const expectedNav =
+      depositValueUsd(
+        usdcIdle,
+        usdcDecimals,
+        BigInt(USDC_USD_PRICE.toString()),
+        USD_PRICE_DECIMALS,
+      ) +
+      depositValueUsd(
+        solIdle,
+        9,
+        BigInt(SOL_USD_PRICE.toString()),
+        USD_PRICE_DECIMALS,
+      );
+
+    const nav = await program.methods
+      .calcNav()
+      .accountsPartial({})
+      .remainingAccounts(
+        calcNavRemainingAccounts([
+          {
+            seniorVault,
+            seniorVaultAta,
+            priceFeed: usdcUsdFeed,
+            mint: usdcMint.publicKey,
+          },
+          {
+            seniorVault: solSeniorVault,
+            seniorVaultAta: solSeniorVaultAta,
+            priceFeed: solUsdFeed,
+            mint: NATIVE_MINT,
+          },
+        ]),
+      )
+      .view();
+
+    expect(BigInt(nav.toString())).to.equal(expectedNav);
+    expect(nav.gt(new anchor.BN(0))).to.be.true;
+  });
+
+  it("get_vaults returns senior and junior vault balances for registered assets", async () => {
+    const usdcJunior = await program.account.juniorVault.fetch(juniorVault);
+    const solJunior = await program.account.juniorVault.fetch(solJuniorVault);
+
+    const usdcSeniorBalance = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+    const usdcJuniorBalance = BigInt(
+      (await provider.connection.getTokenAccountBalance(juniorVaultAta)).value.amount,
+    );
+    const solSeniorBalance = BigInt(
+      (await provider.connection.getTokenAccountBalance(solSeniorVaultAta)).value.amount,
+    );
+    const solJuniorBalance = BigInt(
+      (await provider.connection.getTokenAccountBalance(solJuniorVaultAta)).value.amount,
+    );
+
+    const snapshot = await program.methods
+      .getVaults()
+      .accountsPartial({})
+      .remainingAccounts(
+        getVaultsRemainingAccounts([
+          {
+            seniorVault,
+            seniorVaultAta,
+            juniorVault,
+            juniorVaultAta,
+          },
+          {
+            seniorVault: solSeniorVault,
+            seniorVaultAta: solSeniorVaultAta,
+            juniorVault: solJuniorVault,
+            juniorVaultAta: solJuniorVaultAta,
+          },
+        ]),
+      )
+      .view();
+
+    expect(snapshot.seniorVaults).to.have.length(2);
+    expect(snapshot.juniorVaults).to.have.length(2);
+
+    const usdcSenior = snapshot.seniorVaults.find((vault) =>
+      vault.assetMint.equals(usdcMint.publicKey),
+    );
+    const solSenior = snapshot.seniorVaults.find((vault) =>
+      vault.assetMint.equals(NATIVE_MINT),
+    );
+    const usdcJuniorEntry = snapshot.juniorVaults.find((vault) =>
+      vault.assetMint.equals(usdcMint.publicKey),
+    );
+    const solJuniorEntry = snapshot.juniorVaults.find((vault) =>
+      vault.assetMint.equals(NATIVE_MINT),
+    );
+
+    expect(usdcSenior).to.not.be.undefined;
+    expect(solSenior).to.not.be.undefined;
+    expect(usdcJuniorEntry).to.not.be.undefined;
+    expect(solJuniorEntry).to.not.be.undefined;
+
+    expect(usdcSenior!.balance.toString()).to.equal(usdcSeniorBalance.toString());
+    expect(usdcJuniorEntry!.balance.toString()).to.equal(usdcJuniorBalance.toString());
+    expect(usdcJuniorEntry!.activeAmount.toString()).to.equal(
+      usdcJunior.activeAmount.toString(),
+    );
+
+    expect(solSenior!.balance.toString()).to.equal(solSeniorBalance.toString());
+    expect(solJuniorEntry!.balance.toString()).to.equal(solJuniorBalance.toString());
+    expect(solJuniorEntry!.activeAmount.toString()).to.equal(
+      solJunior.activeAmount.toString(),
+    );
   });
 
   it("mint USDC and SOL mint different GRAI amounts; burn half redeems USDC and wSOL", async () => {

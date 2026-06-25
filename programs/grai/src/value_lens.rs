@@ -23,7 +23,7 @@ pub fn from_remaining_accounts<'info>(
     let mut total: u128 = 0;
     for chunk in remaining_accounts.chunks(INTERNAL_VALUE_ACCOUNTS) {
         total = total
-            .checked_add(asset_internal_value(
+            .checked_add(asset_value(
                 &chunk[0],
                 &chunk[1],
                 &chunk[2],
@@ -58,7 +58,7 @@ pub fn single_asset<'info>(
     value_usd(senior_vault_ata.amount, mint.decimals, &price)
 }
 
-fn asset_internal_value<'info>(
+fn asset_value<'info>(
     senior_vault_info: &'info AccountInfo<'info>,
     senior_vault_ata_info: &'info AccountInfo<'info>,
     price_feed_info: &'info AccountInfo<'info>,

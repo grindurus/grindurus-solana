@@ -11,11 +11,11 @@ pub fn value_usd(amount: u64, asset_decimals: u8, price: &ChainlinkPrice) -> Res
     if amount == 0 {
         return Ok(0);
     }
-    deposit_value_usd(amount, asset_decimals, price)
+    deposit_value(amount, asset_decimals, price)
 }
 
 /// `deposit_value = amount * price`, normalized to USD_SCALE (9 decimals).
-pub fn deposit_value_usd(
+pub fn deposit_value(
     deposit_amount: u64,
     asset_decimals: u8,
     price: &ChainlinkPrice,

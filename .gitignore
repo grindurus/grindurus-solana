@@ -25,6 +25,7 @@ docker-target
 # Secrets & local env
 .env
 .env.*
+migrations/keys/
 
 # Logs
 *.log

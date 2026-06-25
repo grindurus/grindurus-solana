@@ -529,6 +529,7 @@ pub struct Distribute<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CalcInternalValue<'info> {
-    pub clock: Sysvar<'info, Clock>,
-}
+pub struct CalcNav {}
+
+#[derive(Accounts)]
+pub struct GetVaults {}

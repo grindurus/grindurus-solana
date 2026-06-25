@@ -3,13 +3,14 @@
 mod price_feed;
 mod asset_vault;
 mod errors;
-mod internal_value;
 mod account;
 mod metadata;
 mod mint;
 mod allocate;
 mod burn;
 mod tokenomics;
+mod value_lens;
+mod vault_lens;
 
 pub use errors::ErrorCode;
 
@@ -19,7 +20,7 @@ use anchor_spl::token::{self, Burn, Transfer};
 use price_feed::fetch_price_from_feed;
 use account::*;
 use burn::process_remaining_assets;
-use tokenomics::{deposit_value_usd, grai_burn_value, yield_split};
+use tokenomics::{deposit_value, grai_burn_value, yield_split};
 
 declare_id!("14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k");
 
@@ -242,7 +243,7 @@ pub mod grai {
             ctx.accounts.senior_vault.price_feed,
             &ctx.accounts.clock,
         )?;
-        let yield_value = deposit_value_usd(
+        let yield_value: u128 = deposit_value(
             senior_vault_yield,
             ctx.accounts.asset_mint.decimals,
             &price,
@@ -264,10 +265,19 @@ pub mod grai {
 
     /// View: sum of grai_vault balances priced via Chainlink.
     /// Remaining accounts per asset: senior_vault, senior_vault_ata, price_feed, mint.
-    pub fn calc_internal_value<'info>(
-        ctx: Context<'_, '_, 'info, 'info, CalcInternalValue<'info>>,
+    pub fn calc_nav<'info>(
+        ctx: Context<'_, '_, 'info, 'info, CalcNav>,
     ) -> Result<u128> {
-        internal_value::from_remaining_accounts(ctx.remaining_accounts, &ctx.accounts.clock)
+        let clock = Clock::get()?;
+        value_lens::from_remaining_accounts(ctx.remaining_accounts, &clock)
+    }
+
+    /// View: senior/junior vault token balances per asset.
+    /// Remaining accounts per asset: senior_vault, senior_vault_ata, junior_vault, junior_vault_ata.
+    pub fn get_vaults<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetVaults>,
+    ) -> Result<vault_lens::VaultsSnapshot> {
+        vault_lens::from_remaining_accounts(ctx.remaining_accounts)
     }
 }
 
@@ -320,6 +330,14 @@ impl JuniorVault {
     pub const SEED: &'static [u8] = b"junior_vault_state";
     pub const ATA_SEED: &'static [u8] = b"junior_vault_ata";
     pub const LEN: usize = 32 + 8;
+
+    pub fn ata_address(asset_mint: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[Self::ATA_SEED, asset_mint.as_ref()],
+            &crate::ID,
+        )
+        .0
+    }
 }
 
 #[account]
