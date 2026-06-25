@@ -1216,7 +1216,7 @@ describe("GRAI tokenomics", () => {
       totalValueBefore + expectedYieldValue,
     );
     expect(allocationAfter.allocatedAmount.toString()).to.equal(
-      (BigInt(allocationBefore.allocatedAmount.toString()) - yieldAmount).toString(),
+      allocationBefore.allocatedAmount.toString(),
     );
     expect(allocationAfter.yieldAmount.toString()).to.equal(
       (BigInt(allocationBefore.yieldAmount.toString()) + seniorVaultYield).toString(),

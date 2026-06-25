@@ -261,16 +261,13 @@ pub mod grai {
         )?;
 
         let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
-        grai_state.total_value = grai_state.total_value.checked_add(yield_value).ok_or(ErrorCode::MathOverflow)?;
-
         let junior_vault: &mut Account<'_, JuniorVault> = &mut ctx.accounts.junior_vault;
-
-        junior_vault.active_amount = junior_vault.active_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
-
         let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
-        allocation.yield_amount = allocation.yield_amount.checked_add(senior_vault_yield).ok_or(ErrorCode::MathOverflow)?;
-        allocation.allocated_amount = allocation.allocated_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
         
+        grai_state.total_value = grai_state.total_value.checked_add(yield_value).ok_or(ErrorCode::MathOverflow)?;
+        junior_vault.active_amount = junior_vault.active_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
+        allocation.yield_amount = allocation.yield_amount.checked_add(senior_vault_yield).ok_or(ErrorCode::MathOverflow)?;
+
         Ok(())
     }
 
