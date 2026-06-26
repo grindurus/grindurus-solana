@@ -126,7 +126,6 @@ pub mod grai {
             &ctx.accounts.minter,
             &ctx.accounts.minter_grai_ata,
             &ctx.accounts.price_feed,
-            &ctx.accounts.clock,
             &ctx.accounts.token_program,
             ctx.bumps.grai_state,
         )
@@ -155,7 +154,6 @@ pub mod grai {
             &ctx.accounts.minter,
             &ctx.accounts.minter_grai_ata,
             &ctx.accounts.price_feed,
-            &ctx.accounts.clock,
             &ctx.accounts.token_program,
             ctx.bumps.grai_state,
         )
@@ -262,12 +260,13 @@ pub mod grai {
             )?;
         }
 
+        let clock = Clock::get()?;
         let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
         let price: price_feed::ChainlinkPrice = fetch_price_from_feed(
             &price_feed_account,
             ctx.accounts.senior_vault.price_feed,
             &ctx.accounts.asset_mint.key(),
-            &ctx.accounts.clock,
+            &clock,
         )?;
         let yield_value: u128 = deposit_value(
             senior_vault_yield,

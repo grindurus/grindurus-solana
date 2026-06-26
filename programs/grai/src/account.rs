@@ -361,7 +361,6 @@ pub struct MintToken<'info> {
     )]
     pub minter_grai_ata: Box<Account<'info, TokenAccount>>,
 
-    pub clock: Sysvar<'info, Clock>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -439,7 +438,6 @@ pub struct MintSol<'info> {
     )]
     pub minter_grai_ata: Box<Account<'info, TokenAccount>>,
 
-    pub clock: Sysvar<'info, Clock>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -599,7 +597,6 @@ pub struct Distribute<'info> {
     )]
     pub treasury_ata: Account<'info, TokenAccount>,
 
-    pub clock: Sysvar<'info, Clock>,
     pub token_program: Program<'info, Token>,
 }
 

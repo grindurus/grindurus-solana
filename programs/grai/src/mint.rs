@@ -46,10 +46,10 @@ pub fn execute_mint<'info>(
     minter: &Signer<'info>,
     minter_grai_ata: &Account<'info, TokenAccount>,
     price_feed: &UncheckedAccount<'info>,
-    clock: &Sysvar<'info, Clock>,
     token_program: &Program<'info, Token>,
     grai_state_bump: u8,
 ) -> Result<()> {
+    let clock = Clock::get()?;
     let (idle_amount, asset_amount) = mint_split(amount, senior_vault.mint_split)?;
 
     token::transfer(
@@ -80,7 +80,7 @@ pub fn execute_mint<'info>(
         &price_feed.to_account_info(),
         senior_vault.price_feed,
         &asset_mint.key(),
-        clock,
+        &clock,
     )?;
 
     let deposit_value = deposit_value(amount, asset_mint.decimals, &price)?;
