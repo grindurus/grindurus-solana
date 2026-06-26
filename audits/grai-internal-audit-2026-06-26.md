@@ -206,7 +206,7 @@ Removed unused variants (`InvalidAssetKind`, `ActiveCapitalDeployed`, `NoRedeemA
 
 ### L-06. `burn` operation ordering
 
-Asset transfers execute before GRAI burn. Safe within a single atomic transaction.
+Asset transfers execute before GRAI burn. **Accepted:** within a single Solana transaction the order is atomic — either all CPIs succeed or the whole instruction rolls back, so CEI reordering adds no security benefit.
 
 ---
 
@@ -230,7 +230,7 @@ Asset transfers execute before GRAI burn. Safe within a single atomic transactio
 | ---------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `total_value` ≈ protocol NAV                   | ⚠️ Inflated when principal is returned via `distribute`; junior not included in burn |
 | `burn` redeems fair share of backing           | ❌ Senior idle only; duplicate vault exploit                                          |
-| Cannot remove vault with deployed capital      | ❌ `active_amount` not checked                                                        |
+| Cannot remove vault with deployed capital      | ✅ `active_amount == 0` + pause gate; vault idle swept to authority on remove         |
 | Oracle price is trustworthy                    | ⚠️ Chainlink OK; custom feed lacks ACL and staleness                                 |
 | `supply == 0 → total_value == 0`               | ✅ On full burn (modulo rounding dust)                                                |
 | `junior_ata.amount + active_amount` consistent | ✅ ATA authority is GraiState PDA                                                     |
@@ -285,11 +285,11 @@ The program is well-structured with solid modularity and happy-path test coverag
 
 ---
 
-## 11. Developer Response
+## 11. Developer Review
 
-Team review of audit findings (June 26, 2026). Status as of internal triage.
+Review of audit findings (June 26, 2026). Status as of internal triage.
 
-**Response commit:** `54d1c97ac1641ae3ba66c639835273d1f182ec0e` (`54d1c97`)
+**Fixes commit:** `f7cf6e0d57e38e0ca8fe2321e1d86c7b956634e5` (`f7cf6e0`)
 
 ### Critical
 
@@ -303,7 +303,7 @@ Team review of audit findings (June 26, 2026). Status as of internal triage.
 
 - [x] **H-02 — `distribute` principal vs yield** — **Resolved (by design).** `distribute` is meant to route **yield** (income) back into the protocol. Principal remains deployed and generates that yield; crediting `total_value` on the senior share of returned yield is correct for this model.
 
-- [ ] **H-03 — `remove_asset` deployed capital checks** — **Unresolved.** Will add guards: `junior_vault.active_amount == 0`, zero custody allocations, and related checks before vault removal.
+- [x] **H-03 — `remove_asset` deployed capital checks** — **Resolved.** `remove_asset` requires `senior_vault.pause` (minting frozen) and `junior_vault.active_amount == 0` (no principal tracked as deployed to custody). Removed the hard `vault_ata.amount == 0` preconditions: the instruction sweeps any remaining senior/junior vault ATA balances to `authority_ata`, then closes the vault ATAs and unregisters the asset. Shutdown flow: `set_pause(true)` → return deployed principal from custody wallets until `active_amount` is zero → `remove_asset`.
 
 - [ ] **H-04 — Authority centralization** — **Unresolved (accepted for v1).** Single centralized `authority` for initial launch; multisig + timelock planned for a later phase.
 
@@ -329,8 +329,8 @@ Team review of audit findings (June 26, 2026). Status as of internal triage.
 
 - [x] **L-03 — Mutable metadata** — **Resolved (accepted).** Metadata stays mutable; updates planned for mainnet branding (e.g. `v1` URI).
 
-- [ ] **L-04 — On-chain view instructions** — **Resolved (planned).** `get_nav` / `get_vaults` / `get_assets` remain on-chain for now; production UI will use an off-chain indexer.
+- [x] **L-04 — On-chain view instructions** — **Resolved.** View instructions are read-only and invoked via RPC simulation (`.view()`), not submitted transactions.
 
 - [x] **L-05 — `pause` mint-only** — **Resolved (by design).** Pause blocks mint; burn, allocate, and distribute stay available.
 
-- [ ] **L-06 — `burn` operation ordering** — **Unresolved.** Will reorder to burn GRAI before asset transfers (still atomic within one transaction).
+- [x] **L-06 — `burn` operation ordering** — **Resolved (won't fix).** Transfers run before GRAI burn, but the instruction is atomic: failure at any CPI reverts the entire transaction, so reordering to burn-first would not change safety or user outcomes.
