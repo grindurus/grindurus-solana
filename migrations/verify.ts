@@ -7,7 +7,13 @@ const GRAI_PROGRAM_ID =
   process.env.GRAI_PROGRAM_ID ??
   "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8";
 const IDL_PATH = path.join(__dirname, "..", "target", "idl", "grai.json");
-const PROGRAM_METADATA = "@solana-program/program-metadata@latest";
+const PROGRAM_METADATA_BIN = path.join(
+  __dirname,
+  "..",
+  "node_modules",
+  ".bin",
+  "program-metadata",
+);
 
 function walletPath(): string {
   return (
@@ -21,7 +27,12 @@ function rpcUrl(): string {
 }
 
 function runProgramMetadata(args: string[]): void {
-  execFileSync("npx", ["-y", PROGRAM_METADATA, ...args], {
+  if (!fs.existsSync(PROGRAM_METADATA_BIN)) {
+    throw new Error(
+      "program-metadata CLI not found. Run: npm install",
+    );
+  }
+  execFileSync(PROGRAM_METADATA_BIN, args, {
     cwd: path.join(__dirname, ".."),
     stdio: "inherit",
     env: process.env,
@@ -110,10 +121,12 @@ async function main(): Promise<void> {
   console.log("Done. Explorers should show the public IDL shortly.");
 }
 
+// npm run verify
+// or:
 // GRAI_PROGRAM_ID=APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8 \
 // ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 // ANCHOR_WALLET=~/.config/solana/id.json \
-// npx tsx migrations/verify.ts
+// npm run verify
 main().catch((err) => {
   console.error(err);
   process.exit(1);

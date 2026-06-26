@@ -4,12 +4,14 @@
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "test": "anchor test",
-    "ts-node": "tsx"
+    "ts-node": "tsx",
+    "verify": "tsx migrations/verify.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1"
   },
   "devDependencies": {
+    "@solana-program/program-metadata": "^0.7.0",
     "@solana/spl-token": "^0.4.13",
     "@solana/web3.js": "^1.98.0",
     "@types/bn.js": "^5.1.0",
