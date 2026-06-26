@@ -18,6 +18,7 @@ pub mod custom_price_feed {
         require!(decimals <= 18, ErrorCode::InvalidDecimals);
 
         let feed = &mut ctx.accounts.custom_price_feed;
+        feed.oracle = ctx.accounts.authority.key();
         feed.asset_mint = ctx.accounts.asset_mint.key();
         feed.description = description;
         feed.price = price;
@@ -71,7 +72,7 @@ pub struct Initialize<'info> {
 #[derive(Accounts)]
 #[instruction(price: i128)]
 pub struct SetPrice<'info> {
-    pub authority: Signer<'info>,
+    pub oracle: Signer<'info>,
 
     /// CHECK: SPL mint used as PDA seed.
     pub asset_mint: UncheckedAccount<'info>,
@@ -81,6 +82,7 @@ pub struct SetPrice<'info> {
         seeds = [CustomPriceFeed::SEED, asset_mint.key().as_ref()],
         bump = custom_price_feed.bump,
         constraint = custom_price_feed.asset_mint == asset_mint.key() @ ErrorCode::InvalidMint,
+        has_one = oracle @ ErrorCode::Unauthorized,
     )]
     pub custom_price_feed: Account<'info, CustomPriceFeed>,
 
@@ -89,6 +91,7 @@ pub struct SetPrice<'info> {
 
 #[account]
 pub struct CustomPriceFeed {
+    pub oracle: Pubkey,
     pub asset_mint: Pubkey,
     pub description: [u8; 32],
     pub price: i128,
@@ -99,11 +102,13 @@ pub struct CustomPriceFeed {
 
 impl CustomPriceFeed {
     pub const SEED: &'static [u8] = b"custom_feed";
-    pub const LEN: usize = 32 + 32 + 16 + 1 + 8 + 1;
+    pub const LEN: usize = 32 + 32 + 32 + 16 + 1 + 8 + 1;
 }
 
 #[error_code]
 pub enum ErrorCode {
+    #[msg("Only the feed oracle can perform this action")]
+    Unauthorized,
     #[msg("Price must be positive")]
     InvalidPrice,
     #[msg("Price decimals must be <= 18")]

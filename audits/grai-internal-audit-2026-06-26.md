@@ -178,7 +178,7 @@ Set once at `add_asset_vault` (defaults: 50% / 80%). No `set_mint_split` or `set
 
 ### M-06. `mint` does not verify registry membership
 
-Vault PDAs are tied to mint keys, but `asset_mints.contains(asset_mint)` is not enforced in `MintToken` / `MintSol`. Risk is low today because vaults are only created via `add_asset_vault`, but the invariant is not enforced.
+Vault PDAs are tied to mint keys, but `asset_mints.contains(asset_mint)` is not enforced in `MintToken` / `MintSol`. **Developer note:** considered redundant — `senior_vault` must exist and match `asset_mint`; vaults are only provisioned through `add_asset` (registry + vault) and torn down through `remove_asset`. Clients can read `asset_mints` via `get_assets` without a state-changing transaction.
 
 ---
 
@@ -190,7 +190,7 @@ Vault PDAs are tied to mint keys, but `asset_mints.contains(asset_mint)` is not 
 
 ### L-02. Dead error codes
 
-`InvalidAssetKind` and `ActiveCapitalDeployed` are defined but unused.
+Removed unused variants (`InvalidAssetKind`, `ActiveCapitalDeployed`, `NoRedeemAssets`, `InvalidRedeemAccounts`, `InvalidInternalValueAccounts`, `InvalidVaultBalanceAccounts`, `InvalidPriceDecimals`).
 
 ### L-03. Metadata is mutable
 
@@ -282,3 +282,55 @@ The program is well-structured with solid modularity and happy-path test coverag
 4. `**distribute` accounting** — risk of double-counting principal
 
 **Readiness:** pre-mainnet / requires remediation. External audit recommended after P0/P1 fixes.
+
+---
+
+## 11. Developer Response
+
+Team review of audit findings (June 26, 2026). Status as of internal triage.
+
+
+
+### Critical
+
+- [x] **C-01 — Duplicate vault in `burn`** — **Resolved.** Valid redemption is enforced via `grai_state.asset_mints`: remaining accounts must match registry length and order (one triplet per registered asset). Duplicate vault exploit is closed.
+
+- [x] **C-02 — Custom price feed ACL** — **Resolved.** `CustomPriceFeed` stores `oracle: Pubkey` (set on `initialize`). `set_price` requires `oracle` signer with `has_one = oracle`. Only the designated oracle can update price. Ops note: `grai` `set_price_feed` / `add_asset` must reference feeds initialized with a trusted oracle before mainnet.
+
+### High
+
+- [x] **H-01 — `total_value` vs burn redemption mismatch** — **Resolved (by design).** Senior/junior split on mint is intentional. GRAI NAV reflects full deposit value; burn redeems from senior idle only. Junior capital is deployed and returns via `distribute`.
+
+- [x] **H-02 — `distribute` principal vs yield** — **Resolved (by design).** `distribute` is meant to route **yield** (income) back into the protocol. Principal remains deployed and generates that yield; crediting `total_value` on the senior share of returned yield is correct for this model.
+
+- [ ] **H-03 — `remove_asset` deployed capital checks** — **Unresolved.** Will add guards: `junior_vault.active_amount == 0`, zero custody allocations, and related checks before vault removal.
+
+- [ ] **H-04 — Authority centralization** — **Unresolved (accepted for v1).** Single centralized `authority` for initial launch; multisig + timelock planned for a later phase.
+
+### Medium
+
+- [x] **M-01 — Custom feed staleness** — **Resolved (won't fix).** No staleness window for custom feeds; Chainlink feeds keep the 1-hour check.
+
+- [x] **M-02 — `distribute` balance / `active_amount` validation** — **Resolved (by design).** `distribute` no longer updates `junior_vault.active_amount`; `active_amount` tracks allocated principal via `allocate` only. Yield return is recorded in `custody_allocation.yield_amount` and `grai_state.total_value`. Explicit custody balance caps not added — failed transfers fail at CPI.
+
+- [x] **M-03 — Donation attack on senior vault** — **Resolved (by design).** Direct donations to senior vault are treated as protocol income, not an exploit.
+
+- [x] **M-04 — Cap on `asset_mints`** — **Resolved (won't fix).** No on-chain cap; registry size is governance/ops concern.
+
+- [x] **M-05 — Immutable `mint_split` / `yield_split`** — **Resolved.** `set_mint_split` and `set_yield_split` instructions added.
+
+- [x] **M-06 — `mint` registry membership check** — **Resolved (redundant).** Explicit `asset_mints.contains(asset_mint)` on mint is unnecessary: `mint` / `mint_sol` already require an initialized `senior_vault` PDA for `asset_mint`, and vaults are only created via `add_asset` (which registers the mint) and removed atomically via `remove_asset`. Registry membership is enforced implicitly by account validation and vault lifecycle. Off-chain, `get_assets` exposes `asset_mints` for clients/indexers.
+
+### Low / Informational
+
+- [x] **L-01 — Rounding favors protocol** — **Resolved (by design).** Floor division dust retained in vaults/accounting is acceptable.
+
+- [x] **L-02 — Dead error codes** — **Resolved.** Removed unused variants: `InvalidAssetKind`, `ActiveCapitalDeployed`, `NoRedeemAssets`, `InvalidRedeemAccounts`, `InvalidInternalValueAccounts`, `InvalidVaultBalanceAccounts`, `InvalidPriceDecimals`.
+
+- [x] **L-03 — Mutable metadata** — **Resolved (accepted).** Metadata stays mutable; updates planned for mainnet branding (e.g. `v1` URI).
+
+- [ ] **L-04 — On-chain view instructions** — **Resolved (planned).** `get_nav` / `get_vaults` / `get_assets` remain on-chain for now; production UI will use an off-chain indexer.
+
+- [x] **L-05 — `pause` mint-only** — **Resolved (by design).** Pause blocks mint; burn, allocate, and distribute stay available.
+
+- [ ] **L-06 — `burn` operation ordering** — **Unresolved.** Will reorder to burn GRAI before asset transfers (still atomic within one transaction).

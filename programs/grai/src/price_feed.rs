@@ -19,6 +19,7 @@ pub struct ChainlinkPrice {
 
 #[account]
 pub struct CustomPriceFeed {
+    pub oracle: Pubkey,
     pub asset_mint: Pubkey,
     pub description: [u8; 32],
     pub price: i128,

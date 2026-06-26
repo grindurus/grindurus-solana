@@ -55,24 +55,26 @@ pub mod grai {
 
         let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
         grai_state.treasury_wallet = treasury_wallet;
-        msg!("Treasury wallet set: {}", treasury_wallet);
         Ok(())
     }
 
-    pub fn set_price_feed(ctx: Context<SetPriceFeed>) -> Result<()> {
-        asset_vault::set_price_feed(
-            &mut ctx.accounts.senior_vault,
-            &ctx.accounts.price_feed.key(),
-        )
+    pub fn set_price_feed(ctx: Context<SetPriceFeed>, price_feed: Pubkey) -> Result<()> {
+        asset_vault::set_price_feed(&mut ctx.accounts.senior_vault, &price_feed)
     }
 
     pub fn set_pause(ctx: Context<SetPause>, pause: bool) -> Result<()> {
-        let senior_vault: &mut Account<'_, SeniorVault> = &mut ctx.accounts.senior_vault;
-        senior_vault.pause = pause;
-        Ok(())
+        asset_vault::set_pause(&mut ctx.accounts.senior_vault, pause)
     }
 
-    pub fn add_asset_vault(ctx: Context<AddAssetVault>) -> Result<()> {
+    pub fn set_mint_split(ctx: Context<SetMintSplit>, mint_split: u16) -> Result<()> {
+        asset_vault::set_mint_split(&mut ctx.accounts.senior_vault, mint_split)
+    }
+
+    pub fn set_yield_split(ctx: Context<SetYieldSplit>, yield_split: u16) -> Result<()> {
+        asset_vault::set_yield_split(&mut ctx.accounts.senior_vault, yield_split)
+    }
+
+    pub fn add_asset(ctx: Context<AddAsset>) -> Result<()> {
         asset_vault::register(
             &ctx.accounts.authority,
             &mut ctx.accounts.junior_vault,
@@ -87,7 +89,7 @@ pub mod grai {
         )
     }
 
-    pub fn remove_asset_vault(ctx: Context<RemoveAssetVault>) -> Result<()> {
+    pub fn remove_asset(ctx: Context<RemoveAsset>) -> Result<()> {
         asset_registry::unregister(
             &mut ctx.accounts.grai_state,
             ctx.accounts.asset_mint.key(),
@@ -154,6 +156,9 @@ pub mod grai {
         )
     }
 
+    /// Burns GRAI and redeems a proportional share of senior idle per registered asset.
+    /// Remaining accounts in `grai_state.asset_mints` order per mint:
+    /// senior_vault, senior_vault_ata, redeemer_ata.
     pub fn burn<'info>(
         ctx: Context<'_, '_, 'info, 'info, BurnGrai<'info>>,
         grai_amount: u64,
@@ -172,6 +177,7 @@ pub mod grai {
         )?;
 
         process_remaining_assets(
+            &ctx.accounts.grai_state,
             ctx.remaining_accounts,
             grai_amount,
             total_supply,
@@ -261,11 +267,9 @@ pub mod grai {
         )?;
 
         let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
-        let junior_vault: &mut Account<'_, JuniorVault> = &mut ctx.accounts.junior_vault;
         let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
         
         grai_state.total_value = grai_state.total_value.checked_add(yield_value).ok_or(ErrorCode::MathOverflow)?;
-        junior_vault.active_amount = junior_vault.active_amount.checked_sub(yield_amount).ok_or(ErrorCode::MathOverflow)?;
         allocation.yield_amount = allocation.yield_amount.checked_add(senior_vault_yield).ok_or(ErrorCode::MathOverflow)?;
 
         Ok(())

@@ -4,7 +4,7 @@ use anchor_spl::token::{self, CloseAccount, Token, TokenAccount};
 use crate::{ErrorCode, GraiState, JuniorVault, SeniorVault};
 
 pub fn register(
-    authority: &Signer,
+    _authority: &Signer,
     junior_vault: &mut Account<JuniorVault>,
     senior_vault: &mut Account<SeniorVault>,
     asset_mint: &Pubkey,
@@ -20,11 +20,6 @@ pub fn register(
     junior_vault.asset_mint = *asset_mint;
     junior_vault.active_amount = 0;
 
-    msg!(
-        "assetVault registered: mint={}, authority={}",
-        asset_mint,
-        authority.key()
-    );
     Ok(())
 }
 
@@ -36,11 +31,31 @@ pub fn set_price_feed(
 
     senior_vault.price_feed = *price_feed;
 
-    msg!(
-        "Price feed set: mint={}, feed={}",
-        senior_vault.asset_mint,
-        price_feed
+    Ok(())
+}
+
+pub fn set_pause(senior_vault: &mut Account<SeniorVault>, pause: bool) -> Result<()> {
+    senior_vault.pause = pause;
+    Ok(())
+}
+
+pub fn set_mint_split(senior_vault: &mut Account<SeniorVault>, mint_split_bps: u16) -> Result<()> {
+    require!(
+        mint_split_bps <= SeniorVault::SPLIT_BPS_MAX,
+        ErrorCode::InvalidSplit
     );
+
+    senior_vault.mint_split = mint_split_bps;
+
+    Ok(())
+}
+
+pub fn set_yield_split(senior_vault: &mut Account<SeniorVault>, yield_split_bps: u16) -> Result<()> {
+    require!(
+        yield_split_bps <= SeniorVault::SPLIT_BPS_MAX,
+        ErrorCode::InvalidSplit
+    );
+    senior_vault.yield_split = yield_split_bps;
     Ok(())
 }
 
@@ -68,9 +83,5 @@ pub fn remove<'info>(
         ))?;
     }
 
-    msg!(
-        "assetVault removed: mint={}",
-        junior_vault.asset_mint
-    );
     Ok(())
 }

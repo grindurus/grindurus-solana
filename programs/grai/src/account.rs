@@ -80,9 +80,6 @@ pub struct SetPriceFeed<'info> {
         constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
     )]
     pub senior_vault: Account<'info, SeniorVault>,
-
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed.
-    pub price_feed: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -109,7 +106,53 @@ pub struct SetPause<'info> {
 }
 
 #[derive(Accounts)]
-pub struct AddAssetVault<'info> {
+#[instruction(mint_split: u16)]
+pub struct SetMintSplit<'info> {
+    pub authority: Signer<'info>,
+
+    pub asset_mint: Account<'info, Mint>,
+
+    #[account(
+        seeds = [GraiState::SEED],
+        bump,
+        has_one = authority @ ErrorCode::Unauthorized,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+
+    #[account(
+        mut,
+        seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub senior_vault: Account<'info, SeniorVault>,
+}
+
+#[derive(Accounts)]
+#[instruction(yield_split: u16)]
+pub struct SetYieldSplit<'info> {
+    pub authority: Signer<'info>,
+
+    pub asset_mint: Account<'info, Mint>,
+
+    #[account(
+        seeds = [GraiState::SEED],
+        bump,
+        has_one = authority @ ErrorCode::Unauthorized,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+
+    #[account(
+        mut,
+        seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub senior_vault: Account<'info, SeniorVault>,
+}
+
+#[derive(Accounts)]
+pub struct AddAsset<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
@@ -173,7 +216,7 @@ pub struct AddAssetVault<'info> {
 }
 
 #[derive(Accounts)]
-pub struct RemoveAssetVault<'info> {
+pub struct RemoveAsset<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
@@ -480,14 +523,6 @@ pub struct Distribute<'info> {
     pub grai_state: Account<'info, GraiState>,
 
     pub asset_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        seeds = [JuniorVault::SEED, asset_mint.key().as_ref()],
-        bump,
-        constraint = junior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-    )]
-    pub junior_vault: Account<'info, JuniorVault>,
 
     #[account(
         mut,

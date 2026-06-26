@@ -303,6 +303,22 @@ function getVaultsRemainingAccounts(
   });
 }
 
+function burnRemainingAccounts(
+  programId: PublicKey,
+  assetMints: PublicKey[],
+  redeemerAtaForMint: (mint: PublicKey) => PublicKey,
+): Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> {
+  return assetMints.flatMap((mint) => {
+    const [seniorVault] = seniorVaultPda(mint, programId);
+    const [seniorVaultAta] = seniorVaultAtaPda(mint, programId);
+    return [
+      { pubkey: seniorVault, isWritable: false, isSigner: false },
+      { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
+      { pubkey: redeemerAtaForMint(mint), isWritable: true, isSigner: false },
+    ];
+  });
+}
+
 describe("GRAI tokenomics", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -433,7 +449,7 @@ describe("GRAI tokenomics", () => {
     );
   });
 
-  it("add_asset_vault registers USDC vaults, price feed, and default splits", async () => {
+  it("add_asset registers USDC vaults, price feed, and default splits", async () => {
     const priceFeed = await setupUsdcWithPriceFeed(
       feedProgram,
       provider,
@@ -448,7 +464,7 @@ describe("GRAI tokenomics", () => {
     expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
 
     await program.methods
-      .addAssetVault()
+      .addAsset()
       .accountsPartial({
         authority,
         assetMint: usdcMint.publicKey,
@@ -559,7 +575,7 @@ describe("GRAI tokenomics", () => {
     expect(grai.totalValue.toString()).to.equal("2000000000");
   });
 
-  it("add_asset_vault registers SOL vaults and SOL/USD price feed", async () => {
+  it("add_asset registers SOL vaults and SOL/USD price feed", async () => {
     const priceFeed = await setupSolWithPriceFeed(feedProgram, authority);
     expect(priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
 
@@ -568,7 +584,7 @@ describe("GRAI tokenomics", () => {
     expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
 
     await program.methods
-      .addAssetVault()
+      .addAsset()
       .accountsPartial({
         authority,
         assetMint: NATIVE_MINT,
@@ -929,6 +945,7 @@ describe("GRAI tokenomics", () => {
 
     const burnerUsdcAta = await ensureAta(usdcMint.publicKey, authority);
     const burnerWsolAta = await ensureAta(NATIVE_MINT, authority);
+    const registry = await program.account.graiState.fetch(graiState);
 
     const burnerUsdcBefore = BigInt(
       (await provider.connection.getTokenAccountBalance(burnerUsdcAta)).value.amount,
@@ -952,14 +969,11 @@ describe("GRAI tokenomics", () => {
         graiMint: graiMint.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
-      .remainingAccounts([
-        { pubkey: seniorVault, isWritable: false, isSigner: false },
-        { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
-        { pubkey: burnerUsdcAta, isWritable: true, isSigner: false },
-        { pubkey: solSeniorVault, isWritable: false, isSigner: false },
-        { pubkey: solSeniorVaultAta, isWritable: true, isSigner: false },
-        { pubkey: burnerWsolAta, isWritable: true, isSigner: false },
-      ])
+      .remainingAccounts(
+        burnRemainingAccounts(program.programId, registry.assetMints, (mint) =>
+          mint.equals(usdcMint.publicKey) ? burnerUsdcAta : burnerWsolAta,
+        ),
+      )
       .rpc();
 
     const graiAfterBurn = BigInt(
@@ -1183,7 +1197,6 @@ describe("GRAI tokenomics", () => {
         custodyWallet: custodyWallet.publicKey,
         graiState,
         assetMint: usdcMint.publicKey,
-        juniorVault,
         seniorVault,
         custodyAllocation,
         custodyAta,
@@ -1209,9 +1222,7 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
 
-    expect(BigInt(juniorVaultAfter.activeAmount.toString())).to.equal(
-      activeBefore - yieldAmount,
-    );
+    expect(BigInt(juniorVaultAfter.activeAmount.toString())).to.equal(activeBefore);
     expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
       totalValueBefore + expectedYieldValue,
     );
@@ -1255,6 +1266,8 @@ describe("GRAI tokenomics", () => {
     const burnerUsdcBalanceBefore = BigInt(
       (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
     );
+    const burnerWsolAccount = await ensureAta(NATIVE_MINT, authority);
+    const registry = await program.account.graiState.fetch(graiState);
     const idleUsdcVaultBalanceBefore = BigInt(
       (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
@@ -1268,11 +1281,11 @@ describe("GRAI tokenomics", () => {
         graiMint: graiMint.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
-      .remainingAccounts([
-        { pubkey: seniorVault, isWritable: false, isSigner: false },
-        { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
-        { pubkey: burnerUsdcAccount, isWritable: true, isSigner: false },
-      ])
+      .remainingAccounts(
+        burnRemainingAccounts(program.programId, registry.assetMints, (mint) =>
+          mint.equals(usdcMint.publicKey) ? burnerUsdcAccount : burnerWsolAccount,
+        ),
+      )
       .rpc();
 
     const graiStateAfter = await program.account.graiState.fetch(graiState);
@@ -1334,6 +1347,8 @@ describe("GRAI tokenomics", () => {
     const burnerUsdcBalanceBefore = BigInt(
       (await provider.connection.getTokenAccountBalance(burnerUsdcAccount)).value.amount,
     );
+    const burnerWsolAccount = await ensureAta(NATIVE_MINT, authority);
+    const registry = await program.account.graiState.fetch(graiState);
     const idleUsdcVaultBalanceBefore = BigInt(
       (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
     );
@@ -1347,11 +1362,11 @@ describe("GRAI tokenomics", () => {
         graiMint: graiMint.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
-      .remainingAccounts([
-        { pubkey: seniorVault, isWritable: false, isSigner: false },
-        { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
-        { pubkey: burnerUsdcAccount, isWritable: true, isSigner: false },
-      ])
+      .remainingAccounts(
+        burnRemainingAccounts(program.programId, registry.assetMints, (mint) =>
+          mint.equals(usdcMint.publicKey) ? burnerUsdcAccount : burnerWsolAccount,
+        ),
+      )
       .rpc();
 
     const graiStateAfter = await program.account.graiState.fetch(graiState);
