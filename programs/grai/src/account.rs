@@ -239,6 +239,7 @@ pub struct RemoveAsset<'info> {
         seeds = [JuniorVault::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = junior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = junior_vault.active_amount == 0 @ ErrorCode::InsufficientActiveCapital,
         constraint = senior_vault.pause @ ErrorCode::AssetMintingEnabled,
     )]
     pub junior_vault: Account<'info, JuniorVault>,
@@ -256,7 +257,7 @@ pub struct RemoveAsset<'info> {
         mut,
         seeds = [SeniorVault::ATA_SEED, asset_mint.key().as_ref()],
         bump,
-        constraint = senior_vault_ata.amount == 0 @ ErrorCode::VaultNotEmpty,
+        constraint = senior_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
     )]
     pub senior_vault_ata: Account<'info, TokenAccount>,
 
@@ -264,11 +265,20 @@ pub struct RemoveAsset<'info> {
         mut,
         seeds = [JuniorVault::ATA_SEED, asset_mint.key().as_ref()],
         bump,
-        constraint = junior_vault_ata.amount == 0 @ ErrorCode::VaultNotEmpty,
+        constraint = junior_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
     )]
     pub junior_vault_ata: Account<'info, TokenAccount>,
 
+    #[account(
+        init_if_needed,
+        payer = authority,
+        associated_token::mint = asset_mint,
+        associated_token::authority = authority,
+    )]
+    pub authority_ata: Account<'info, TokenAccount>,
+
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 

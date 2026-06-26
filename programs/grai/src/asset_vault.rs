@@ -63,19 +63,46 @@ pub fn remove<'info>(
     authority: &Signer<'info>,
     grai_state: &Account<'info, GraiState>,
     grai_state_bump: u8,
-    junior_vault: &JuniorVault,
     senior_vault_ata: &Account<'info, TokenAccount>,
     junior_vault_ata: &Account<'info, TokenAccount>,
+    authority_ata: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
 ) -> Result<()> {
+    require_keys_eq!(
+        authority_ata.mint,
+        senior_vault_ata.mint,
+        ErrorCode::InvalidDestination
+    );
+    require_keys_eq!(
+        junior_vault_ata.mint,
+        senior_vault_ata.mint,
+        ErrorCode::InvalidGraiVault
+    );
+
     let grai_state_seeds: &[&[u8]; 2] = &[GraiState::SEED, &[grai_state_bump]];
     let grai_state_signer: &[&[&[u8]]; 1] = &[&grai_state_seeds[..]];
 
-    for vault in [senior_vault_ata, junior_vault_ata] {
+    for vault_ata in [senior_vault_ata, junior_vault_ata] {
+        let amount = vault_ata.amount;
+        if amount > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    token_program.to_account_info(),
+                    token::Transfer {
+                        from: vault_ata.to_account_info(),
+                        to: authority_ata.to_account_info(),
+                        authority: grai_state.to_account_info(),
+                    },
+                    grai_state_signer,
+                ),
+                amount,
+            )?;
+        }
+
         token::close_account(CpiContext::new_with_signer(
             token_program.to_account_info(),
             CloseAccount {
-                account: vault.to_account_info(),
+                account: vault_ata.to_account_info(),
                 destination: authority.to_account_info(),
                 authority: grai_state.to_account_info(),
             },

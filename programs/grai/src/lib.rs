@@ -99,9 +99,9 @@ pub mod grai {
             &ctx.accounts.authority,
             &ctx.accounts.grai_state,
             ctx.bumps.grai_state,
-            &ctx.accounts.junior_vault,
             &ctx.accounts.senior_vault_ata,
             &ctx.accounts.junior_vault_ata,
+            &ctx.accounts.authority_ata,
             &ctx.accounts.token_program,
         )
     }
