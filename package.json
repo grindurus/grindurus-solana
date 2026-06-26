@@ -5,7 +5,8 @@
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "test": "anchor test",
     "ts-node": "tsx",
-    "verify": "tsx migrations/verify.ts"
+    "verify": "tsx migrations/verify.ts",
+    "mint": "tsx migrations/mint.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1"
