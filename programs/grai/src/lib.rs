@@ -23,7 +23,7 @@ use account::*;
 use burn::process_remaining_assets;
 use tokenomics::{deposit_value, grai_burn_value, yield_split};
 
-declare_id!("14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k");
+declare_id!("APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8");
 
 #[program]
 pub mod grai {

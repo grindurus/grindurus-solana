@@ -5,9 +5,13 @@ package_manager = "npm"
 resolution = false
 skip-lint = false
 
-[programs.localnet]
-grai = "14YUdGTp3Qk2KbFpus8MV2d4hC5Ks3dvwy9mJbH4Bv7k"
+[programs.devnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
+grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
+
+[programs.localnet]
+custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
+grai = "9VQP2x6hNeoBJrXgqpS58dPQF6bcDD6Hz1SMrtjukr3p"
 
 [registry]
 url = "https://api.apr.dev"
@@ -19,12 +23,20 @@ wallet = "~/.config/solana/id.json"
 [scripts]
 test = "npx tsx ./node_modules/mocha/bin/mocha -t 1000000 tests/**/*.ts"
 
-[test.validator]
-
-[[test.validator.account]]
-address = "So11111111111111111111111111111111111111112"
-filename = "tests/fixtures/native_mint.json"
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgradeable = false
 
 [[test.genesis]]
 address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 program = "tests/fixtures/mpl_token_metadata.so"
+
+[test.validator]
+bind_address = "0.0.0.0"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899
+
+[[test.validator.account]]
+address = "So11111111111111111111111111111111111111112"
+filename = "tests/fixtures/native_mint.json"
