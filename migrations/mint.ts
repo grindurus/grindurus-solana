@@ -12,7 +12,6 @@ import {
   Keypair,
   PublicKey,
   SystemProgram,
-  SYSVAR_CLOCK_PUBKEY,
 } from "@solana/web3.js";
 import * as fs from "fs";
 import * as os from "os";
@@ -148,10 +147,9 @@ async function main(): Promise<void> {
       juniorVaultAta: solJuniorVaultAta,
       priceFeed: solUsdPriceFeed,
       graiMint: graiMint.publicKey,
-      minterWsolAta,
-      minterGraiAta,
-      clock: SYSVAR_CLOCK_PUBKEY,
-      tokenProgram: TOKEN_PROGRAM_ID,
+        minterWsolAta,
+        minterGraiAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
