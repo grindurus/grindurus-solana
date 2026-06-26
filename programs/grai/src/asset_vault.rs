@@ -13,7 +13,8 @@ pub fn register(
     senior_vault.asset_mint = *asset_mint;
     senior_vault.mint_split = SeniorVault::DEFAULT_MINT_SPLIT_BPS;
     senior_vault.yield_split = SeniorVault::DEFAULT_YIELD_SPLIT_BPS;
-    senior_vault.pause = false;
+    senior_vault.paused_minting = false;
+    senior_vault.total_value = 0;
 
     senior_vault.price_feed = *price_feed;
 
@@ -34,8 +35,11 @@ pub fn set_price_feed(
     Ok(())
 }
 
-pub fn set_pause(senior_vault: &mut Account<SeniorVault>, pause: bool) -> Result<()> {
-    senior_vault.pause = pause;
+pub fn set_paused_minting(
+    senior_vault: &mut Account<SeniorVault>,
+    paused_minting: bool,
+) -> Result<()> {
+    senior_vault.paused_minting = paused_minting;
     Ok(())
 }
 

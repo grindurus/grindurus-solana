@@ -65,7 +65,12 @@ pub fn single_asset<'info>(
         ErrorCode::InvalidChainlinkFeed
     );
 
-    let price = fetch_price_from_feed(price_feed, senior_vault.price_feed, clock)?;
+    let price = fetch_price_from_feed(
+        price_feed,
+        senior_vault.price_feed,
+        &senior_vault.asset_mint,
+        clock,
+    )?;
     value_usd(senior_vault_ata.amount, mint.decimals, &price)
 }
 

@@ -32,10 +32,38 @@ impl CustomPriceFeed {
     pub const SEED: &'static [u8] = b"custom_feed";
 }
 
+/// For Anchor account constraints (`constraint = ... @ ErrorCode`).
+pub fn matches_asset_mint(feed: &AccountInfo, asset_mint: Pubkey) -> bool {
+    ensure_feed_matches_asset_mint(feed, &asset_mint).is_ok()
+}
+
+/// Validates a custom feed PDA and `asset_mint` binding. Chainlink feeds are accepted without
+/// an on-chain pair check.
+pub fn ensure_feed_matches_asset_mint(
+    feed: &AccountInfo<'_>,
+    asset_mint: &Pubkey,
+) -> Result<()> {
+    if feed.owner != &CUSTOM_PRICE_FEED_PROGRAM_ID {
+        return Ok(());
+    }
+
+    let custom = deserialize_custom_feed(feed)?;
+    validate_custom_feed_pda(feed, &custom)?;
+    require_keys_eq!(
+        custom.asset_mint,
+        *asset_mint,
+        ErrorCode::InvalidCustomPriceFeed
+    );
+    require!(custom.price > 0, ErrorCode::InvalidChainlinkPrice);
+
+    Ok(())
+}
+
 /// Reads a configured price feed — program-owned custom feed or Chainlink v2 account.
 pub fn fetch_price_from_feed(
     price_feed: &AccountInfo<'_>,
     expected_feed: Pubkey,
+    expected_asset_mint: &Pubkey,
     clock: &Clock,
 ) -> Result<ChainlinkPrice> {
     require_keys_eq!(
@@ -45,7 +73,7 @@ pub fn fetch_price_from_feed(
     );
 
     if price_feed.owner == &CUSTOM_PRICE_FEED_PROGRAM_ID {
-        return fetch_custom_price_from_account(price_feed, clock);
+        return fetch_custom_price_from_account(price_feed, expected_asset_mint, clock);
     }
 
     fetch_chainlink_price_from_feed(price_feed, clock)
@@ -53,6 +81,7 @@ pub fn fetch_price_from_feed(
 
 pub fn fetch_custom_price_from_account(
     feed: &AccountInfo<'_>,
+    expected_asset_mint: &Pubkey,
     clock: &Clock,
 ) -> Result<ChainlinkPrice> {
     require!(
@@ -60,15 +89,13 @@ pub fn fetch_custom_price_from_account(
         ErrorCode::InvalidCustomPriceFeed
     );
 
-    let data = feed.try_borrow_data()?;
-    let mut data_slice: &[u8] = &data;
-    let custom = CustomPriceFeed::try_deserialize(&mut data_slice)?;
-
-    let (expected_pda, _) = Pubkey::find_program_address(
-        &[CustomPriceFeed::SEED, custom.asset_mint.as_ref()],
-        &CUSTOM_PRICE_FEED_PROGRAM_ID,
+    let custom = deserialize_custom_feed(feed)?;
+    validate_custom_feed_pda(feed, &custom)?;
+    require_keys_eq!(
+        custom.asset_mint,
+        *expected_asset_mint,
+        ErrorCode::InvalidCustomPriceFeed
     );
-    require_keys_eq!(feed.key(), expected_pda, ErrorCode::InvalidCustomPriceFeed);
     require!(custom.price > 0, ErrorCode::InvalidChainlinkPrice);
 
     Ok(ChainlinkPrice {
@@ -77,6 +104,21 @@ pub fn fetch_custom_price_from_account(
         updated_at: custom.updated_at,
         updated_slot: clock.slot,
     })
+}
+
+fn deserialize_custom_feed(feed: &AccountInfo<'_>) -> Result<CustomPriceFeed> {
+    let data = feed.try_borrow_data()?;
+    let mut data_slice: &[u8] = &data;
+    CustomPriceFeed::try_deserialize(&mut data_slice).map_err(|_| ErrorCode::InvalidCustomPriceFeed.into())
+}
+
+fn validate_custom_feed_pda(feed: &AccountInfo<'_>, custom: &CustomPriceFeed) -> Result<()> {
+    let (expected_pda, _) = Pubkey::find_program_address(
+        &[CustomPriceFeed::SEED, custom.asset_mint.as_ref()],
+        &CUSTOM_PRICE_FEED_PROGRAM_ID,
+    );
+    require_keys_eq!(feed.key(), expected_pda, ErrorCode::InvalidCustomPriceFeed);
+    Ok(())
 }
 
 pub fn fetch_chainlink_price_from_feed(

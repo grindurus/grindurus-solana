@@ -62,8 +62,8 @@ pub mod grai {
         asset_vault::set_price_feed(&mut ctx.accounts.senior_vault, &price_feed)
     }
 
-    pub fn set_pause(ctx: Context<SetPause>, pause: bool) -> Result<()> {
-        asset_vault::set_pause(&mut ctx.accounts.senior_vault, pause)
+    pub fn set_paused_minting(ctx: Context<SetPausedMinting>, paused_minting: bool) -> Result<()> {
+        asset_vault::set_paused_minting(&mut ctx.accounts.senior_vault, paused_minting)
     }
 
     pub fn set_mint_split(ctx: Context<SetMintSplit>, mint_split: u16) -> Result<()> {
@@ -90,10 +90,15 @@ pub mod grai {
     }
 
     pub fn remove_asset(ctx: Context<RemoveAsset>) -> Result<()> {
-        asset_registry::unregister(
-            &mut ctx.accounts.grai_state,
-            ctx.accounts.asset_mint.key(),
-        )?;
+        let vault_total_value = ctx.accounts.senior_vault.total_value;
+
+        let grai_state = &mut ctx.accounts.grai_state;
+        grai_state.total_value = grai_state
+            .total_value
+            .checked_sub(vault_total_value)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        asset_registry::unregister(grai_state, ctx.accounts.asset_mint.key())?;
 
         asset_vault::remove(
             &ctx.accounts.authority,
@@ -111,7 +116,7 @@ pub mod grai {
 
         mint::execute_mint(
             amount,
-            &ctx.accounts.senior_vault,
+            &mut ctx.accounts.senior_vault,
             &ctx.accounts.asset_mint,
             &ctx.accounts.grai_mint,
             &mut ctx.accounts.grai_state,
@@ -140,7 +145,7 @@ pub mod grai {
 
         mint::execute_mint(
             amount,
-            &ctx.accounts.senior_vault,
+            &mut ctx.accounts.senior_vault,
             &ctx.accounts.asset_mint,
             &ctx.accounts.grai_mint,
             &mut ctx.accounts.grai_state,
@@ -170,10 +175,11 @@ pub mod grai {
         );
 
         let total_supply: u64 = ctx.accounts.grai_mint.supply;
+        let total_value_before = ctx.accounts.grai_state.total_value;
         let burn_value: u128 = grai_burn_value(
             grai_amount,
             total_supply,
-            ctx.accounts.grai_state.total_value,
+            total_value_before,
         )?;
 
         process_remaining_assets(
@@ -181,6 +187,8 @@ pub mod grai {
             ctx.remaining_accounts,
             grai_amount,
             total_supply,
+            burn_value,
+            total_value_before,
             ctx.accounts.grai_state.to_account_info(),
             ctx.bumps.grai_state,
             ctx.accounts.token_program.to_account_info(),
@@ -258,6 +266,7 @@ pub mod grai {
         let price: price_feed::ChainlinkPrice = fetch_price_from_feed(
             &price_feed_account,
             ctx.accounts.senior_vault.price_feed,
+            &ctx.accounts.asset_mint.key(),
             &ctx.accounts.clock,
         )?;
         let yield_value: u128 = deposit_value(
@@ -267,10 +276,21 @@ pub mod grai {
         )?;
 
         let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
+        let senior_vault: &mut Account<'_, SeniorVault> = &mut ctx.accounts.senior_vault;
         let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
-        
-        grai_state.total_value = grai_state.total_value.checked_add(yield_value).ok_or(ErrorCode::MathOverflow)?;
-        allocation.yield_amount = allocation.yield_amount.checked_add(senior_vault_yield).ok_or(ErrorCode::MathOverflow)?;
+
+        grai_state.total_value = grai_state
+            .total_value
+            .checked_add(yield_value)
+            .ok_or(ErrorCode::MathOverflow)?;
+        senior_vault.total_value = senior_vault
+            .total_value
+            .checked_add(yield_value)
+            .ok_or(ErrorCode::MathOverflow)?;
+        allocation.yield_amount = allocation
+            .yield_amount
+            .checked_add(senior_vault_yield)
+            .ok_or(ErrorCode::MathOverflow)?;
 
         Ok(())
     }
@@ -330,7 +350,9 @@ pub struct SeniorVault {
     pub price_feed: Pubkey,
     pub mint_split: u16,    // how much mint_split goes to senior vault
     pub yield_split: u16,   // how much yield_split goes to senior vault
-    pub pause: bool,
+    pub paused_minting: bool,
+    /// Cumulative USD value (9 decimals) from mint deposits and senior yield credited via `distribute`.
+    pub total_value: u128,
 }
 
 impl SeniorVault {
@@ -339,7 +361,7 @@ impl SeniorVault {
     pub const SPLIT_BPS_MAX: u16 = 100_00;
     pub const DEFAULT_MINT_SPLIT_BPS: u16 = 50_00;
     pub const DEFAULT_YIELD_SPLIT_BPS: u16 = 80_00;
-    pub const LEN: usize = 32 + 32 + 2 + 2 + 1;
+    pub const LEN: usize = 32 + 32 + 2 + 2 + 1 + 16;
 
     pub fn ata_address(asset_mint: &Pubkey) -> Pubkey {
         Pubkey::find_program_address(

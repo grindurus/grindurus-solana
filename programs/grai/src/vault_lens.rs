@@ -9,7 +9,8 @@ pub struct SeniorVaultInfo {
     pub price_feed: Pubkey,
     pub mint_split: u16,
     pub yield_split: u16,
-    pub pause: bool,
+    pub paused_minting: bool,
+    pub total_value: u128,
     pub balance: u64,
 }
 
@@ -140,7 +141,8 @@ fn vault_balances<'info>(
             price_feed: senior_vault.price_feed,
             mint_split: senior_vault.mint_split,
             yield_split: senior_vault.yield_split,
-            pause: senior_vault.pause,
+            paused_minting: senior_vault.paused_minting,
+            total_value: senior_vault.total_value,
             balance: senior_vault_ata.amount,
         },
         JuniorVaultInfo {

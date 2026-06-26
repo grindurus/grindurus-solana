@@ -26,8 +26,6 @@ pub enum ErrorCode {
     AssetMintingPaused,
     #[msg("Minting must be paused before removing graiVault")]
     AssetMintingEnabled,
-    #[msg("Vault must be empty before removing graiVault")]
-    VaultNotEmpty,
     #[msg("graiVault does not match mint")]
     InvalidGraiVault,
     #[msg("Custody wallet does not match")]

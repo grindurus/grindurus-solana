@@ -80,6 +80,22 @@ pub fn grai_burn_value(grai_amount: u64, total_supply: u64, total_value: u128) -
         .ok_or(ErrorCode::MathOverflow.into())
 }
 
+/// Per-vault share of a global burn, by mint-attributed `total_value`.
+pub fn vault_burn_value_share(
+    burn_value: u128,
+    vault_total_value: u128,
+    grai_total_value: u128,
+) -> Result<u128> {
+    if burn_value == 0 || vault_total_value == 0 || grai_total_value == 0 {
+        return Ok(0);
+    }
+
+    burn_value
+        .checked_mul(vault_total_value)
+        .and_then(|v| v.checked_div(grai_total_value))
+        .ok_or(ErrorCode::MathOverflow.into())
+}
+
 /// `redeem_amount = share * idle`, share = grai_amount / total_supply.
 pub fn redeem_asset_amount(grai_amount: u64, total_supply: u64, idle_amount: u64) -> Result<u64> {
     require!(grai_amount > 0, ErrorCode::InvalidAmount);

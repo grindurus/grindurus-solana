@@ -36,7 +36,7 @@ pub fn wrap_sol<'info>(
 
 pub fn execute_mint<'info>(
     amount: u64,
-    senior_vault: &Account<'info, SeniorVault>,
+    senior_vault: &mut Account<'info, SeniorVault>,
     asset_mint: &Account<'info, Mint>,
     grai_mint: &Account<'info, Mint>,
     grai_state: &mut Account<'info, GraiState>,
@@ -79,6 +79,7 @@ pub fn execute_mint<'info>(
     let price = fetch_price_from_feed(
         &price_feed.to_account_info(),
         senior_vault.price_feed,
+        &asset_mint.key(),
         clock,
     )?;
 
@@ -104,6 +105,10 @@ pub fn execute_mint<'info>(
     )?;
 
     grai_state.total_value = grai_state
+        .total_value
+        .checked_add(deposit_value)
+        .ok_or(ErrorCode::MathOverflow)?;
+    senior_vault.total_value = senior_vault
         .total_value
         .checked_add(deposit_value)
         .ok_or(ErrorCode::MathOverflow)?;

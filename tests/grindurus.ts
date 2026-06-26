@@ -312,11 +312,26 @@ function burnRemainingAccounts(
     const [seniorVault] = seniorVaultPda(mint, programId);
     const [seniorVaultAta] = seniorVaultAtaPda(mint, programId);
     return [
-      { pubkey: seniorVault, isWritable: false, isSigner: false },
+      { pubkey: seniorVault, isWritable: true, isSigner: false },
       { pubkey: seniorVaultAta, isWritable: true, isSigner: false },
       { pubkey: redeemerAtaForMint(mint), isWritable: true, isSigner: false },
     ];
   });
+}
+
+async function expectTransactionError(
+  promise: Promise<unknown>,
+  errorCode: string,
+): Promise<void> {
+  try {
+    await promise;
+    expect.fail(`expected transaction to fail with ${errorCode}`);
+  } catch (err: unknown) {
+    const anchorErr = err as anchor.AnchorError;
+    const code = anchorErr.error?.errorCode?.code ?? "";
+    const message = err instanceof Error ? err.message : String(err);
+    expect(`${code} ${message}`).to.include(errorCode);
+  }
 }
 
 describe("GRAI tokenomics", () => {
@@ -484,7 +499,7 @@ describe("GRAI tokenomics", () => {
     const seniorVaultAccount = await program.account.seniorVault.fetch(seniorVault);
     expect(vault.assetMint.toBase58()).to.equal(usdcMint.publicKey.toBase58());
     expect(seniorVaultAccount.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
-    expect(seniorVaultAccount.pause).to.be.false;
+    expect(seniorVaultAccount.pausedMinting).to.be.false;
     expect(seniorVaultAccount.mintSplit).to.equal(5_000);
     expect(seniorVaultAccount.yieldSplit).to.equal(8_000);
 
@@ -493,9 +508,9 @@ describe("GRAI tokenomics", () => {
     expect(usdcRegistry.assetMints[0].toBase58()).to.equal(usdcMint.publicKey.toBase58());
   });
 
-  it("set_pause toggles USDC senior vault minting gate", async () => {
+  it("set_paused_minting toggles USDC senior vault minting gate", async () => {
     await program.methods
-      .setPause(true)
+      .setPausedMinting(true)
       .accountsPartial({
         authority,
         assetMint: usdcMint.publicKey,
@@ -505,10 +520,10 @@ describe("GRAI tokenomics", () => {
       .rpc();
 
     let senior = await program.account.seniorVault.fetch(seniorVault);
-    expect(senior.pause).to.be.true;
+    expect(senior.pausedMinting).to.be.true;
 
     await program.methods
-      .setPause(false)
+      .setPausedMinting(false)
       .accountsPartial({
         authority,
         assetMint: usdcMint.publicKey,
@@ -518,7 +533,7 @@ describe("GRAI tokenomics", () => {
       .rpc();
 
     senior = await program.account.seniorVault.fetch(seniorVault);
-    expect(senior.pause).to.be.false;
+    expect(senior.pausedMinting).to.be.false;
   });
 
   it("mint deposits 2 USDC and mints GRAI at $1 custom oracle price", async () => {
@@ -604,7 +619,7 @@ describe("GRAI tokenomics", () => {
     const seniorVaultAccount = await program.account.seniorVault.fetch(solSeniorVault);
     expect(vault.assetMint.toBase58()).to.equal(NATIVE_MINT.toBase58());
     expect(seniorVaultAccount.priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
-    expect(seniorVaultAccount.pause).to.be.false;
+    expect(seniorVaultAccount.pausedMinting).to.be.false;
     expect(seniorVaultAccount.mintSplit).to.equal(5_000);
     expect(seniorVaultAccount.yieldSplit).to.equal(8_000);
 
@@ -792,7 +807,7 @@ describe("GRAI tokenomics", () => {
     expect(usdcSenior!.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
     expect(usdcSenior!.mintSplit).to.equal(5_000);
     expect(usdcSenior!.yieldSplit).to.equal(8_000);
-    expect(usdcSenior!.pause).to.be.false;
+    expect(usdcSenior!.pausedMinting).to.be.false;
     expect(usdcJuniorEntry!.balance.toString()).to.equal(usdcJuniorBalance.toString());
     expect(usdcJuniorEntry!.activeAmount.toString()).to.equal(
       usdcJunior.activeAmount.toString(),
@@ -802,11 +817,244 @@ describe("GRAI tokenomics", () => {
     expect(solSenior!.priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
     expect(solSenior!.mintSplit).to.equal(5_000);
     expect(solSenior!.yieldSplit).to.equal(8_000);
-    expect(solSenior!.pause).to.be.false;
+    expect(solSenior!.pausedMinting).to.be.false;
     expect(solJuniorEntry!.balance.toString()).to.equal(solJuniorBalance.toString());
     expect(solJuniorEntry!.activeAmount.toString()).to.equal(
       solJunior.activeAmount.toString(),
     );
+  });
+
+  describe("remediation coverage", () => {
+    it("set_mint_split and set_yield_split update senior vault config", async () => {
+      await program.methods
+        .setMintSplit(6_000)
+        .accountsPartial({
+          authority,
+          assetMint: usdcMint.publicKey,
+          graiState,
+          seniorVault,
+        })
+        .rpc();
+
+      await program.methods
+        .setYieldSplit(7_000)
+        .accountsPartial({
+          authority,
+          assetMint: usdcMint.publicKey,
+          graiState,
+          seniorVault,
+        })
+        .rpc();
+
+      const senior = await program.account.seniorVault.fetch(seniorVault);
+      expect(senior.mintSplit).to.equal(6_000);
+      expect(senior.yieldSplit).to.equal(7_000);
+    });
+
+    it("rejects add_asset when custom price feed asset mint mismatches", async () => {
+      const rogueMint = Keypair.generate();
+      await createTestSplMint(provider, authority, rogueMint, usdcDecimals);
+      const [rogueJuniorVault] = juniorVaultPda(rogueMint.publicKey, program.programId);
+      const [rogueSeniorVault] = seniorVaultPda(rogueMint.publicKey, program.programId);
+      const [rogueSeniorVaultAta] = seniorVaultAtaPda(
+        rogueMint.publicKey,
+        program.programId,
+      );
+      const [rogueJuniorVaultAta] = juniorVaultAtaPda(
+        rogueMint.publicKey,
+        program.programId,
+      );
+
+      await expectTransactionError(
+        program.methods
+          .addAsset()
+          .accountsPartial({
+            authority,
+            assetMint: rogueMint.publicKey,
+            graiState,
+            juniorVault: rogueJuniorVault,
+            seniorVault: rogueSeniorVault,
+            seniorVaultAta: rogueSeniorVaultAta,
+            juniorVaultAta: rogueJuniorVaultAta,
+            priceFeed: solUsdFeed,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT_PUBKEY,
+          })
+          .rpc(),
+        "InvalidCustomPriceFeed",
+      );
+    });
+
+    it("rejects mint when price feed asset mint mismatches vault", async () => {
+      const minterUsdcAta = await mintUsdcTo(authority, 1_000_000n);
+      const minterGraiAta = getAssociatedTokenAddressSync(
+        graiMint.publicKey,
+        authority,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      );
+
+      await expectTransactionError(
+        program.methods
+          .mint(new anchor.BN(1_000_000))
+          .accountsPartial({
+            minter: authority,
+            graiState,
+            assetMint: usdcMint.publicKey,
+            seniorVault,
+            seniorVaultAta,
+            juniorVaultAta,
+            priceFeed: solUsdFeed,
+            minterAta: minterUsdcAta,
+            graiMint: graiMint.publicKey,
+            minterGraiAta: minterGraiAta,
+            clock: SYSVAR_CLOCK_PUBKEY,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(),
+        "InvalidCustomPriceFeed",
+      );
+    });
+
+    it("rejects burn when remaining account count does not match registry", async () => {
+      const minterUsdcAta = await mintUsdcTo(authority, 1_000_000n);
+      const minterGraiAta = await ensureAta(graiMint.publicKey, authority);
+      await program.methods
+        .mint(new anchor.BN(1_000_000))
+        .accountsPartial({
+          minter: authority,
+          graiState,
+          assetMint: usdcMint.publicKey,
+          seniorVault,
+          seniorVaultAta,
+          juniorVaultAta,
+          priceFeed: usdcUsdFeed,
+          minterAta: minterUsdcAta,
+          graiMint: graiMint.publicKey,
+          minterGraiAta,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const burnerGraiAta = minterGraiAta;
+      const burnerUsdcAta = await ensureAta(usdcMint.publicKey, authority);
+      const burnerWsolAta = await ensureAta(NATIVE_MINT, authority);
+      const registry = await program.account.graiState.fetch(graiState);
+      const graiBalance = BigInt(
+        (await provider.connection.getTokenAccountBalance(burnerGraiAta)).value.amount,
+      );
+      expect(graiBalance > 0n).to.be.true;
+      const burnAmount = new anchor.BN(
+        graiBalance > 1_000_000n ? 1_000_000n : graiBalance.toString(),
+      );
+
+      await expectTransactionError(
+        program.methods
+          .burn(burnAmount)
+          .accountsPartial({
+            burner: authority,
+            graiState,
+            burnerGraiAta,
+            graiMint: graiMint.publicKey,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .remainingAccounts(
+            burnRemainingAccounts(program.programId, registry.assetMints, (mint) =>
+              mint.equals(usdcMint.publicKey) ? burnerUsdcAta : burnerWsolAta,
+            ).slice(0, 3),
+          )
+          .rpc(),
+        "InvalidRedeemAccountCount",
+      );
+    });
+
+    it("rejects burn when remaining accounts are in wrong registry order", async () => {
+      const minterUsdcAta = await mintUsdcTo(authority, 1_000_000n);
+      const minterGraiAta = await ensureAta(graiMint.publicKey, authority);
+      await program.methods
+        .mint(new anchor.BN(1_000_000))
+        .accountsPartial({
+          minter: authority,
+          graiState,
+          assetMint: usdcMint.publicKey,
+          seniorVault,
+          seniorVaultAta,
+          juniorVaultAta,
+          priceFeed: usdcUsdFeed,
+          minterAta: minterUsdcAta,
+          graiMint: graiMint.publicKey,
+          minterGraiAta,
+          clock: SYSVAR_CLOCK_PUBKEY,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const burnerGraiAta = minterGraiAta;
+      const burnerUsdcAta = await ensureAta(usdcMint.publicKey, authority);
+      const burnerWsolAta = await ensureAta(NATIVE_MINT, authority);
+      const graiBalance = BigInt(
+        (await provider.connection.getTokenAccountBalance(burnerGraiAta)).value.amount,
+      );
+      expect(graiBalance > 0n).to.be.true;
+      const burnAmount = new anchor.BN(
+        graiBalance > 1_000_000n ? 1_000_000n : graiBalance.toString(),
+      );
+
+      await expectTransactionError(
+        program.methods
+          .burn(burnAmount)
+          .accountsPartial({
+            burner: authority,
+            graiState,
+            burnerGraiAta,
+            graiMint: graiMint.publicKey,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .remainingAccounts(
+            burnRemainingAccounts(
+              program.programId,
+              [NATIVE_MINT, usdcMint.publicKey],
+              (mint) =>
+                mint.equals(usdcMint.publicKey) ? burnerUsdcAta : burnerWsolAta,
+            ),
+          )
+          .rpc(),
+        "InvalidGraiVault",
+      );
+    });
+
+    it("rejects remove_asset when minting is not paused", async () => {
+      const authorityUsdcAta = await ensureAta(usdcMint.publicKey, authority);
+
+      await expectTransactionError(
+        program.methods
+          .removeAsset()
+          .accountsPartial({
+            authority,
+            assetMint: usdcMint.publicKey,
+            graiState,
+            juniorVault,
+            seniorVault,
+            seniorVaultAta,
+            juniorVaultAta,
+            authorityAta: authorityUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(),
+        "AssetMintingEnabled",
+      );
+    });
   });
 
   it("mint USDC and SOL mint different GRAI amounts; burn half redeems USDC and wSOL", async () => {
@@ -1179,6 +1427,7 @@ describe("GRAI tokenomics", () => {
 
     const activeBefore = BigInt(juniorVaultBefore.activeAmount.toString());
     const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
+    const vaultTotalValueBefore = BigInt(seniorVaultBefore.totalValue.toString());
     const custodyBalanceBefore = BigInt(
       (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
     );
@@ -1211,6 +1460,7 @@ describe("GRAI tokenomics", () => {
 
     const juniorVaultAfter = await program.account.juniorVault.fetch(juniorVault);
     const graiStateAfter = await program.account.graiState.fetch(graiState);
+    const seniorVaultAfter = await program.account.seniorVault.fetch(seniorVault);
     const allocationAfter = await program.account.custodyAllocation.fetch(custodyAllocation);
     const custodyBalanceAfter = BigInt(
       (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
@@ -1225,6 +1475,9 @@ describe("GRAI tokenomics", () => {
     expect(BigInt(juniorVaultAfter.activeAmount.toString())).to.equal(activeBefore);
     expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
       totalValueBefore + expectedYieldValue,
+    );
+    expect(BigInt(seniorVaultAfter.totalValue.toString())).to.equal(
+      vaultTotalValueBefore + expectedYieldValue,
     );
     expect(allocationAfter.allocatedAmount.toString()).to.equal(
       allocationBefore.allocatedAmount.toString(),
@@ -1397,5 +1650,77 @@ describe("GRAI tokenomics", () => {
     expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
       totalValueBefore - expectedBurnValueUsd,
     );
+  });
+
+  describe("remove_asset coverage", () => {
+    it("remove_asset after allocate sweeps vault balances and reduces total_value by vault attribution", async () => {
+      await program.methods
+        .setPausedMinting(true)
+        .accountsPartial({
+          authority,
+          assetMint: NATIVE_MINT,
+          graiState,
+          seniorVault: solSeniorVault,
+        })
+        .rpc();
+
+      const graiStateBefore = await program.account.graiState.fetch(graiState);
+      const solSeniorBefore = await program.account.seniorVault.fetch(solSeniorVault);
+      const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
+      const vaultTotalValueBefore = BigInt(solSeniorBefore.totalValue.toString());
+
+      const assetsBefore = graiStateBefore.assetMints.map((mint) => mint.toBase58());
+
+      const seniorIdleBefore = BigInt(
+        (await provider.connection.getTokenAccountBalance(solSeniorVaultAta)).value.amount,
+      );
+      const juniorIdleBefore = BigInt(
+        (await provider.connection.getTokenAccountBalance(solJuniorVaultAta)).value.amount,
+      );
+      const expectedSweep = seniorIdleBefore + juniorIdleBefore;
+
+      const authorityWsolAta = await ensureAta(NATIVE_MINT, authority);
+      const authorityWsolBefore = BigInt(
+        (await provider.connection.getTokenAccountBalance(authorityWsolAta)).value.amount,
+      );
+
+      await program.methods
+        .removeAsset()
+        .accountsPartial({
+          authority,
+          assetMint: NATIVE_MINT,
+          graiState,
+          juniorVault: solJuniorVault,
+          seniorVault: solSeniorVault,
+          seniorVaultAta: solSeniorVaultAta,
+          juniorVaultAta: solJuniorVaultAta,
+          authorityAta: authorityWsolAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const graiStateAfter = await program.account.graiState.fetch(graiState);
+      const assetsAfter = graiStateAfter.assetMints.map((mint) => mint.toBase58());
+      const authorityWsolAfter = BigInt(
+        (await provider.connection.getTokenAccountBalance(authorityWsolAta)).value.amount,
+      );
+
+      expect(assetsBefore).to.include(NATIVE_MINT.toBase58());
+      expect(assetsAfter).to.not.include(NATIVE_MINT.toBase58());
+      expect(assetsAfter).to.include(usdcMint.publicKey.toBase58());
+      expect(BigInt(graiStateAfter.totalValue.toString())).to.equal(
+        totalValueBefore - vaultTotalValueBefore,
+      );
+      expect(authorityWsolAfter - authorityWsolBefore).to.equal(expectedSweep);
+
+      await provider.connection
+        .getAccountInfo(solSeniorVault)
+        .then((info) => expect(info).to.be.null);
+      await provider.connection
+        .getAccountInfo(solJuniorVault)
+        .then((info) => expect(info).to.be.null);
+    });
   });
 });

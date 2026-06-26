@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, TokenAccount};
 
-use crate::tokenomics::redeem_asset_amount;
+use crate::tokenomics::{redeem_asset_amount, vault_burn_value_share};
 use crate::{ErrorCode, GraiState, SeniorVault};
 
 /// Accounts per registered asset: senior_vault, senior_vault_ata, redeemer_ata.
@@ -12,6 +12,8 @@ pub fn process_remaining_assets<'info>(
     remaining_accounts: &'info [AccountInfo<'info>],
     grai_amount: u64,
     total_supply: u64,
+    burn_value: u128,
+    total_value_before: u128,
     grai_state_info: AccountInfo<'info>,
     grai_state_bump: u8,
     token_program: AccountInfo<'info>,
@@ -39,6 +41,8 @@ pub fn process_remaining_assets<'info>(
             &chunk[2],
             grai_amount,
             total_supply,
+            burn_value,
+            total_value_before,
             grai_state_info.clone(),
             grai_state_signer,
             token_program.clone(),
@@ -55,11 +59,13 @@ fn redeem_single_asset<'info>(
     redeemer_ata_info: &'info AccountInfo<'info>,
     grai_amount: u64,
     total_supply: u64,
+    burn_value: u128,
+    total_value_before: u128,
     grai_state_info: AccountInfo<'info>,
     grai_state_signer: &[&[&[u8]]],
     token_program: AccountInfo<'info>,
 ) -> Result<()> {
-    let senior_vault: Account<SeniorVault> = Account::try_from(senior_vault_info)?;
+    let mut senior_vault: Account<SeniorVault> = Account::try_from(senior_vault_info)?;
     let (expected_pda, _) = Pubkey::find_program_address(
         &[SeniorVault::SEED, expected_asset_mint.as_ref()],
         &crate::ID,
@@ -79,6 +85,19 @@ fn redeem_single_asset<'info>(
         SeniorVault::ata_address(expected_asset_mint),
         ErrorCode::InvalidVault
     );
+
+    let vault_burn_value = vault_burn_value_share(
+        burn_value,
+        senior_vault.total_value,
+        total_value_before,
+    )?;
+    if vault_burn_value > 0 {
+        senior_vault.total_value = senior_vault
+            .total_value
+            .checked_sub(vault_burn_value)
+            .ok_or(ErrorCode::MathOverflow)?;
+        senior_vault.exit(&crate::ID)?;
+    }
 
     let senior_vault_ata: Account<TokenAccount> = Account::try_from(senior_vault_ata_info)?;
     let redeemer_ata: Account<TokenAccount> = Account::try_from(redeemer_ata_info)?;

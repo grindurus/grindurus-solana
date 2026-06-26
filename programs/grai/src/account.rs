@@ -7,6 +7,7 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 use crate::{
     CustodyAllocation, ErrorCode, GraiState, JuniorVault, SeniorVault,
 };
+use crate::price_feed;
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -61,6 +62,7 @@ pub struct SetTreasury<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(price_feed_key: Pubkey)]
 pub struct SetPriceFeed<'info> {
     pub authority: Signer<'info>,
 
@@ -80,11 +82,18 @@ pub struct SetPriceFeed<'info> {
         constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
     )]
     pub senior_vault: Account<'info, SeniorVault>,
+
+    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    #[account(
+        constraint = price_feed.key() == price_feed_key @ ErrorCode::InvalidChainlinkFeed,
+        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+    )]
+    pub price_feed: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
-#[instruction(pause: bool)]
-pub struct SetPause<'info> {
+#[instruction(paused_minting: bool)]
+pub struct SetPausedMinting<'info> {
     pub authority: Signer<'info>,
 
     pub asset_mint: Account<'info, Mint>,
@@ -207,7 +216,10 @@ pub struct AddAsset<'info> {
     )]
     pub senior_vault_ata: Account<'info, TokenAccount>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed.
+    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    #[account(
+        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+    )]
     pub price_feed: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
@@ -239,17 +251,16 @@ pub struct RemoveAsset<'info> {
         seeds = [JuniorVault::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = junior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-        constraint = junior_vault.active_amount == 0 @ ErrorCode::InsufficientActiveCapital,
-        constraint = senior_vault.pause @ ErrorCode::AssetMintingEnabled,
     )]
     pub junior_vault: Account<'info, JuniorVault>,
-
+    
     #[account(
         mut,
         close = authority,
         seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = senior_vault.paused_minting @ ErrorCode::AssetMintingEnabled,
     )]
     pub senior_vault: Account<'info, SeniorVault>,
 
@@ -303,7 +314,10 @@ pub struct MintToken<'info> {
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed.
+    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    #[account(
+        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+    )]
     pub price_feed: UncheckedAccount<'info>,
 
     #[account(
@@ -311,7 +325,7 @@ pub struct MintToken<'info> {
         seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-        constraint = !senior_vault.pause @ ErrorCode::AssetMintingPaused,
+        constraint = !senior_vault.paused_minting @ ErrorCode::AssetMintingPaused,
         has_one = price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
     pub senior_vault: Box<Account<'info, SeniorVault>>,
@@ -377,7 +391,10 @@ pub struct MintSol<'info> {
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed.
+    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    #[account(
+        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+    )]
     pub price_feed: UncheckedAccount<'info>,
 
     #[account(
@@ -385,7 +402,7 @@ pub struct MintSol<'info> {
         seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
-        constraint = !senior_vault.pause @ ErrorCode::AssetMintingPaused,
+        constraint = !senior_vault.paused_minting @ ErrorCode::AssetMintingPaused,
         has_one = price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
     pub senior_vault: Box<Account<'info, SeniorVault>>,
@@ -534,11 +551,18 @@ pub struct Distribute<'info> {
 
     pub asset_mint: Account<'info, Mint>,
 
+    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    #[account(
+        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+    )]
+    pub price_feed: UncheckedAccount<'info>,
+
     #[account(
         mut,
         seeds = [SeniorVault::SEED, asset_mint.key().as_ref()],
         bump,
         constraint = senior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        has_one = price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
     pub senior_vault: Account<'info, SeniorVault>,
 
@@ -574,9 +598,6 @@ pub struct Distribute<'info> {
         constraint = treasury_ata.owner == grai_state.treasury_wallet @ ErrorCode::InvalidDestination,
     )]
     pub treasury_ata: Account<'info, TokenAccount>,
-
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed.
-    pub price_feed: UncheckedAccount<'info>,
 
     pub clock: Sysvar<'info, Clock>,
     pub token_program: Program<'info, Token>,
