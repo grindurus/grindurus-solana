@@ -11,7 +11,7 @@ grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
 
 [programs.localnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
-grai = "9VQP2x6hNeoBJrXgqpS58dPQF6bcDD6Hz1SMrtjukr3p"
+grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
 
 [registry]
 url = "https://api.apr.dev"
