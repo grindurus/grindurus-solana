@@ -259,7 +259,7 @@ Devnet clones in `Anchor.toml`:
 | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` | Pyth USDC/USD     |
 
 
-Coverage: `tests/oracle_feeds.ts`.
+Coverage: `tests/oracles.t.ts`.
 
 ---
 
