@@ -6,12 +6,21 @@
     "test": "anchor test",
     "ts-node": "tsx",
     "verify": "tsx migrations/verify.ts",
-    "mint": "tsx migrations/mint.ts"
+    "mintSol": "tsx migrations/mintSol.ts",
+    "mint": "tsx migrations/mint.ts",
+    "allocate": "tsx migrations/allocate.ts",
+    "distribute": "tsx migrations/distribute.ts",
+    "unwrapSol": "tsx migrations/unwrapSol.ts",
+    "addAsset": "tsx migrations/addAsset.ts",
+    "setPriceFeed": "tsx migrations/setPriceFeed.ts",
+    "status": "tsx migrations/status.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1"
   },
   "devDependencies": {
+    "@chainlink/solana-sdk": "^0.2.2",
+    "@pythnetwork/pyth-solana-receiver": "^0.9.1",
     "@solana-program/program-metadata": "^0.7.0",
     "@solana/spl-token": "^0.4.13",
     "@solana/web3.js": "^1.98.0",

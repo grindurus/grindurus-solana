@@ -21,7 +21,7 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "npx tsx ./node_modules/mocha/bin/mocha -t 1000000 tests/**/*.ts"
+test = "npx tsx ./node_modules/mocha/bin/mocha -t 1000000 tests/oracle_feeds.ts tests/grindurus.ts"
 
 [test]
 startup_wait = 5000
@@ -36,6 +36,19 @@ program = "tests/fixtures/mpl_token_metadata.so"
 bind_address = "0.0.0.0"
 ledger = ".anchor/test-ledger"
 rpc_port = 8899
+url = "https://api.devnet.solana.com"
+
+[[test.validator.account]]
+address = "99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR"
+filename = "tests/fixtures/chainlink_sol_usd_devnet.json"
+
+[[test.validator.account]]
+address = "7BMab53iLPYoYqsy7nDZ9yvRaEJVDq3oaqHy5sS8GW1B"
+filename = "tests/fixtures/pyth_push_mock_sol_usd.json"
+
+[[test.validator.account]]
+address = "Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX"
+filename = "tests/fixtures/pyth_push_sol_usd_devnet.json"
 
 [[test.validator.account]]
 address = "So11111111111111111111111111111111111111112"
