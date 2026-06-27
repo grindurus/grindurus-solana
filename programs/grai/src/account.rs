@@ -83,7 +83,7 @@ pub struct SetPriceFeed<'info> {
     )]
     pub senior_vault: Account<'info, SeniorVault>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    /// CHECK: Chainlink, Pyth, or program-owned custom price feed for `asset_mint`.
     #[account(
         constraint = price_feed.key() == price_feed_key @ ErrorCode::InvalidChainlinkFeed,
         constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
@@ -216,7 +216,7 @@ pub struct AddAsset<'info> {
     )]
     pub senior_vault_ata: Account<'info, TokenAccount>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    /// CHECK: Chainlink, Pyth, or program-owned custom price feed for `asset_mint`.
     #[account(
         constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
     )]
@@ -314,7 +314,7 @@ pub struct MintToken<'info> {
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    /// CHECK: Chainlink, Pyth, or program-owned custom price feed for `asset_mint`.
     #[account(
         constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
     )]
@@ -390,7 +390,7 @@ pub struct MintSol<'info> {
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    /// CHECK: Chainlink, Pyth, or program-owned custom price feed for `asset_mint`.
     #[account(
         constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
     )]
@@ -549,7 +549,7 @@ pub struct Distribute<'info> {
 
     pub asset_mint: Account<'info, Mint>,
 
-    /// CHECK: Chainlink v2 feed or program-owned custom price feed for `asset_mint`.
+    /// CHECK: Chainlink, Pyth, or program-owned custom price feed for `asset_mint`.
     #[account(
         constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
     )]

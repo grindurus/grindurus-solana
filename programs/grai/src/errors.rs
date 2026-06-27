@@ -52,6 +52,12 @@ pub enum ErrorCode {
     AssetNotRegistered,
     #[msg("Custom price feed does not match asset mint")]
     InvalidCustomPriceFeed,
+    #[msg("Failed to read Pyth price feed account")]
+    PythReadError,
+    #[msg("Pyth price is stale")]
+    StalePythPrice,
+    #[msg("Pyth price must be positive")]
+    InvalidPythPrice,
     #[msg("Treasury wallet must be a valid pubkey")]
     InvalidTreasuryWallet,
     #[msg("Deposit split must be <= 10_000 bps")]

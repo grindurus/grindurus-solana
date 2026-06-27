@@ -14,7 +14,7 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/metadata"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/metadata", "custom_price_feed/idl-build"]
 custom-heap = []
 custom-panic = []
 anchor-debug = []
@@ -28,4 +28,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.31.1", features = ["token", "metadata", "associated_token"] }
 chainlink_solana = "2.0.8"
+custom_price_feed = { path = "../custom_price_feed", features = ["no-entrypoint"] }
+pyth-sdk-solana = "0.10.6"
 

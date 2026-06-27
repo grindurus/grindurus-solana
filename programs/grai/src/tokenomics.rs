@@ -1,13 +1,13 @@
 use anchor_lang::prelude::*;
 
-use crate::price_feed::ChainlinkPrice;
+use crate::price_feed::PriceData;
 use crate::{ErrorCode, GraiState, SeniorVault};
 
 /// USD value scale — matches GRAI token decimals.
 pub const USD_SCALE: u8 = GraiState::DECIMALS;
 
 /// `value = amount * price`, normalized to USD_SCALE. Zero amount yields zero.
-pub fn value_usd(amount: u64, asset_decimals: u8, price: &ChainlinkPrice) -> Result<u128> {
+pub fn value_usd(amount: u64, asset_decimals: u8, price: &PriceData) -> Result<u128> {
     if amount == 0 {
         return Ok(0);
     }
@@ -18,7 +18,7 @@ pub fn value_usd(amount: u64, asset_decimals: u8, price: &ChainlinkPrice) -> Res
 pub fn deposit_value(
     deposit_amount: u64,
     asset_decimals: u8,
-    price: &ChainlinkPrice,
+    price: &PriceData,
 ) -> Result<u128> {
     require!(deposit_amount > 0, ErrorCode::InvalidAmount);
     require!(price.price > 0, ErrorCode::InvalidChainlinkPrice);

@@ -262,7 +262,7 @@ pub mod grai {
 
         let clock = Clock::get()?;
         let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
-        let price: price_feed::ChainlinkPrice = fetch_price_from_feed(
+        let price: price_feed::PriceData = fetch_price_from_feed(
             &price_feed_account,
             ctx.accounts.senior_vault.price_feed,
             &ctx.accounts.asset_mint.key(),

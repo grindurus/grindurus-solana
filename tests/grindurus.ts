@@ -17,10 +17,11 @@ import {
   Keypair,
   PublicKey,
   SystemProgram,
-  SYSVAR_CLOCK_PUBKEY,
   SYSVAR_RENT_PUBKEY,
   Transaction,
 } from "@solana/web3.js";
+
+import { graiMint, usdcMint } from "./test_keys";
 
 const USDC_USD_PRICE = new anchor.BN(100_000_000); // $1.00, 8 decimals
 const SOL_USD_PRICE = new anchor.BN(15_000_000_000); // $150.00, 8 decimals
@@ -89,6 +90,11 @@ async function createTestSplMint(
   mint: Keypair,
   decimals: number,
 ): Promise<void> {
+  const existing = await provider.connection.getAccountInfo(mint.publicKey);
+  if (existing) {
+    return;
+  }
+
   const lamports = await provider.connection.getMinimumBalanceForRentExemption(
     MINT_SIZE,
   );
@@ -132,7 +138,6 @@ async function initTestPriceFeed(
       authority,
       assetMint: mint,
       customPriceFeed: priceFeed,
-      clock: SYSVAR_CLOCK_PUBKEY,
       systemProgram: SystemProgram.programId,
     })
     .rpc();
@@ -347,8 +352,6 @@ describe("GRAI tokenomics", () => {
     program.programId,
   );
 
-  const graiMint = Keypair.generate();
-  const usdcMint = Keypair.generate();
   const usdcDecimals = 6;
 
   const [juniorVault] = juniorVaultPda(usdcMint.publicKey, program.programId);
@@ -411,29 +414,34 @@ describe("GRAI tokenomics", () => {
 
   it("initialize creates graiState, GRAI mint, and Metaplex metadata", async () => {
     const metadata = graiMetadataPda(graiMint.publicKey);
+    const existing = await provider.connection.getAccountInfo(graiState);
 
-    await program.methods
-      .initialize()
-      .accountsPartial({
-        authority,
-        graiState,
-        graiMint: graiMint.publicKey,
-        metadata,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-        rent: SYSVAR_RENT_PUBKEY,
-      })
-      .signers([graiMint])
-      .rpc();
+    if (!existing) {
+      await program.methods
+        .initialize()
+        .accountsPartial({
+          authority,
+          graiState,
+          graiMint: graiMint.publicKey,
+          metadata,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .signers([graiMint])
+        .rpc();
+    }
 
     const grai = await program.account.graiState.fetch(graiState);
-    expect(grai.totalValue.toString()).to.equal("0");
-    expect(grai.treasuryWallet.toBase58()).to.equal(authority.toBase58());
     expect(grai.authority.toBase58()).to.equal(authority.toBase58());
 
-    const registry = await program.account.graiState.fetch(graiState);
-    expect(registry.assetMints).to.have.length(0);
+    if (!existing) {
+      expect(grai.totalValue.toString()).to.equal("0");
+      expect(grai.treasuryWallet.toBase58()).to.equal(authority.toBase58());
+      const registry = await program.account.graiState.fetch(graiState);
+      expect(registry.assetMints).to.have.length(0);
+    }
 
     const metadataAccount = await provider.connection.getAccountInfo(metadata);
     expect(metadataAccount).to.not.be.null;
@@ -478,22 +486,36 @@ describe("GRAI tokenomics", () => {
     expect(feed.price.toString()).to.equal(USDC_USD_PRICE.toString());
     expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
 
-    await program.methods
-      .addAsset()
-      .accountsPartial({
-        authority,
-        assetMint: usdcMint.publicKey,
-        graiState,
-        juniorVault,
-        seniorVault,
-        seniorVaultAta: seniorVaultAta,
-        juniorVaultAta: juniorVaultAta,
-        priceFeed: usdcUsdFeed,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-        rent: SYSVAR_RENT_PUBKEY,
-      })
-      .rpc();
+    const usdcSeniorInfo = await provider.connection.getAccountInfo(seniorVault);
+    if (!usdcSeniorInfo) {
+      await program.methods
+        .addAsset()
+        .accountsPartial({
+          authority,
+          assetMint: usdcMint.publicKey,
+          graiState,
+          juniorVault,
+          seniorVault,
+          seniorVaultAta: seniorVaultAta,
+          juniorVaultAta: juniorVaultAta,
+          priceFeed: usdcUsdFeed,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .rpc();
+    } else {
+      await program.methods
+        .setPriceFeed(usdcUsdFeed)
+        .accountsPartial({
+          authority,
+          assetMint: usdcMint.publicKey,
+          graiState,
+          seniorVault,
+          priceFeed: usdcUsdFeed,
+        })
+        .rpc();
+    }
 
     const vault = await program.account.juniorVault.fetch(juniorVault);
     const seniorVaultAccount = await program.account.seniorVault.fetch(seniorVault);
@@ -504,8 +526,9 @@ describe("GRAI tokenomics", () => {
     expect(seniorVaultAccount.yieldSplit).to.equal(8_000);
 
     const usdcRegistry = await program.account.graiState.fetch(graiState);
-    expect(usdcRegistry.assetMints).to.have.length(1);
-    expect(usdcRegistry.assetMints[0].toBase58()).to.equal(usdcMint.publicKey.toBase58());
+    expect(usdcRegistry.assetMints.map((m) => m.toBase58())).to.include(
+      usdcMint.publicKey.toBase58(),
+    );
   });
 
   it("set_paused_minting toggles USDC senior vault minting gate", async () => {
@@ -546,6 +569,36 @@ describe("GRAI tokenomics", () => {
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID,
     );
+    const graiStateBefore = await program.account.graiState.fetch(graiState);
+    const graiMintSupplyBefore = BigInt(
+      (await provider.connection.getTokenSupply(graiMint.publicKey)).value.amount,
+    );
+    const graiBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(minterGraiAccount)).value.amount,
+    );
+    const totalValueBefore = BigInt(graiStateBefore.totalValue.toString());
+    const depositValue = depositValueUsd(
+      depositAmount,
+      usdcDecimals,
+      BigInt(USDC_USD_PRICE.toString()),
+      USD_PRICE_DECIMALS,
+    );
+    const expectedMintAmount = graiMintAmount(
+      depositValue,
+      graiMintSupplyBefore,
+      totalValueBefore,
+    );
+    const seniorVaultBeforeMint = await program.account.seniorVault.fetch(seniorVault);
+    const idleBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+    const activeBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(juniorVaultAta)).value.amount,
+    );
+    const [idleAmount, assetAmount] = mintSplit(
+      depositAmount,
+      seniorVaultBeforeMint.mintSplit,
+    );
 
     await program.methods
       .mint(new anchor.BN(depositAmount.toString()))
@@ -560,25 +613,25 @@ describe("GRAI tokenomics", () => {
         minterAta: minterTokenAccount,
         graiMint: graiMint.publicKey,
         minterGraiAta: minterGraiAccount,
-        clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
 
-    const seniorVaultBeforeMint = await program.account.seniorVault.fetch(seniorVault);
-    const [idleAmount, assetAmount] = mintSplit(depositAmount, seniorVaultBeforeMint.mintSplit);
-
     const idleUsdcVaultBalance = await provider.connection.getTokenAccountBalance(
       seniorVaultAta,
     );
-    expect(idleUsdcVaultBalance.value.amount).to.equal(idleAmount.toString());
+    expect(idleUsdcVaultBalance.value.amount).to.equal(
+      (idleBefore + idleAmount).toString(),
+    );
 
     const activeUsdcVaultBalance = await provider.connection.getTokenAccountBalance(
       juniorVaultAta,
     );
-    expect(activeUsdcVaultBalance.value.amount).to.equal(assetAmount.toString());
+    expect(activeUsdcVaultBalance.value.amount).to.equal(
+      (activeBefore + assetAmount).toString(),
+    );
 
     const grai = await program.account.graiState.fetch(graiState);
     expect(grai.totalValue.gt(new anchor.BN(0))).to.be.true;
@@ -586,34 +639,57 @@ describe("GRAI tokenomics", () => {
     const graiMintAccount = await provider.connection.getTokenAccountBalance(
       minterGraiAccount,
     );
-    expect(graiMintAccount.value.amount).to.equal("2000000000");
-    expect(grai.totalValue.toString()).to.equal("2000000000");
+    expect(
+      BigInt(graiMintAccount.value.amount) - graiBalanceBefore,
+    ).to.equal(expectedMintAmount);
+    expect(
+      BigInt(grai.totalValue.toString()) - totalValueBefore,
+    ).to.equal(depositValue);
   });
 
   it("add_asset registers SOL vaults and SOL/USD price feed", async () => {
-    const priceFeed = await setupSolWithPriceFeed(feedProgram, authority);
-    expect(priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
+    const registryBefore = await program.account.graiState.fetch(graiState);
+    const solAlreadyRegistered = registryBefore.assetMints.some((mint) =>
+      mint.equals(NATIVE_MINT),
+    );
 
-    const feed = await feedProgram.account.customPriceFeed.fetch(solUsdFeed);
-    expect(feed.price.toString()).to.equal(SOL_USD_PRICE.toString());
-    expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
+    if (!solAlreadyRegistered) {
+      const priceFeed = await setupSolWithPriceFeed(feedProgram, authority);
+      expect(priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
 
-    await program.methods
-      .addAsset()
-      .accountsPartial({
-        authority,
-        assetMint: NATIVE_MINT,
-        graiState,
-        juniorVault: solJuniorVault,
-        seniorVault: solSeniorVault,
-        seniorVaultAta: solSeniorVaultAta,
-        juniorVaultAta: solJuniorVaultAta,
-        priceFeed: solUsdFeed,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-        rent: SYSVAR_RENT_PUBKEY,
-      })
-      .rpc();
+      const feed = await feedProgram.account.customPriceFeed.fetch(solUsdFeed);
+      expect(feed.price.toString()).to.equal(SOL_USD_PRICE.toString());
+      expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
+
+      await program.methods
+        .addAsset()
+        .accountsPartial({
+          authority,
+          assetMint: NATIVE_MINT,
+          graiState,
+          juniorVault: solJuniorVault,
+          seniorVault: solSeniorVault,
+          seniorVaultAta: solSeniorVaultAta,
+          juniorVaultAta: solJuniorVaultAta,
+          priceFeed: solUsdFeed,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .rpc();
+    } else {
+      await setupSolWithPriceFeed(feedProgram, authority);
+      await program.methods
+        .setPriceFeed(solUsdFeed)
+        .accountsPartial({
+          authority,
+          assetMint: NATIVE_MINT,
+          graiState,
+          seniorVault: solSeniorVault,
+          priceFeed: solUsdFeed,
+        })
+        .rpc();
+    }
 
     const vault = await program.account.juniorVault.fetch(solJuniorVault);
     const seniorVaultAccount = await program.account.seniorVault.fetch(solSeniorVault);
@@ -653,6 +729,12 @@ describe("GRAI tokenomics", () => {
     const totalValueBefore = (
       await program.account.graiState.fetch(graiState)
     ).totalValue;
+    const idleBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(solSeniorVaultAta)).value.amount,
+    );
+    const activeBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(solJuniorVaultAta)).value.amount,
+    );
 
     await program.methods
       .mintSol(new anchor.BN(depositLamports.toString()))
@@ -667,7 +749,6 @@ describe("GRAI tokenomics", () => {
         graiMint: graiMint.publicKey,
         minterWsolAta,
         minterGraiAta: minterGraiAccount,
-        clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -680,12 +761,16 @@ describe("GRAI tokenomics", () => {
     const idleSolVaultBalance = await provider.connection.getTokenAccountBalance(
       solSeniorVaultAta,
     );
-    expect(idleSolVaultBalance.value.amount).to.equal(idleAmount.toString());
+    expect(idleSolVaultBalance.value.amount).to.equal(
+      (idleBefore + idleAmount).toString(),
+    );
 
     const activeSolVaultBalance = await provider.connection.getTokenAccountBalance(
       solJuniorVaultAta,
     );
-    expect(activeSolVaultBalance.value.amount).to.equal(assetAmount.toString());
+    expect(activeSolVaultBalance.value.amount).to.equal(
+      (activeBefore + assetAmount).toString(),
+    );
 
     const depositValue = depositValueUsd(
       depositLamports,
@@ -910,7 +995,6 @@ describe("GRAI tokenomics", () => {
             minterAta: minterUsdcAta,
             graiMint: graiMint.publicKey,
             minterGraiAta: minterGraiAta,
-            clock: SYSVAR_CLOCK_PUBKEY,
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
@@ -936,7 +1020,6 @@ describe("GRAI tokenomics", () => {
           minterAta: minterUsdcAta,
           graiMint: graiMint.publicKey,
           minterGraiAta,
-          clock: SYSVAR_CLOCK_PUBKEY,
           tokenProgram: TOKEN_PROGRAM_ID,
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -991,7 +1074,6 @@ describe("GRAI tokenomics", () => {
           minterAta: minterUsdcAta,
           graiMint: graiMint.publicKey,
           minterGraiAta,
-          clock: SYSVAR_CLOCK_PUBKEY,
           tokenProgram: TOKEN_PROGRAM_ID,
           associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -1094,7 +1176,6 @@ describe("GRAI tokenomics", () => {
         minterAta: minterUsdcAta,
         graiMint: graiMint.publicKey,
         minterGraiAta: minterGraiAta,
-        clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -1137,7 +1218,6 @@ describe("GRAI tokenomics", () => {
         graiMint: graiMint.publicKey,
         minterWsolAta,
         minterGraiAta: minterGraiAta,
-        clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -1452,7 +1532,6 @@ describe("GRAI tokenomics", () => {
         seniorVaultAta,
         treasuryAta: treasuryUsdcAta,
         priceFeed: usdcUsdFeed,
-        clock: SYSVAR_CLOCK_PUBKEY,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([custodyWallet])
