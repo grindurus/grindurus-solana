@@ -536,6 +536,60 @@ pub struct Allocate<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(amount: u64)]
+pub struct Deallocate<'info> {
+    pub custody_wallet: Signer<'info>,
+
+    pub asset_mint: Account<'info, Mint>,
+
+    #[account(
+        seeds = [GraiState::SEED],
+        bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+
+    #[account(
+        mut,
+        seeds = [JuniorVault::SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = junior_vault.asset_mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+        constraint = junior_vault.active_amount >= amount @ ErrorCode::InsufficientActiveCapital,
+    )]
+    pub junior_vault: Account<'info, JuniorVault>,
+
+    #[account(
+        mut,
+        seeds = [
+            CustodyAllocation::SEED,
+            custody_wallet.key().as_ref(),
+            asset_mint.key().as_ref(),
+        ],
+        bump,
+        constraint = custody_allocation.allocated_amount >= amount @ ErrorCode::InsufficientAllocation,
+    )]
+    pub custody_allocation: Account<'info, CustodyAllocation>,
+
+    #[account(
+        mut,
+        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::InvalidDepositSource,
+        constraint = custody_ata.owner == custody_wallet.key() @ ErrorCode::InvalidCustody,
+        constraint = amount > 0 @ ErrorCode::InvalidAmount,
+        constraint = custody_ata.amount >= amount @ ErrorCode::InsufficientActiveCapital,
+    )]
+    pub custody_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [SeniorVault::ATA_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = senior_vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidGraiVault,
+    )]
+    pub senior_vault_ata: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
 #[instruction(yield_amount: u64)]
 pub struct Distribute<'info> {
     pub custody_wallet: Signer<'info>,

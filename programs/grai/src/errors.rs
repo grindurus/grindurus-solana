@@ -40,6 +40,8 @@ pub enum ErrorCode {
     InsufficientIdleLiquidity,
     #[msg("Insufficient active capital in custody")]
     InsufficientActiveCapital,
+    #[msg("Insufficient custody allocation")]
+    InsufficientAllocation,
     #[msg("burn remaining accounts must match grai_state.asset_mints length")]
     InvalidRedeemAccountCount,
     #[msg("get_nav remaining accounts must match grai_state.asset_mints length")]

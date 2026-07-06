@@ -8,6 +8,7 @@ mod account;
 mod metadata;
 mod mint;
 mod allocate;
+mod deallocate;
 mod burn;
 mod tokenomics;
 mod value_lens;
@@ -220,6 +221,18 @@ pub mod grai {
             &mut ctx.accounts.custody_allocation,
             &ctx.accounts.token_program,
             ctx.bumps.grai_state,
+        )
+    }
+
+    pub fn deallocate(ctx: Context<Deallocate>, amount: u64) -> Result<()> {
+        deallocate::execute_deallocate(
+            amount,
+            &mut ctx.accounts.junior_vault,
+            &mut ctx.accounts.custody_allocation,
+            &ctx.accounts.custody_ata,
+            &ctx.accounts.senior_vault_ata,
+            &ctx.accounts.custody_wallet,
+            &ctx.accounts.token_program,
         )
     }
 

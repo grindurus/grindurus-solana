@@ -1464,6 +1464,69 @@ describe("GRAI tokenomics", () => {
     expect(custodyBalance).to.equal(allocateAmount);
   });
 
+  it("deallocate returns principal from custody to senior vault", async () => {
+    const [custodyAllocation] = custodyAllocationPda(
+      custodyWallet.publicKey,
+      usdcMint.publicKey,
+      program.programId,
+    );
+    const custodyAta = getAssociatedTokenAddressSync(
+      usdcMint.publicKey,
+      custodyWallet.publicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+
+    const deallocateAmount = 200_000n;
+    const juniorVaultBefore = await program.account.juniorVault.fetch(juniorVault);
+    const allocationBefore = await program.account.custodyAllocation.fetch(custodyAllocation);
+    const seniorVaultAtaBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+    const custodyBalanceBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
+    );
+
+    expect(BigInt(allocationBefore.allocatedAmount.toString()) >= deallocateAmount).to.be.true;
+    expect(custodyBalanceBefore >= deallocateAmount).to.be.true;
+
+    await program.methods
+      .deallocate(new anchor.BN(deallocateAmount.toString()))
+      .accountsPartial({
+        custodyWallet: custodyWallet.publicKey,
+        assetMint: usdcMint.publicKey,
+        graiState,
+        juniorVault,
+        custodyAllocation,
+        custodyAta,
+        seniorVaultAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([custodyWallet])
+      .rpc();
+
+    const juniorVaultAfter = await program.account.juniorVault.fetch(juniorVault);
+    const allocationAfter = await program.account.custodyAllocation.fetch(custodyAllocation);
+    const seniorVaultAtaBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value.amount,
+    );
+    const custodyBalanceAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
+    );
+
+    expect(BigInt(juniorVaultAfter.activeAmount.toString())).to.equal(
+      BigInt(juniorVaultBefore.activeAmount.toString()) - deallocateAmount,
+    );
+    expect(BigInt(allocationAfter.allocatedAmount.toString())).to.equal(
+      BigInt(allocationBefore.allocatedAmount.toString()) - deallocateAmount,
+    );
+    expect(seniorVaultAtaBalanceAfter).to.equal(
+      seniorVaultAtaBalanceBefore + deallocateAmount,
+    );
+    expect(custodyBalanceAfter).to.equal(custodyBalanceBefore - deallocateAmount);
+  });
+
   it("distribute routes custody yield to senior vault idle and treasury per yield_split", async () => {
     const airdropSig = await provider.connection.requestAirdrop(
       custodyWallet.publicKey,
