@@ -8,10 +8,15 @@ skip-lint = false
 [programs.devnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
 grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
+lifi_custody = "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa"
 
 [programs.localnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
 grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
+lifi_custody = "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa"
+
+[programs.mainnet]
+lifi_custody = "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa"
 
 [registry]
 url = "https://api.apr.dev"
