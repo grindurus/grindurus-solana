@@ -195,33 +195,30 @@ function graiMetadataPda(mint: PublicKey): PublicKey {
   )[0];
 }
 
-function juniorVaultPda(mint: PublicKey, programId: PublicKey) {
+function assetConfigPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("junior_vault_state"), mint.toBuffer()],
+    [Buffer.from("asset"), mint.toBuffer()],
     programId,
   );
 }
 
-function seniorVaultPda(mint: PublicKey, programId: PublicKey) {
+function vaultAtaPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("senior_vault_state"), mint.toBuffer()],
+    [Buffer.from("vault"), mint.toBuffer()],
     programId,
   );
 }
 
-function seniorVaultAtaPda(mint: PublicKey, programId: PublicKey) {
+function grindersStatePda(grindersProgramId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("senior_vault_ata"), mint.toBuffer()],
-    programId,
-  );
+    [Buffer.from("grinders")],
+    grindersProgramId,
+  )[0];
 }
 
-function juniorVaultAtaPda(mint: PublicKey, programId: PublicKey) {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("junior_vault_ata"), mint.toBuffer()],
-    programId,
-  );
-}
+const GRINDERS_PROGRAM_ID = new PublicKey(
+  "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa",
+);
 
 async function createTestSplMint(
   provider: anchor.AnchorProvider,
@@ -298,17 +295,24 @@ describe("external oracles", () => {
     [Buffer.from("protocol")],
     program.programId,
   );
+  const grindersState = grindersStatePda(GRINDERS_PROGRAM_ID);
 
-  const [solJuniorVault] = juniorVaultPda(NATIVE_MINT, program.programId);
-  const [solSeniorVault] = seniorVaultPda(NATIVE_MINT, program.programId);
-  const [solSeniorVaultAta] = seniorVaultAtaPda(NATIVE_MINT, program.programId);
-  const [solJuniorVaultAta] = juniorVaultAtaPda(NATIVE_MINT, program.programId);
+  const [solAssetConfig] = assetConfigPda(NATIVE_MINT, program.programId);
+  const [solVaultAta] = vaultAtaPda(NATIVE_MINT, program.programId);
 
   const usdcDecimals = 6;
-  const [usdcJuniorVault] = juniorVaultPda(usdcMint.publicKey, program.programId);
-  const [usdcSeniorVault] = seniorVaultPda(usdcMint.publicKey, program.programId);
-  const [usdcSeniorVaultAta] = seniorVaultAtaPda(usdcMint.publicKey, program.programId);
-  const [usdcJuniorVaultAta] = juniorVaultAtaPda(usdcMint.publicKey, program.programId);
+  const [usdcAssetConfig] = assetConfigPda(usdcMint.publicKey, program.programId);
+  const [usdcVaultAta] = vaultAtaPda(usdcMint.publicKey, program.programId);
+
+  function grindersAta(mint: PublicKey): PublicKey {
+    return getAssociatedTokenAddressSync(
+      mint,
+      grindersState,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+  }
 
   async function ensureGraiInitialized(): Promise<void> {
     const graiStateInfo = await connection.getAccountInfo(graiState);
@@ -318,7 +322,7 @@ describe("external oracles", () => {
 
     const metadata = graiMetadataPda(graiMint.publicKey);
     await program.methods
-      .initialize()
+      .initialize(grindersState)
       .accountsPartial({
         authority,
         graiState,
@@ -343,11 +347,11 @@ describe("external oracles", () => {
     expect(parsed.decimals).to.equal(8);
   });
 
-  it("initializes GRAI, adds SOL with Chainlink feed, and mints from 0.1 SOL", async () => {
+  it("initializes GRAI, adds SOL with Chainlink feed, and deposits 0.1 SOL", async () => {
     await ensureGraiInitialized();
 
-    const minterGraiAta = await ensureGraiAta(provider, authority);
-    const minterWsolAta = getAssociatedTokenAddressSync(
+    const depositorGraiAta = await ensureGraiAta(provider, authority);
+    const depositorWsolAta = getAssociatedTokenAddressSync(
       NATIVE_MINT,
       authority,
       false,
@@ -358,18 +362,16 @@ describe("external oracles", () => {
     const graiBeforeInit = await program.account.graiState.fetch(graiState);
     expect(graiBeforeInit.authority.toBase58()).to.equal(authority.toBase58());
 
-    const solSeniorInfo = await connection.getAccountInfo(solSeniorVault);
-    if (!solSeniorInfo) {
+    const solConfigInfo = await connection.getAccountInfo(solAssetConfig);
+    if (!solConfigInfo) {
       await program.methods
         .addAsset()
         .accountsPartial({
           authority,
           assetMint: NATIVE_MINT,
           graiState,
-          juniorVault: solJuniorVault,
-          seniorVault: solSeniorVault,
-          seniorVaultAta: solSeniorVaultAta,
-          juniorVaultAta: solJuniorVaultAta,
+          assetConfig: solAssetConfig,
+          vaultAta: solVaultAta,
           priceFeed: CHAINLINK_SOL_USD_DEVNET,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -378,11 +380,9 @@ describe("external oracles", () => {
         .rpc();
     }
 
-    const seniorVaultAccount = await program.account.seniorVault.fetch(solSeniorVault);
-    expect(seniorVaultAccount.priceFeed.toBase58()).to.equal(
-      CHAINLINK_SOL_USD_DEVNET.toBase58(),
-    );
-    expect(seniorVaultAccount.assetMint.toBase58()).to.equal(NATIVE_MINT.toBase58());
+    const asset = await program.account.assetConfig.fetch(solAssetConfig);
+    expect(asset.priceFeed.toBase58()).to.equal(CHAINLINK_SOL_USD_DEVNET.toBase58());
+    expect(asset.assetMint.toBase58()).to.equal(NATIVE_MINT.toBase58());
 
     const registry = await program.account.graiState.fetch(graiState);
     expect(registry.assetMints.map((m) => m.toBase58())).to.include(
@@ -391,22 +391,22 @@ describe("external oracles", () => {
 
     const depositLamports = 100_000_000; // 0.1 SOL
     const graiBefore = BigInt(
-      (await connection.getTokenAccountBalance(minterGraiAta)).value.amount,
+      (await connection.getTokenAccountBalance(depositorGraiAta)).value.amount,
     );
 
     await program.methods
-      .mintSol(new anchor.BN(depositLamports))
+      .depositSol(new anchor.BN(depositLamports))
       .accountsPartial({
-        minter: authority,
+        depositor: authority,
         graiState,
         assetMint: NATIVE_MINT,
-        seniorVault: solSeniorVault,
-        seniorVaultAta: solSeniorVaultAta,
-        juniorVaultAta: solJuniorVaultAta,
-        priceFeed: CHAINLINK_SOL_USD_DEVNET,
         graiMint: graiMint.publicKey,
-        minterWsolAta,
-        minterGraiAta,
+        assetConfig: solAssetConfig,
+        priceFeed: CHAINLINK_SOL_USD_DEVNET,
+        grindersState,
+        depositorWsolAta,
+        grindersAta: grindersAta(NATIVE_MINT),
+        depositorGraiAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -414,7 +414,7 @@ describe("external oracles", () => {
       .rpc();
 
     const graiAfter = BigInt(
-      (await connection.getTokenAccountBalance(minterGraiAta)).value.amount,
+      (await connection.getTokenAccountBalance(depositorGraiAta)).value.amount,
     );
     expect(graiAfter > graiBefore).to.be.true;
 
@@ -437,7 +437,7 @@ describe("external oracles", () => {
     expect(parsed.decimals).to.equal(8);
   });
 
-  it("adds USDC with Pyth feed and mints GRAI from 1 USDC", async () => {
+  it("adds USDC with Pyth feed and deposits 1 USDC for GRAI", async () => {
     await ensureGraiInitialized();
 
     const pythUsdc = parsePythPushFeed(
@@ -447,18 +447,16 @@ describe("external oracles", () => {
 
     await createTestSplMint(provider, authority, usdcMint, usdcDecimals);
 
-    const usdcSeniorInfo = await connection.getAccountInfo(usdcSeniorVault);
-    if (!usdcSeniorInfo) {
+    const usdcConfigInfo = await connection.getAccountInfo(usdcAssetConfig);
+    if (!usdcConfigInfo) {
       await program.methods
         .addAsset()
         .accountsPartial({
           authority,
           assetMint: usdcMint.publicKey,
           graiState,
-          juniorVault: usdcJuniorVault,
-          seniorVault: usdcSeniorVault,
-          seniorVaultAta: usdcSeniorVaultAta,
-          juniorVaultAta: usdcJuniorVaultAta,
+          assetConfig: usdcAssetConfig,
+          vaultAta: usdcVaultAta,
           priceFeed: PYTH_USDC_USD_PUSH,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
@@ -467,31 +465,27 @@ describe("external oracles", () => {
         .rpc();
     }
 
-    const seniorVaultAccount = await program.account.seniorVault.fetch(usdcSeniorVault);
-    expect(seniorVaultAccount.priceFeed.toBase58()).to.equal(
-      PYTH_USDC_USD_PUSH.toBase58(),
-    );
-    expect(seniorVaultAccount.assetMint.toBase58()).to.equal(
-      usdcMint.publicKey.toBase58(),
-    );
+    const asset = await program.account.assetConfig.fetch(usdcAssetConfig);
+    expect(asset.priceFeed.toBase58()).to.equal(PYTH_USDC_USD_PUSH.toBase58());
+    expect(asset.assetMint.toBase58()).to.equal(usdcMint.publicKey.toBase58());
 
     const depositAmount = 1_000_000; // 1 USDC
-    const minterUsdcAta = getAssociatedTokenAddressSync(
+    const depositorUsdcAta = getAssociatedTokenAddressSync(
       usdcMint.publicKey,
       authority,
       false,
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID,
     );
-    const minterGraiAta = await ensureGraiAta(provider, authority);
+    const depositorGraiAta = await ensureGraiAta(provider, authority);
 
-    const minterUsdcInfo = await connection.getAccountInfo(minterUsdcAta);
-    if (!minterUsdcInfo) {
+    const depositorUsdcInfo = await connection.getAccountInfo(depositorUsdcAta);
+    if (!depositorUsdcInfo) {
       await provider.sendAndConfirm!(
         new Transaction().add(
           createAssociatedTokenAccountInstruction(
             authority,
-            minterUsdcAta,
+            depositorUsdcAta,
             authority,
             usdcMint.publicKey,
             TOKEN_PROGRAM_ID,
@@ -499,7 +493,7 @@ describe("external oracles", () => {
           ),
           createMintToInstruction(
             usdcMint.publicKey,
-            minterUsdcAta,
+            depositorUsdcAta,
             authority,
             depositAmount,
             [],
@@ -512,7 +506,7 @@ describe("external oracles", () => {
         new Transaction().add(
           createMintToInstruction(
             usdcMint.publicKey,
-            minterUsdcAta,
+            depositorUsdcAta,
             authority,
             depositAmount,
             [],
@@ -523,25 +517,25 @@ describe("external oracles", () => {
     }
 
     const graiBefore = BigInt(
-      (await connection.getTokenAccountBalance(minterGraiAta)).value.amount,
+      (await connection.getTokenAccountBalance(depositorGraiAta)).value.amount,
     );
     const totalValueBefore = BigInt(
       (await program.account.graiState.fetch(graiState)).totalValue.toString(),
     );
 
     await program.methods
-      .mint(new anchor.BN(depositAmount))
+      .deposit(new anchor.BN(depositAmount))
       .accountsPartial({
-        minter: authority,
+        depositor: authority,
         graiState,
         assetMint: usdcMint.publicKey,
-        seniorVault: usdcSeniorVault,
-        seniorVaultAta: usdcSeniorVaultAta,
-        juniorVaultAta: usdcJuniorVaultAta,
-        priceFeed: PYTH_USDC_USD_PUSH,
-        minterAta: minterUsdcAta,
         graiMint: graiMint.publicKey,
-        minterGraiAta,
+        assetConfig: usdcAssetConfig,
+        priceFeed: PYTH_USDC_USD_PUSH,
+        grindersState,
+        depositorAta: depositorUsdcAta,
+        grindersAta: grindersAta(usdcMint.publicKey),
+        depositorGraiAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -549,7 +543,7 @@ describe("external oracles", () => {
       .rpc();
 
     const graiAfter = BigInt(
-      (await connection.getTokenAccountBalance(minterGraiAta)).value.amount,
+      (await connection.getTokenAccountBalance(depositorGraiAta)).value.amount,
     );
     expect(graiAfter > graiBefore).to.be.true;
 

@@ -10,6 +10,10 @@ export const GRAI_PROGRAM_ID = new PublicKey(
   "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8",
 );
 
+export const GRINDERS_PROGRAM_ID = new PublicKey(
+  "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa",
+);
+
 export const GRAI_MINT_KEYPAIR_PATH = path.join(
   __dirname,
   "keys",
@@ -36,43 +40,89 @@ export function graiStatePda(programId: PublicKey): PublicKey {
   )[0];
 }
 
-export function seniorVaultPda(mint: PublicKey, programId: PublicKey): PublicKey {
+export function grindersStatePda(
+  programId: PublicKey = GRINDERS_PROGRAM_ID,
+): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("senior_vault_state"), mint.toBuffer()],
+    [Buffer.from("grinders")],
     programId,
   )[0];
 }
 
-export function juniorVaultPda(mint: PublicKey, programId: PublicKey): PublicKey {
+export function assetConfigPda(mint: PublicKey, programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("junior_vault_state"), mint.toBuffer()],
+    [Buffer.from("asset"), mint.toBuffer()],
     programId,
   )[0];
 }
 
-export function seniorVaultAtaPda(mint: PublicKey, programId: PublicKey): PublicKey {
+export function vaultAtaPda(mint: PublicKey, programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("senior_vault_ata"), mint.toBuffer()],
+    [Buffer.from("vault"), mint.toBuffer()],
     programId,
   )[0];
 }
 
-export function juniorVaultAtaPda(mint: PublicKey, programId: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("junior_vault_ata"), mint.toBuffer()],
-    programId,
-  )[0];
-}
-
-export function custodyAllocationPda(
+export function yieldByPda(
   custodyWallet: PublicKey,
   mint: PublicKey,
   programId: PublicKey,
 ): PublicKey {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("custody_alloc"), custodyWallet.toBuffer(), mint.toBuffer()],
+    [Buffer.from("yield_by"), custodyWallet.toBuffer(), mint.toBuffer()],
     programId,
   )[0];
+}
+
+export function allocationPda(
+  custodianState: PublicKey,
+  mint: PublicKey,
+  programId: PublicKey = GRINDERS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("allocation"),
+      custodianState.toBuffer(),
+      mint.toBuffer(),
+    ],
+    programId,
+  )[0];
+}
+
+export function custodianIndexPda(
+  custodianWallet: PublicKey,
+  programId: PublicKey = GRINDERS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("custodian_index"), custodianWallet.toBuffer()],
+    programId,
+  )[0];
+}
+
+export function custodianRecordPda(
+  custodianId: number,
+  programId: PublicKey = GRINDERS_PROGRAM_ID,
+): PublicKey {
+  const id = Buffer.alloc(8);
+  id.writeBigUInt64LE(BigInt(custodianId));
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("custodian"), id],
+    programId,
+  )[0];
+}
+
+export async function resolveGrindersCustodianRecordPda(
+  connection: Connection,
+  custodyWallet: PublicKey,
+  grindersProgramId: PublicKey = GRINDERS_PROGRAM_ID,
+): Promise<PublicKey> {
+  const custodianIndex = custodianIndexPda(custodyWallet, grindersProgramId);
+  const indexAccount = await connection.getAccountInfo(custodianIndex);
+  if (!indexAccount) {
+    throw new Error("Custody wallet is not registered with grinders");
+  }
+  const custodianId = Number(indexAccount.data.readBigUInt64LE(8));
+  return custodianRecordPda(custodianId, grindersProgramId);
 }
 
 export function resolveSolPriceFeed(): PublicKey {

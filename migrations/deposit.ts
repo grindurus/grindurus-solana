@@ -6,15 +6,14 @@ import {
 } from "@solana/spl-token";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
+  assetConfigPda,
   GRAI_PROGRAM_ID,
   graiStatePda,
-  juniorVaultAtaPda,
+  grindersStatePda,
   loadGraiMintKeypair,
   loadGraiProgram,
   loadProvider,
   runScript,
-  seniorVaultAtaPda,
-  seniorVaultPda,
 } from "./_common";
 
 // Circle USDC on Solana devnet (6 decimals)
@@ -22,83 +21,89 @@ const USDC_MINT = new PublicKey(
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 );
 
-const MINT_AMOUNT = BigInt(process.env.MINT_AMOUNT ?? "1000000"); // 1 USDC
+const DEPOSIT_AMOUNT = BigInt(process.env.DEPOSIT_AMOUNT ?? process.env.MINT_AMOUNT ?? "1000000"); // 1 USDC
 
 async function main(): Promise<void> {
   const provider = loadProvider();
   anchor.setProvider(provider);
   const program = loadGraiProgram(provider);
 
-  const minter = provider.wallet.publicKey;
+  const depositor = provider.wallet.publicKey;
   const graiMint = loadGraiMintKeypair();
   const graiState = graiStatePda(GRAI_PROGRAM_ID);
-  const seniorVault = seniorVaultPda(USDC_MINT, GRAI_PROGRAM_ID);
-  const seniorVaultAta = seniorVaultAtaPda(USDC_MINT, GRAI_PROGRAM_ID);
-  const juniorVaultAta = juniorVaultAtaPda(USDC_MINT, GRAI_PROGRAM_ID);
-  const seniorVaultAccount = await program.account.seniorVault.fetch(seniorVault);
-  const priceFeed = seniorVaultAccount.priceFeed;
+  const grindersState = grindersStatePda();
+  const assetConfig = assetConfigPda(USDC_MINT, GRAI_PROGRAM_ID);
+  const assetConfigAccount = await program.account.assetConfig.fetch(assetConfig);
+  const priceFeed = assetConfigAccount.priceFeed;
 
-  const minterUsdcAta = getAssociatedTokenAddressSync(
+  const depositorUsdcAta = getAssociatedTokenAddressSync(
     USDC_MINT,
-    minter,
+    depositor,
     false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
-  const minterGraiAta = getAssociatedTokenAddressSync(
+  const grindersAta = getAssociatedTokenAddressSync(
+    USDC_MINT,
+    grindersState,
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  const depositorGraiAta = getAssociatedTokenAddressSync(
     graiMint.publicKey,
-    minter,
+    depositor,
     false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
 
   const usdcBefore = await provider.connection
-    .getTokenAccountBalance(minterUsdcAta)
+    .getTokenAccountBalance(depositorUsdcAta)
     .catch(() => null);
-  if (!usdcBefore || BigInt(usdcBefore.value.amount) < MINT_AMOUNT) {
+  if (!usdcBefore || BigInt(usdcBefore.value.amount) < DEPOSIT_AMOUNT) {
     throw new Error(
-      `Insufficient USDC: need ${MINT_AMOUNT}, have ${usdcBefore?.value.amount ?? "0"} (get devnet USDC from https://faucet.circle.com/)`,
+      `Insufficient USDC: need ${DEPOSIT_AMOUNT}, have ${usdcBefore?.value.amount ?? "0"} (get devnet USDC from https://faucet.circle.com/)`,
     );
   }
 
   const graiBefore = await provider.connection
-    .getTokenAccountBalance(minterGraiAta)
+    .getTokenAccountBalance(depositorGraiAta)
     .catch(() => ({ value: { amount: "0" } }));
 
-  console.log("mint");
+  console.log("deposit");
   console.log(`  cluster: ${provider.connection.rpcEndpoint}`);
   console.log(`  program: ${GRAI_PROGRAM_ID.toBase58()}`);
-  console.log(`  minter: ${minter.toBase58()}`);
-  console.log(`  amount: ${MINT_AMOUNT} (1 USDC if 6 decimals)`);
+  console.log(`  depositor: ${depositor.toBase58()}`);
+  console.log(`  amount: ${DEPOSIT_AMOUNT} (1 USDC if 6 decimals)`);
   console.log(`  asset_mint: ${USDC_MINT.toBase58()}`);
   console.log(`  grai_mint: ${graiMint.publicKey.toBase58()}`);
   console.log(`  price_feed: ${priceFeed.toBase58()}`);
-  console.log(`  minter_usdc_ata: ${minterUsdcAta.toBase58()}`);
+  console.log(`  grinders_ata: ${grindersAta.toBase58()}`);
 
   const signature = await program.methods
-    .mint(new anchor.BN(MINT_AMOUNT.toString()))
+    .deposit(new anchor.BN(DEPOSIT_AMOUNT.toString()))
     .accountsPartial({
-      minter,
+      depositor,
       graiState,
       assetMint: USDC_MINT,
-      seniorVault,
-      seniorVaultAta,
-      juniorVaultAta,
-      priceFeed,
       graiMint: graiMint.publicKey,
-      minterAta: minterUsdcAta,
-      minterGraiAta,
+      assetConfig,
+      priceFeed,
+      grindersState,
+      depositorAta: depositorUsdcAta,
+      grindersAta,
+      depositorGraiAta,
       tokenProgram: TOKEN_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
     .rpc();
 
-  const graiAfter = await provider.connection.getTokenAccountBalance(minterGraiAta);
-  const usdcAfter = await provider.connection.getTokenAccountBalance(minterUsdcAta);
+  const graiAfter = await provider.connection.getTokenAccountBalance(depositorGraiAta);
+  const usdcAfter = await provider.connection.getTokenAccountBalance(depositorUsdcAta);
 
-  console.log(`mint confirmed: ${signature}`);
+  console.log(`deposit confirmed: ${signature}`);
   console.log(`  usdc before: ${usdcBefore.value.amount}`);
   console.log(`  usdc after: ${usdcAfter.value.amount}`);
   console.log(`  grai before: ${graiBefore.value.amount}`);

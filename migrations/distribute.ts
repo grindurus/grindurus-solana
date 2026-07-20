@@ -6,20 +6,25 @@ import {
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Program } from "@coral-xyz/anchor";
+import { Grinders } from "../target/types/grinders";
 import {
+  assetConfigPda,
   GRAI_PROGRAM_ID,
-  custodyAllocationPda,
-  graiStatePda,
+  GRINDERS_PROGRAM_ID,
   loadGraiProgram,
   loadProvider,
+  resolveGrindersCustodianRecordPda,
   resolveSolPriceFeed,
   runScript,
-  seniorVaultAtaPda,
-  seniorVaultPda,
+  vaultAtaPda,
+  yieldByPda,
 } from "./_common";
+import * as fs from "fs";
+import * as path from "path";
 
-const DISTRIBUTE_AMOUNT = BigInt(process.env.DISTRIBUTE_AMOUNT ?? "10000"); // 0.00001 SOL
+const DISTRIBUTE_AMOUNT = BigInt(process.env.DISTRIBUTE_AMOUNT ?? "10000");
 
 async function ensureAta(
   provider: anchor.AnchorProvider,
@@ -51,121 +56,141 @@ async function ensureAta(
   return ata;
 }
 
+function loadGrindersProgram(provider: anchor.AnchorProvider): Program<Grinders> {
+  const idl = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, "..", "target", "idl", "grinders.json"),
+      "utf8",
+    ),
+  );
+  return new Program(idl, provider) as Program<Grinders>;
+}
+
 async function main(): Promise<void> {
   const provider = loadProvider();
   anchor.setProvider(provider);
-  const program = loadGraiProgram(provider);
+  const graiProgram = loadGraiProgram(provider);
+  const grindersProgram = loadGrindersProgram(provider);
 
   const authority = provider.wallet.publicKey;
-  const custodyWallet = authority;
-  const assetMint = NATIVE_MINT;
+  if (!process.env.CUSTODY_WALLET) {
+    throw new Error("CUSTODY_WALLET must be a grinders custodian wallet PDA");
+  }
+  const custodyWallet = new PublicKey(process.env.CUSTODY_WALLET);
+  const assetMint = process.env.ASSET_MINT
+    ? new PublicKey(process.env.ASSET_MINT)
+    : NATIVE_MINT;
 
-  const graiState = graiStatePda(GRAI_PROGRAM_ID);
-  const state = await program.account.graiState.fetch(graiState);
-  const seniorVault = seniorVaultPda(assetMint, GRAI_PROGRAM_ID);
-  const seniorVaultAta = seniorVaultAtaPda(assetMint, GRAI_PROGRAM_ID);
-  const custodyAllocation = custodyAllocationPda(
-    custodyWallet,
-    assetMint,
+  const graiState = PublicKey.findProgramAddressSync(
+    [Buffer.from("protocol")],
     GRAI_PROGRAM_ID,
+  )[0];
+  const state = await graiProgram.account.graiState.fetch(graiState);
+  if (state.settlementAsset.equals(PublicKey.default)) {
+    throw new Error("Settlement asset unset — run setSettlementAsset first");
+  }
+
+  const settlementMint = state.settlementAsset;
+  const assetConfig = assetConfigPda(assetMint, GRAI_PROGRAM_ID);
+  const settlementAssetConfig = assetConfigPda(settlementMint, GRAI_PROGRAM_ID);
+  const vaultAta = vaultAtaPda(assetMint, GRAI_PROGRAM_ID);
+  const yieldBy = yieldByPda(custodyWallet, assetMint, GRAI_PROGRAM_ID);
+  const custodianRecord = await resolveGrindersCustodianRecordPda(
+    provider.connection,
+    custodyWallet,
   );
+
+  const assetConfigAccount = await graiProgram.account.assetConfig.fetch(assetConfig);
+  const settlementConfigAccount =
+    await graiProgram.account.assetConfig.fetch(settlementAssetConfig);
+  const priceFeed = assetConfigAccount.priceFeed;
+  const settlementPriceFeed = settlementConfigAccount.priceFeed;
+
   const custodyAta = getAssociatedTokenAddressSync(
     assetMint,
     custodyWallet,
-    false,
+    true,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
-  const treasuryAta = await ensureAta(
-    provider,
-    assetMint,
-    state.treasuryWallet,
-  );
-  const priceFeed = resolveSolPriceFeed();
+  const treasuryAta = await ensureAta(provider, assetMint, state.treasury);
 
-  const graiStateBefore = await program.account.graiState.fetch(graiState);
-  const seniorVaultBefore = await program.account.seniorVault.fetch(seniorVault);
-  const allocationBefore = await program.account.custodyAllocation.fetch(
-    custodyAllocation,
-  );
   const custodyBalanceBefore = BigInt(
     (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
-  );
-  const seniorVaultAtaBefore = BigInt(
-    (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value
-      .amount,
   );
   const treasuryAtaBefore = BigInt(
     (await provider.connection.getTokenAccountBalance(treasuryAta)).value.amount,
   );
+  const vaultBefore = BigInt(
+    (
+      await provider.connection
+        .getTokenAccountBalance(vaultAta)
+        .catch(() => ({ value: { amount: "0" } }))
+    ).value.amount,
+  );
 
   if (custodyBalanceBefore < DISTRIBUTE_AMOUNT) {
     throw new Error(
-      `Custody balance ${custodyBalanceBefore} < distribute amount ${DISTRIBUTE_AMOUNT} (run allocate first)`,
+      `Custody balance ${custodyBalanceBefore} < distribute amount ${DISTRIBUTE_AMOUNT}`,
     );
   }
 
-  console.log("distribute");
+  console.log("custodian_distribute → grai.distribute");
   console.log(`  cluster: ${provider.connection.rpcEndpoint}`);
-  console.log(`  program: ${GRAI_PROGRAM_ID.toBase58()}`);
-  console.log(`  authority: ${authority.toBase58()}`);
+  console.log(`  grai: ${GRAI_PROGRAM_ID.toBase58()}`);
+  console.log(`  grinders: ${GRINDERS_PROGRAM_ID.toBase58()}`);
+  console.log(`  owner: ${authority.toBase58()}`);
   console.log(`  custody_wallet: ${custodyWallet.toBase58()}`);
   console.log(`  asset_mint: ${assetMint.toBase58()}`);
-  console.log(
-    `  amount: ${DISTRIBUTE_AMOUNT} (${Number(DISTRIBUTE_AMOUNT) / 1e9} SOL if wSOL)`,
-  );
-  console.log(`  treasury: ${state.treasuryWallet.toBase58()}`);
+  console.log(`  settlement_mint: ${settlementMint.toBase58()}`);
+  console.log(`  amount: ${DISTRIBUTE_AMOUNT}`);
+  console.log(`  treasury: ${state.treasury.toBase58()}`);
   console.log(`  price_feed: ${priceFeed.toBase58()}`);
+  if (assetMint.equals(NATIVE_MINT)) {
+    console.log(`  (hint SOL feed default): ${resolveSolPriceFeed().toBase58()}`);
+  }
 
-  const signature = await program.methods
-    .distribute(new anchor.BN(DISTRIBUTE_AMOUNT.toString()))
+  const signature = await grindersProgram.methods
+    .custodianDistribute(new anchor.BN(DISTRIBUTE_AMOUNT.toString()))
     .accountsPartial({
-      custodyWallet,
+      owner: authority,
+      payer: authority,
+      custodianState: custodyWallet,
+      custodianRecord,
+      graiProgram: GRAI_PROGRAM_ID,
       graiState,
       assetMint,
-      seniorVault,
-      custodyAllocation,
-      custodyAta,
-      seniorVaultAta,
-      treasuryAta,
+      assetConfig,
       priceFeed,
+      settlementMint,
+      settlementAssetConfig,
+      settlementPriceFeed,
+      custodyAta,
+      vaultAta,
+      treasuryAta,
+      yieldBy,
       tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
     })
     .rpc();
 
-  const graiStateAfter = await program.account.graiState.fetch(graiState);
-  const seniorVaultAfter = await program.account.seniorVault.fetch(seniorVault);
-  const allocationAfter = await program.account.custodyAllocation.fetch(
-    custodyAllocation,
-  );
   const custodyBalanceAfter = BigInt(
     (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
-  );
-  const seniorVaultAtaAfter = BigInt(
-    (await provider.connection.getTokenAccountBalance(seniorVaultAta)).value
-      .amount,
   );
   const treasuryAtaAfter = BigInt(
     (await provider.connection.getTokenAccountBalance(treasuryAta)).value.amount,
   );
+  const vaultAfter = BigInt(
+    (await provider.connection.getTokenAccountBalance(vaultAta)).value.amount,
+  );
+  const assetAfter = await graiProgram.account.assetConfig.fetch(assetConfig);
 
   console.log(`distribute confirmed: ${signature}`);
-  console.log(
-    `  custody_ata: ${custodyBalanceBefore} → ${custodyBalanceAfter}`,
-  );
-  console.log(
-    `  senior_vault_ata: ${seniorVaultAtaBefore} → ${seniorVaultAtaAfter}`,
-  );
+  console.log(`  custody_ata: ${custodyBalanceBefore} → ${custodyBalanceAfter}`);
+  console.log(`  vault_ata: ${vaultBefore} → ${vaultAfter}`);
   console.log(`  treasury_ata: ${treasuryAtaBefore} → ${treasuryAtaAfter}`);
-  console.log(
-    `  total_value: ${graiStateBefore.totalValue.toString()} → ${graiStateAfter.totalValue.toString()}`,
-  );
-  console.log(
-    `  senior_vault.total_value: ${seniorVaultBefore.totalValue.toString()} → ${seniorVaultAfter.totalValue.toString()}`,
-  );
-  console.log(
-    `  yield_amount: ${allocationBefore.yieldAmount.toString()} → ${allocationAfter.yieldAmount.toString()}`,
-  );
+  console.log(`  auction_start: ${assetAfter.auctionStartTime.toString()}`);
+  console.log(`  auction_remaining: ${assetAfter.auctionRemaining.toString()}`);
 }
 
 runScript(main);

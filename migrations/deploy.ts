@@ -14,6 +14,12 @@ import {
 } from "@solana/web3.js";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  assetConfigPda,
+  GRINDERS_PROGRAM_ID,
+  grindersStatePda,
+  vaultAtaPda,
+} from "./_common";
 
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
   "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
@@ -52,34 +58,6 @@ function graiMetadataPda(mint: PublicKey): PublicKey {
   )[0];
 }
 
-function juniorVaultPda(mint: PublicKey, programId: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("junior_vault_state"), mint.toBuffer()],
-    programId,
-  )[0];
-}
-
-function seniorVaultPda(mint: PublicKey, programId: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("senior_vault_state"), mint.toBuffer()],
-    programId,
-  )[0];
-}
-
-function seniorVaultAtaPda(mint: PublicKey, programId: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("senior_vault_ata"), mint.toBuffer()],
-    programId,
-  )[0];
-}
-
-function juniorVaultAtaPda(mint: PublicKey, programId: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("junior_vault_ata"), mint.toBuffer()],
-    programId,
-  )[0];
-}
-
 function loadOrCreateGraiMintKeypair(): Keypair {
   if (fs.existsSync(GRAI_MINT_KEYPAIR_PATH)) {
     const secret = JSON.parse(
@@ -109,11 +87,12 @@ module.exports = async function (provider: anchor.AnchorProvider) {
       preflightCommitment: "confirmed",
     }),
   );
-  provider = anchor.getProvider();
+  provider = anchor.getProvider() as anchor.AnchorProvider;
 
   const program = anchor.workspace.Grai as Program<Grai>;
   const authority = provider.wallet.publicKey;
   const graiState = graiStatePda(program.programId);
+  const grindersState = grindersStatePda(GRINDERS_PROGRAM_ID);
   const solUsdPriceFeed = chainlinkSolUsdPriceFeed(provider.connection.rpcEndpoint);
 
   console.log("GRAI deploy");
@@ -121,6 +100,7 @@ module.exports = async function (provider: anchor.AnchorProvider) {
   console.log(`  program: ${program.programId.toBase58()}`);
   console.log(`  authority: ${authority.toBase58()}`);
   console.log(`  grai_state: ${graiState.toBase58()}`);
+  console.log(`  grinders_state: ${grindersState.toBase58()}`);
   console.log(`  sol_usd_price_feed: ${solUsdPriceFeed.toBase58()}`);
 
   const graiStateInfo = await provider.connection.getAccountInfo(graiState);
@@ -131,16 +111,18 @@ module.exports = async function (provider: anchor.AnchorProvider) {
     console.log("graiState already initialized — skipping initialize");
     console.log(`  grai_mint (keypair file): ${graiMint.publicKey.toBase58()}`);
     console.log(`  on-chain authority: ${state.authority.toBase58()}`);
-    console.log(`  treasury: ${state.treasuryWallet.toBase58()}`);
+    console.log(`  treasury: ${state.treasury.toBase58()}`);
+    console.log(`  grinders: ${state.grinders.toBase58()}`);
   } else {
     const metadata = graiMetadataPda(graiMint.publicKey);
 
     console.log("Calling initialize...");
     console.log(`  grai_mint: ${graiMint.publicKey.toBase58()}`);
     console.log(`  metadata: ${metadata.toBase58()}`);
+    console.log(`  grinders_state: ${grindersState.toBase58()}`);
 
     const signature = await program.methods
-      .initialize()
+      .initialize(grindersState)
       .accountsPartial({
         authority,
         graiState,
@@ -162,7 +144,7 @@ module.exports = async function (provider: anchor.AnchorProvider) {
     const treasury = new PublicKey(treasuryEnv);
     const state = await program.account.graiState.fetch(graiState);
 
-    if (state.treasuryWallet.equals(treasury)) {
+    if (state.treasury.equals(treasury)) {
       console.log(`treasury already set: ${treasury.toBase58()}`);
     } else {
       console.log(`set_treasury → ${treasury.toBase58()}`);
@@ -179,10 +161,8 @@ module.exports = async function (provider: anchor.AnchorProvider) {
     console.log("TREASURY_WALLET not set — treasury left unchanged");
   }
 
-  const solJuniorVault = juniorVaultPda(NATIVE_MINT, program.programId);
-  const solSeniorVault = seniorVaultPda(NATIVE_MINT, program.programId);
-  const solSeniorVaultAta = seniorVaultAtaPda(NATIVE_MINT, program.programId);
-  const solJuniorVaultAta = juniorVaultAtaPda(NATIVE_MINT, program.programId);
+  const solAssetConfig = assetConfigPda(NATIVE_MINT, program.programId);
+  const solVaultAta = vaultAtaPda(NATIVE_MINT, program.programId);
 
   const stateForSol = await program.account.graiState.fetch(graiState);
   const solRegistered = stateForSol.assetMints.some((mint) =>
@@ -210,10 +190,8 @@ module.exports = async function (provider: anchor.AnchorProvider) {
         authority,
         assetMint: NATIVE_MINT,
         graiState,
-        juniorVault: solJuniorVault,
-        seniorVault: solSeniorVault,
-        seniorVaultAta: solSeniorVaultAta,
-        juniorVaultAta: solJuniorVaultAta,
+        assetConfig: solAssetConfig,
+        vaultAta: solVaultAta,
         priceFeed: solUsdPriceFeed,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -227,7 +205,9 @@ module.exports = async function (provider: anchor.AnchorProvider) {
   const finalState = await program.account.graiState.fetch(graiState);
   console.log("Done.");
   console.log(`  grai_mint: ${graiMint.publicKey.toBase58()}`);
-  console.log(`  treasury: ${finalState.treasuryWallet.toBase58()}`);
+  console.log(`  treasury: ${finalState.treasury.toBase58()}`);
+  console.log(`  grinders: ${finalState.grinders.toBase58()}`);
+  console.log(`  settlement: ${finalState.settlementAsset.toBase58()}`);
   console.log(`  assets: ${finalState.assetMints.map((m) => m.toBase58()).join(", ")}`);
   console.log(`  total_value: ${finalState.totalValue.toString()}`);
 };

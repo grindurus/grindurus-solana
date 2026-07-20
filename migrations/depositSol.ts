@@ -7,73 +7,78 @@ import {
 } from "@solana/spl-token";
 import { SystemProgram } from "@solana/web3.js";
 import {
+  assetConfigPda,
   GRAI_PROGRAM_ID,
   graiStatePda,
-  juniorVaultAtaPda,
+  grindersStatePda,
   loadGraiMintKeypair,
   loadGraiProgram,
   loadProvider,
   resolveSolPriceFeed,
   runScript,
-  seniorVaultAtaPda,
-  seniorVaultPda,
 } from "./_common";
 
-const DEPOSIT_LAMPORTS = 1_000_000n; // 0.001 SOL
+const DEPOSIT_LAMPORTS = BigInt(process.env.DEPOSIT_LAMPORTS ?? "1000000"); // 0.001 SOL
 
 async function main(): Promise<void> {
   const provider = loadProvider();
   anchor.setProvider(provider);
   const program = loadGraiProgram(provider);
 
-  const minter = provider.wallet.publicKey;
+  const depositor = provider.wallet.publicKey;
   const graiMint = loadGraiMintKeypair();
   const graiState = graiStatePda(GRAI_PROGRAM_ID);
-  const solSeniorVault = seniorVaultPda(NATIVE_MINT, GRAI_PROGRAM_ID);
-  const solSeniorVaultAta = seniorVaultAtaPda(NATIVE_MINT, GRAI_PROGRAM_ID);
-  const solJuniorVaultAta = juniorVaultAtaPda(NATIVE_MINT, GRAI_PROGRAM_ID);
+  const grindersState = grindersStatePda();
+  const assetConfig = assetConfigPda(NATIVE_MINT, GRAI_PROGRAM_ID);
   const solUsdPriceFeed = resolveSolPriceFeed();
 
-  const minterWsolAta = getAssociatedTokenAddressSync(
+  const depositorWsolAta = getAssociatedTokenAddressSync(
     NATIVE_MINT,
-    minter,
+    depositor,
     false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
-  const minterGraiAta = getAssociatedTokenAddressSync(
+  const grindersAta = getAssociatedTokenAddressSync(
+    NATIVE_MINT,
+    grindersState,
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  const depositorGraiAta = getAssociatedTokenAddressSync(
     graiMint.publicKey,
-    minter,
+    depositor,
     false,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
 
   const graiBefore = await provider.connection
-    .getTokenAccountBalance(minterGraiAta)
+    .getTokenAccountBalance(depositorGraiAta)
     .catch(() => ({ value: { amount: "0" } }));
 
-  console.log("mint_sol");
+  console.log("deposit_sol");
   console.log(`  cluster: ${provider.connection.rpcEndpoint}`);
   console.log(`  program: ${GRAI_PROGRAM_ID.toBase58()}`);
-  console.log(`  minter: ${minter.toBase58()}`);
-  console.log(`  amount: ${DEPOSIT_LAMPORTS} lamports (0.001 SOL)`);
+  console.log(`  depositor: ${depositor.toBase58()}`);
+  console.log(`  amount: ${DEPOSIT_LAMPORTS} lamports`);
   console.log(`  grai_mint: ${graiMint.publicKey.toBase58()}`);
   console.log(`  price_feed: ${solUsdPriceFeed.toBase58()}`);
 
   const signature = await program.methods
-    .mintSol(new anchor.BN(DEPOSIT_LAMPORTS.toString()))
+    .depositSol(new anchor.BN(DEPOSIT_LAMPORTS.toString()))
     .accountsPartial({
-      minter,
+      depositor,
       graiState,
       assetMint: NATIVE_MINT,
-      seniorVault: solSeniorVault,
-      seniorVaultAta: solSeniorVaultAta,
-      juniorVaultAta: solJuniorVaultAta,
-      priceFeed: solUsdPriceFeed,
       graiMint: graiMint.publicKey,
-      minterWsolAta,
-      minterGraiAta,
+      assetConfig,
+      priceFeed: solUsdPriceFeed,
+      grindersState,
+      depositorWsolAta,
+      grindersAta,
+      depositorGraiAta,
       tokenProgram: TOKEN_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
@@ -81,10 +86,10 @@ async function main(): Promise<void> {
     .rpc();
 
   const graiAfter = await provider.connection.getTokenAccountBalance(
-    minterGraiAta,
+    depositorGraiAta,
   );
 
-  console.log(`mint_sol confirmed: ${signature}`);
+  console.log(`deposit_sol confirmed: ${signature}`);
   console.log(`  grai before: ${graiBefore.value.amount}`);
   console.log(`  grai after: ${graiAfter.value.amount}`);
 }

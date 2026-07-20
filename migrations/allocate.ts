@@ -6,113 +6,121 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { Program } from "@coral-xyz/anchor";
+import { Grinders } from "../target/types/grinders";
 import {
+  allocationPda,
   GRAI_PROGRAM_ID,
-  custodyAllocationPda,
-  graiStatePda,
-  juniorVaultAtaPda,
-  juniorVaultPda,
-  loadGraiProgram,
+  GRINDERS_PROGRAM_ID,
+  grindersStatePda,
   loadProvider,
+  resolveGrindersCustodianRecordPda,
   runScript,
 } from "./_common";
+import * as fs from "fs";
+import * as path from "path";
 
 const ALLOCATE_AMOUNT = BigInt(process.env.ALLOCATE_AMOUNT ?? "500000"); // 0.0005 wSOL
 
-function resolveCustodyWallet(): { custodyWallet?: PublicKey } {
-  if (process.env.CUSTODY_WALLET) {
-    return { custodyWallet: new PublicKey(process.env.CUSTODY_WALLET) };
+function resolveCustodyWallet(): PublicKey {
+  if (!process.env.CUSTODY_WALLET) {
+    throw new Error("CUSTODY_WALLET must be a grinders custodian wallet PDA");
   }
-  return {};
+  return new PublicKey(process.env.CUSTODY_WALLET);
+}
+
+function loadGrindersProgram(provider: anchor.AnchorProvider): Program<Grinders> {
+  const idl = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, "..", "target", "idl", "grinders.json"),
+      "utf8",
+    ),
+  );
+  return new Program(idl, provider) as Program<Grinders>;
 }
 
 async function main(): Promise<void> {
   const provider = loadProvider();
   anchor.setProvider(provider);
-  const program = loadGraiProgram(provider);
+  const grindersProgram = loadGrindersProgram(provider);
 
   const authority = provider.wallet.publicKey;
-  const assetMint = NATIVE_MINT;
-  const { custodyWallet = authority } = resolveCustodyWallet();
-
-  const graiState = graiStatePda(GRAI_PROGRAM_ID);
-  const juniorVault = juniorVaultPda(assetMint, GRAI_PROGRAM_ID);
-  const juniorVaultAta = juniorVaultAtaPda(assetMint, GRAI_PROGRAM_ID);
-  const custodyAllocation = custodyAllocationPda(
+  const assetMint = process.env.ASSET_MINT
+    ? new PublicKey(process.env.ASSET_MINT)
+    : NATIVE_MINT;
+  const custodyWallet = resolveCustodyWallet();
+  await resolveGrindersCustodianRecordPda(
+    provider.connection,
     custodyWallet,
+  );
+
+  const grindersState = grindersStatePda(GRINDERS_PROGRAM_ID);
+  const allocation = allocationPda(custodyWallet, assetMint);
+  const grindersAta = getAssociatedTokenAddressSync(
     assetMint,
-    GRAI_PROGRAM_ID,
+    grindersState,
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
   );
   const custodyAta = getAssociatedTokenAddressSync(
     assetMint,
     custodyWallet,
-    false,
+    true,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
 
-  const juniorVaultBefore = await program.account.juniorVault.fetch(juniorVault);
-  const juniorVaultAtaBefore = BigInt(
-    (await provider.connection.getTokenAccountBalance(juniorVaultAta)).value
-      .amount,
+  const grindersAtaBefore = BigInt(
+    (await provider.connection.getTokenAccountBalance(grindersAta)).value.amount,
   );
 
-  if (juniorVaultAtaBefore < ALLOCATE_AMOUNT) {
+  if (grindersAtaBefore < ALLOCATE_AMOUNT) {
     throw new Error(
-      `Junior vault balance ${juniorVaultAtaBefore} < allocate amount ${ALLOCATE_AMOUNT}`,
+      `Grinders ATA balance ${grindersAtaBefore} < allocate amount ${ALLOCATE_AMOUNT}`,
     );
   }
 
-  console.log("allocate");
+  console.log("allocate (grinders)");
   console.log(`  cluster: ${provider.connection.rpcEndpoint}`);
-  console.log(`  program: ${GRAI_PROGRAM_ID.toBase58()}`);
-  console.log(`  authority: ${authority.toBase58()}`);
+  console.log(`  grinders: ${GRINDERS_PROGRAM_ID.toBase58()}`);
+  console.log(`  grai: ${GRAI_PROGRAM_ID.toBase58()}`);
+  console.log(`  owner: ${authority.toBase58()}`);
   console.log(`  asset_mint: ${assetMint.toBase58()}`);
-  console.log(
-    `  amount: ${ALLOCATE_AMOUNT} (${Number(ALLOCATE_AMOUNT) / 1e9} SOL if wSOL)`,
-  );
+  console.log(`  amount: ${ALLOCATE_AMOUNT}`);
   console.log(`  custody_wallet: ${custodyWallet.toBase58()}`);
+  console.log(`  grinders_ata: ${grindersAta.toBase58()}`);
   console.log(`  custody_ata: ${custodyAta.toBase58()}`);
-  console.log(`  junior_vault_ata: ${juniorVaultAta.toBase58()}`);
 
-  const signature = await program.methods
+  const signature = await grindersProgram.methods
     .allocate(new anchor.BN(ALLOCATE_AMOUNT.toString()))
     .accountsPartial({
-      authority,
+      owner: authority,
+      grindersState,
+      custodianState: custodyWallet,
       assetMint,
-      graiState,
-      juniorVault,
-      juniorVaultAta,
-      custodyWallet,
+      allocation,
+      grindersAta,
       custodyAta,
-      custodyAllocation,
       tokenProgram: TOKEN_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
     .rpc();
 
-  const juniorVaultAfter = await program.account.juniorVault.fetch(juniorVault);
-  const allocation = await program.account.custodyAllocation.fetch(
-    custodyAllocation,
+  const allocationAccount = await grindersProgram.account.allocation.fetch(
+    allocation,
   );
-  const juniorVaultAtaAfter = BigInt(
-    (await provider.connection.getTokenAccountBalance(juniorVaultAta)).value
-      .amount,
+  const grindersAtaAfter = BigInt(
+    (await provider.connection.getTokenAccountBalance(grindersAta)).value.amount,
   );
   const custodyAtaAfter = BigInt(
     (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
   );
 
   console.log(`allocate confirmed: ${signature}`);
-  console.log(
-    `  junior_vault_ata: ${juniorVaultAtaBefore} → ${juniorVaultAtaAfter}`,
-  );
+  console.log(`  grinders_ata: ${grindersAtaBefore} → ${grindersAtaAfter}`);
   console.log(`  custody_ata balance: ${custodyAtaAfter}`);
-  console.log(
-    `  active_amount: ${juniorVaultBefore.activeAmount.toString()} → ${juniorVaultAfter.activeAmount.toString()}`,
-  );
-  console.log(`  allocated_amount: ${allocation.allocatedAmount.toString()}`);
+  console.log(`  allocated_amount: ${allocationAccount.allocatedAmount.toString()}`);
 }
 
 runScript(main);

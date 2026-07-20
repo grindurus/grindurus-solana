@@ -1,12 +1,12 @@
 [package]
-name = "lifi_custody"
+name = "grinders"
 version = "0.1.0"
-description = "GRAI junior custody wallet with LiFi swap execution"
+description = "Grinders: custodian NFT registry for GRAI"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "lifi_custody"
+name = "grinders"
 
 [features]
 default = []
@@ -26,5 +26,5 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-anchor-spl = { version = "0.31.1", features = ["token", "associated_token"] }
-grai = { path = "../grai", features = ["cpi"] }
+anchor-spl = { version = "0.31.1", features = ["token", "associated_token", "metadata"] }
+grai = { path = "../grai", features = ["cpi", "no-entrypoint"] }

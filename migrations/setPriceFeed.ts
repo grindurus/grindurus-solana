@@ -1,13 +1,13 @@
 import * as anchor from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
 import {
+  assetConfigPda,
   GRAI_PROGRAM_ID,
   graiStatePda,
   loadGraiProgram,
   loadProvider,
   PYTH_USDC_USD_PUSH,
   runScript,
-  seniorVaultPda,
 } from "./_common";
 
 const USDC_MINT = new PublicKey(
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const priceFeed = resolveUsdcPriceFeed();
 
   const graiState = graiStatePda(GRAI_PROGRAM_ID);
-  const seniorVault = seniorVaultPda(assetMint, GRAI_PROGRAM_ID);
+  const assetConfig = assetConfigPda(assetMint, GRAI_PROGRAM_ID);
 
   const state = await program.account.graiState.fetch(graiState);
   const usdcRegistered = state.assetMints.some((mint) =>
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     throw new Error("USDC not registered — run addAsset first");
   }
 
-  const seniorVaultBefore = await program.account.seniorVault.fetch(seniorVault);
+  const assetBefore = await program.account.assetConfig.fetch(assetConfig);
 
   console.log("set_price_feed (USDC)");
   console.log(`  cluster: ${provider.connection.rpcEndpoint}`);
@@ -47,11 +47,9 @@ async function main(): Promise<void> {
   console.log(`  authority: ${authority.toBase58()}`);
   console.log(`  asset_mint: ${assetMint.toBase58()}`);
   console.log(`  price_feed: ${priceFeed.toBase58()}`);
-  console.log(
-    `  current price_feed: ${seniorVaultBefore.priceFeed.toBase58()}`,
-  );
+  console.log(`  current price_feed: ${assetBefore.priceFeed.toBase58()}`);
 
-  if (seniorVaultBefore.priceFeed.equals(priceFeed)) {
+  if (assetBefore.priceFeed.equals(priceFeed)) {
     console.log("price_feed already set — skipping");
     return;
   }
@@ -64,21 +62,21 @@ async function main(): Promise<void> {
   }
 
   const signature = await program.methods
-    .setPriceFeed(priceFeed)
+    .setPriceFeed()
     .accountsPartial({
       authority,
       assetMint,
       graiState,
-      seniorVault,
+      assetConfig,
       priceFeed,
     })
     .rpc();
 
-  const seniorVaultAfter = await program.account.seniorVault.fetch(seniorVault);
+  const assetAfter = await program.account.assetConfig.fetch(assetConfig);
 
   console.log(`set_price_feed confirmed: ${signature}`);
   console.log(
-    `  price_feed: ${seniorVaultBefore.priceFeed.toBase58()} → ${seniorVaultAfter.priceFeed.toBase58()}`,
+    `  price_feed: ${assetBefore.priceFeed.toBase58()} → ${assetAfter.priceFeed.toBase58()}`,
   );
 }
 

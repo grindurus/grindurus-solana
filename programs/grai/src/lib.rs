@@ -1,416 +1,221 @@
 #![allow(deprecated)]
 
-mod price_feed;
-mod asset_registry;
-mod asset_vault;
-mod errors;
 mod account;
+mod assets;
+mod auction;
+mod bribe;
+mod buyback;
+mod config;
+mod deposit;
+mod distribute;
+mod errors;
+mod fill;
+mod liquidate;
 mod metadata;
-mod mint;
-mod allocate;
-mod deallocate;
-mod burn;
+mod price_feed;
+mod resolve;
 mod tokenomics;
-mod value_lens;
-mod vault_lens;
+mod vote;
 
 pub use errors::ErrorCode;
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, Transfer};
 
-use price_feed::fetch_price_from_feed;
-use account::*;
-use burn::process_remaining_assets;
-use tokenomics::{deposit_value, grai_burn_value, yield_split};
+pub use account::*;
 
 declare_id!("APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8");
 
-#[program]
-pub mod grai {
-    use super::*;
+/// Bribe premium, liquidation quorum, treasury cut, and timing.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ProtocolConfig {
+    pub treasury_share: u16,
+    pub bribe_premium_bps: u16,
+    pub liquidation_quorum_bps: u16,
+    pub auction_duration: u32,
+    pub liquidation_period: u32,
+    pub redeem_period: u32,
+}
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
-        grai_state.authority = ctx.accounts.authority.key();
-        grai_state.treasury_wallet = ctx.accounts.authority.key();
-        grai_state.total_value = 0;
-
-        metadata::create_grai_metadata(
-            ctx.accounts.metadata.to_account_info(),
-            ctx.accounts.grai_mint.to_account_info(),
-            ctx.accounts.grai_state.to_account_info(),
-            ctx.accounts.authority.to_account_info(),
-            ctx.accounts.token_metadata_program.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.rent.to_account_info(),
-            ctx.bumps.grai_state,
-        )?;
-
-        msg!("GRAI mint initialized");
-        Ok(())
-    }
-
-    pub fn set_treasury(ctx: Context<SetTreasury>, treasury_wallet: Pubkey) -> Result<()> {
-        require_keys_neq!(treasury_wallet, Pubkey::default(), ErrorCode::InvalidTreasuryWallet);
-
-        let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
-        grai_state.treasury_wallet = treasury_wallet;
-        Ok(())
-    }
-
-    pub fn set_price_feed(ctx: Context<SetPriceFeed>, price_feed: Pubkey) -> Result<()> {
-        asset_vault::set_price_feed(&mut ctx.accounts.senior_vault, &price_feed)
-    }
-
-    pub fn set_paused_minting(ctx: Context<SetPausedMinting>, paused_minting: bool) -> Result<()> {
-        asset_vault::set_paused_minting(&mut ctx.accounts.senior_vault, paused_minting)
-    }
-
-    pub fn set_mint_split(ctx: Context<SetMintSplit>, mint_split: u16) -> Result<()> {
-        asset_vault::set_mint_split(&mut ctx.accounts.senior_vault, mint_split)
-    }
-
-    pub fn set_yield_split(ctx: Context<SetYieldSplit>, yield_split: u16) -> Result<()> {
-        asset_vault::set_yield_split(&mut ctx.accounts.senior_vault, yield_split)
-    }
-
-    pub fn add_asset(ctx: Context<AddAsset>) -> Result<()> {
-        asset_vault::register(
-            &ctx.accounts.authority,
-            &mut ctx.accounts.junior_vault,
-            &mut ctx.accounts.senior_vault,
-            &ctx.accounts.asset_mint.key(),
-            &ctx.accounts.price_feed.key(),
-        )?;
-
-        asset_registry::register(
-            &mut ctx.accounts.grai_state,
-            ctx.accounts.asset_mint.key(),
-        )
-    }
-
-    pub fn remove_asset(ctx: Context<RemoveAsset>) -> Result<()> {
-        let vault_total_value = ctx.accounts.senior_vault.total_value;
-
-        let grai_state = &mut ctx.accounts.grai_state;
-        grai_state.total_value = grai_state
-            .total_value
-            .checked_sub(vault_total_value)
-            .ok_or(ErrorCode::MathOverflow)?;
-
-        asset_registry::unregister(grai_state, ctx.accounts.asset_mint.key())?;
-
-        asset_vault::remove(
-            &ctx.accounts.authority,
-            &ctx.accounts.grai_state,
-            ctx.bumps.grai_state,
-            &ctx.accounts.senior_vault_ata,
-            &ctx.accounts.junior_vault_ata,
-            &ctx.accounts.authority_ata,
-            &ctx.accounts.token_program,
-        )
-    }
-
-    pub fn mint(ctx: Context<MintToken>, amount: u64) -> Result<()> {
-        require!(amount > 0, ErrorCode::InvalidAmount);
-
-        mint::execute_mint(
-            amount,
-            &mut ctx.accounts.senior_vault,
-            &ctx.accounts.asset_mint,
-            &ctx.accounts.grai_mint,
-            &mut ctx.accounts.grai_state,
-            &ctx.accounts.senior_vault_ata,
-            &ctx.accounts.junior_vault_ata,
-            &ctx.accounts.minter_ata,
-            &ctx.accounts.minter,
-            &ctx.accounts.minter_grai_ata,
-            &ctx.accounts.price_feed,
-            &ctx.accounts.token_program,
-            ctx.bumps.grai_state,
-        )
-    }
-
-    pub fn mint_sol(ctx: Context<MintSol>, amount: u64) -> Result<()> {
-        require!(amount > 0, ErrorCode::InvalidAmount);
-
-        mint::wrap_sol(
-            &ctx.accounts.minter,
-            &ctx.accounts.minter_wsol_ata,
-            &ctx.accounts.system_program,
-            &ctx.accounts.token_program,
-            amount,
-        )?;
-
-        mint::execute_mint(
-            amount,
-            &mut ctx.accounts.senior_vault,
-            &ctx.accounts.asset_mint,
-            &ctx.accounts.grai_mint,
-            &mut ctx.accounts.grai_state,
-            &ctx.accounts.senior_vault_ata,
-            &ctx.accounts.junior_vault_ata,
-            &ctx.accounts.minter_wsol_ata,
-            &ctx.accounts.minter,
-            &ctx.accounts.minter_grai_ata,
-            &ctx.accounts.price_feed,
-            &ctx.accounts.token_program,
-            ctx.bumps.grai_state,
-        )
-    }
-
-    /// Burns GRAI and redeems a proportional share of senior idle per registered asset.
-    /// Remaining accounts in `grai_state.asset_mints` order per mint:
-    /// senior_vault, senior_vault_ata, redeemer_ata.
-    pub fn burn<'info>(
-        ctx: Context<'_, '_, 'info, 'info, BurnGrai<'info>>,
-        grai_amount: u64,
-    ) -> Result<()> {
-        require!(grai_amount > 0, ErrorCode::InvalidAmount);
-        require!(
-            ctx.accounts.burner_grai_ata.amount >= grai_amount,
-            ErrorCode::InsufficientGraiBalance
-        );
-
-        let total_supply: u64 = ctx.accounts.grai_mint.supply;
-        let total_value_before = ctx.accounts.grai_state.total_value;
-        let burn_value: u128 = grai_burn_value(
-            grai_amount,
-            total_supply,
-            total_value_before,
-        )?;
-
-        process_remaining_assets(
-            &ctx.accounts.grai_state,
-            ctx.remaining_accounts,
-            grai_amount,
-            total_supply,
-            burn_value,
-            total_value_before,
-            ctx.accounts.grai_state.to_account_info(),
-            ctx.bumps.grai_state,
-            ctx.accounts.token_program.to_account_info(),
-        )?;
-
-        token::burn(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Burn {
-                    mint: ctx.accounts.grai_mint.to_account_info(),
-                    from: ctx.accounts.burner_grai_ata.to_account_info(),
-                    authority: ctx.accounts.burner.to_account_info(),
-                },
-            ),
-            grai_amount,
-        )?;
-
-        let grai_state: &mut Account<'info, GraiState> = &mut ctx.accounts.grai_state;
-        grai_state.total_value = grai_state.total_value.checked_sub(burn_value).ok_or(ErrorCode::MathOverflow)?;
-
-        Ok(())
-    }
-
-    pub fn allocate(ctx: Context<Allocate>, amount: u64) -> Result<()> {
-        allocate::execute_allocate(
-            amount,
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.junior_vault,
-            &ctx.accounts.junior_vault_ata,
-            &ctx.accounts.custody_ata,
-            &mut ctx.accounts.custody_allocation,
-            &ctx.accounts.token_program,
-            ctx.bumps.grai_state,
-        )
-    }
-
-    pub fn deallocate(ctx: Context<Deallocate>, amount: u64) -> Result<()> {
-        deallocate::execute_deallocate(
-            amount,
-            &mut ctx.accounts.junior_vault,
-            &mut ctx.accounts.custody_allocation,
-            &ctx.accounts.custody_ata,
-            &ctx.accounts.senior_vault_ata,
-            &ctx.accounts.custody_wallet,
-            &ctx.accounts.token_program,
-        )
-    }
-
-    pub fn distribute(
-        ctx: Context<Distribute>,
-        yield_amount: u64,
-    ) -> Result<()> {
-        require!(yield_amount > 0, ErrorCode::InvalidAmount);
-
-        let yield_split_bps: u16 = ctx.accounts.senior_vault.yield_split;
-        let (senior_vault_yield, treasury_yield) = yield_split(yield_amount, yield_split_bps)?;
-
-        if treasury_yield > 0 {
-            token::transfer(
-                CpiContext::new(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.custody_ata.to_account_info(),
-                        to: ctx.accounts.treasury_ata.to_account_info(),
-                        authority: ctx.accounts.custody_wallet.to_account_info(),
-                    },
-                ),
-                treasury_yield,
-            )?;
-        }
-
-        if senior_vault_yield > 0 {
-            token::transfer(
-                CpiContext::new(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.custody_ata.to_account_info(),
-                        to: ctx.accounts.senior_vault_ata.to_account_info(),
-                        authority: ctx.accounts.custody_wallet.to_account_info(),
-                    },
-                ),
-                senior_vault_yield,
-            )?;
-        }
-
-        let clock = Clock::get()?;
-        let price_feed_account: AccountInfo<'_> = ctx.accounts.price_feed.to_account_info();
-        let price: price_feed::PriceData = fetch_price_from_feed(
-            &price_feed_account,
-            ctx.accounts.senior_vault.price_feed,
-            &ctx.accounts.asset_mint.key(),
-            &clock,
-        )?;
-        let yield_value: u128 = deposit_value(
-            senior_vault_yield,
-            ctx.accounts.asset_mint.decimals,
-            &price,
-        )?;
-
-        let grai_state: &mut Account<'_, GraiState> = &mut ctx.accounts.grai_state;
-        let senior_vault: &mut Account<'_, SeniorVault> = &mut ctx.accounts.senior_vault;
-        let allocation: &mut Account<'_, CustodyAllocation> = &mut ctx.accounts.custody_allocation;
-
-        grai_state.total_value = grai_state
-            .total_value
-            .checked_add(yield_value)
-            .ok_or(ErrorCode::MathOverflow)?;
-        senior_vault.total_value = senior_vault
-            .total_value
-            .checked_add(yield_value)
-            .ok_or(ErrorCode::MathOverflow)?;
-        allocation.yield_amount = allocation
-            .yield_amount
-            .checked_add(senior_vault_yield)
-            .ok_or(ErrorCode::MathOverflow)?;
-
-        Ok(())
-    }
-
-    /// View: sum of senior idle balances priced via oracle for registered assets.
-    /// Remaining accounts per mint in `grai_state.asset_mints` order:
-    /// senior_vault, senior_vault_ata, price_feed, mint.
-    pub fn get_nav<'info>(
-        ctx: Context<'_, '_, 'info, 'info, GetNav<'info>>,
-    ) -> Result<u128> {
-        let clock = Clock::get()?;
-        value_lens::from_registry(
-            &ctx.accounts.grai_state,
-            ctx.remaining_accounts,
-            &clock,
-        )
-    }
-
-    /// View: registered asset mints from on-chain registry.
-    pub fn get_assets(ctx: Context<GetAssets>) -> Result<Vec<Pubkey>> {
-        Ok(ctx.accounts.grai_state.asset_mints.clone())
-    }
-
-    /// View: senior/junior vault token balances for registered assets.
-    /// Pass vault accounts in registry order: senior_vault, senior_vault_ata, junior_vault, junior_vault_ata per mint.
-    pub fn get_vaults<'info>(
-        ctx: Context<'_, '_, 'info, 'info, GetVaults<'info>>,
-    ) -> Result<vault_lens::VaultsSnapshot> {
-        vault_lens::from_registry(
-            &ctx.accounts.grai_state,
-            ctx.remaining_accounts,
-        )
-    }
+impl ProtocolConfig {
+    pub const LEN: usize = 2 + 2 + 2 + 4 + 4 + 4;
 }
 
 #[account]
 pub struct GraiState {
     pub authority: Pubkey,
+    pub treasury: Pubkey,
+    pub grinders: Pubkey,
+    /// `Pubkey::default()` means unset.
+    pub settlement_asset: Pubkey,
     pub total_value: u128,
-    pub treasury_wallet: Pubkey,
+    pub total_voted: u64,
+    /// Cumulative buyback-funded GRAI per voted GRAI, scaled by 1e18.
+    pub reward_per_vote: u128,
+    pub pending_vote_rewards: u64,
+    pub liquidation: bool,
+    pub liquidation_at: i64,
+    pub config: ProtocolConfig,
     pub asset_mints: Vec<Pubkey>,
+    pub voters: Vec<Pubkey>,
+    pub bump: u8,
 }
 
 impl GraiState {
     pub const SEED: &'static [u8] = b"protocol";
-    pub const DECIMALS: u8 = 9;
-    pub const FIXED_LEN: usize = 32 + 16 + 32;
+    /// Matches EVM `USD_DECIMALS`.
+    pub const DECIMALS: u8 = 6;
 
-    pub fn space(asset_count: usize) -> usize {
-        8 + Self::FIXED_LEN + 4 + asset_count * 32
+    /// Fixed fields excluding vec payloads.
+    pub const FIXED_LEN: usize = 32 + 32 + 32 + 32 + 16 + 8 + 16 + 8 + 1 + 8 + ProtocolConfig::LEN + 1;
+
+    pub fn space(asset_count: usize, voter_count: usize) -> usize {
+        8 + Self::FIXED_LEN + 4 + asset_count * 32 + 4 + voter_count * 32
     }
 }
 
 #[account]
-pub struct SeniorVault {
+pub struct AssetConfig {
     pub asset_mint: Pubkey,
     pub price_feed: Pubkey,
-    pub mint_split: u16,    // how much mint_split goes to senior vault
-    pub yield_split: u16,   // how much yield_split goes to senior vault
-    pub paused_minting: bool,
-    /// Cumulative USD value (9 decimals) from mint deposits and senior yield credited via `distribute`.
-    pub total_value: u128,
+    pub paused: bool,
+    pub id: u32,
+    // Dutch auction (start_time == 0 means none)
+    pub auction_remaining: u64,
+    pub auction_initial: u64,
+    pub auction_max_payment: u64,
+    pub auction_min_payment: u64,
+    pub auction_start_time: i64,
+    pub auction_duration: u32,
+    pub bump: u8,
 }
 
-impl SeniorVault {
-    pub const SEED: &'static [u8] = b"senior_vault_state";
-    pub const ATA_SEED: &'static [u8] = b"senior_vault_ata";
-    pub const SPLIT_BPS_MAX: u16 = 100_00;
-    pub const DEFAULT_MINT_SPLIT_BPS: u16 = 50_00;
-    pub const DEFAULT_YIELD_SPLIT_BPS: u16 = 80_00;
-    pub const LEN: usize = 32 + 32 + 2 + 2 + 1 + 16;
-
-    pub fn ata_address(asset_mint: &Pubkey) -> Pubkey {
-        Pubkey::find_program_address(
-            &[Self::ATA_SEED, asset_mint.as_ref()],
-            &crate::ID,
-        )
-        .0
-    }
+impl AssetConfig {
+    pub const SEED: &'static [u8] = b"asset";
+    pub const VAULT_SEED: &'static [u8] = b"vault";
+    pub const LEN: usize = 32 + 32 + 1 + 4 + 8 + 8 + 8 + 8 + 8 + 4 + 1;
 }
 
 #[account]
-pub struct JuniorVault {
-    pub asset_mint: Pubkey,
-    pub active_amount: u64,
+pub struct VoteEscrow {
+    pub amount: u64,
+    pub voted_at: i64,
+    pub id: u32,
+    pub reward_debt: u128,
+    pub claimable_reward: u64,
+    pub bump: u8,
 }
 
-impl JuniorVault {
-    pub const SEED: &'static [u8] = b"junior_vault_state";
-    pub const ATA_SEED: &'static [u8] = b"junior_vault_ata";
-    pub const LEN: usize = 32 + 8;
-
-    pub fn ata_address(asset_mint: &Pubkey) -> Pubkey {
-        Pubkey::find_program_address(
-            &[Self::ATA_SEED, asset_mint.as_ref()],
-            &crate::ID,
-        )
-        .0
-    }
+impl VoteEscrow {
+    pub const SEED: &'static [u8] = b"vote";
+    pub const LEN: usize = 8 + 8 + 4 + 16 + 8 + 1;
 }
 
 #[account]
-pub struct CustodyAllocation {
-    pub allocated_amount: u64,
-    pub yield_amount: u64,
+pub struct YieldBy {
+    pub amount: u64,
+    pub bump: u8,
 }
 
-impl CustodyAllocation {
-    pub const SEED: &'static [u8] = b"custody_alloc";
-    pub const LEN: usize = 8 + 8;
+impl YieldBy {
+    pub const SEED: &'static [u8] = b"yield_by";
+    pub const LEN: usize = 8 + 1;
+}
+
+#[program]
+pub mod grai {
+    use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> Result<()> {
+        config::execute_initialize(ctx, grinders_state)
+    }
+
+    pub fn set_treasury(ctx: Context<SetTreasury>, treasury: Pubkey) -> Result<()> {
+        config::execute_set_treasury(ctx, treasury)
+    }
+
+    pub fn set_grinders(ctx: Context<SetGrinders>, grinders: Pubkey) -> Result<()> {
+        config::execute_set_grinders(ctx, grinders)
+    }
+
+    pub fn set_protocol_config(ctx: Context<SetProtocolConfig>, cfg: ProtocolConfig) -> Result<()> {
+        config::execute_set_protocol_config(ctx, cfg)
+    }
+
+    pub fn set_settlement_asset<'info>(
+        ctx: Context<'_, '_, 'info, 'info, SetSettlementAsset<'info>>,
+    ) -> Result<()> {
+        assets::execute_set_settlement_asset(ctx)
+    }
+
+    pub fn add_asset(ctx: Context<AddAsset>) -> Result<()> {
+        assets::execute_add_asset(ctx)
+    }
+
+    pub fn set_price_feed(ctx: Context<SetPriceFeed>) -> Result<()> {
+        assets::execute_set_price_feed(ctx)
+    }
+
+    pub fn set_asset_config(ctx: Context<SetAssetConfig>, paused: bool) -> Result<()> {
+        assets::execute_set_asset_config(ctx, paused)
+    }
+
+    pub fn remove_asset<'info>(
+        ctx: Context<'_, '_, 'info, 'info, RemoveAsset<'info>>,
+    ) -> Result<()> {
+        assets::execute_remove_asset(ctx)
+    }
+
+    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+        deposit::execute_deposit(ctx, amount)
+    }
+
+    pub fn deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
+        deposit::execute_deposit_sol(ctx, amount)
+    }
+
+    pub fn distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result<()> {
+        distribute::execute_distribute(ctx, yield_amount)
+    }
+
+    pub fn fill(ctx: Context<Fill>, amount: u64, payment_max: u64) -> Result<()> {
+        fill::execute_fill(ctx, amount, payment_max)
+    }
+
+    pub fn vote(ctx: Context<Vote>, grai_amount: u64) -> Result<()> {
+        vote::execute_vote(ctx, grai_amount)
+    }
+
+    pub fn bribe(ctx: Context<Bribe>, grai_amount: u64) -> Result<()> {
+        bribe::execute_bribe(ctx, grai_amount)
+    }
+
+    pub fn resolve<'info>(ctx: Context<'_, '_, 'info, 'info, Resolve<'info>>) -> Result<()> {
+        resolve::execute_resolve(ctx)
+    }
+
+    pub fn liquidate<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Liquidate<'info>>,
+        grai_amount: u64,
+    ) -> Result<()> {
+        liquidate::execute_liquidate(ctx, grai_amount)
+    }
+
+    pub fn buyback<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Buyback<'info>>,
+        ix_data: Vec<u8>,
+    ) -> Result<()> {
+        buyback::execute_buyback(ctx, ix_data)
+    }
+
+    pub fn get_assets(ctx: Context<GetAssets>) -> Result<Vec<Pubkey>> {
+        Ok(ctx.accounts.grai_state.asset_mints.clone())
+    }
+
+    pub fn has_quorum(ctx: Context<HasQuorum>) -> Result<bool> {
+        Ok(tokenomics::has_quorum(
+            ctx.accounts.grai_state.total_voted,
+            ctx.accounts.grai_mint.supply,
+            ctx.accounts.grai_state.config.liquidation_quorum_bps,
+        ))
+    }
 }

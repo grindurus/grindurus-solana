@@ -2,16 +2,14 @@ import * as anchor from "@coral-xyz/anchor";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { PublicKey, SYSVAR_RENT_PUBKEY, SystemProgram } from "@solana/web3.js";
 import {
+  assetConfigPda,
   GRAI_PROGRAM_ID,
   graiStatePda,
-  juniorVaultAtaPda,
-  juniorVaultPda,
   loadGraiProgram,
   loadProvider,
   PYTH_USDC_USD_PUSH,
   runScript,
-  seniorVaultAtaPda,
-  seniorVaultPda,
+  vaultAtaPda,
 } from "./_common";
 
 // Circle USDC on Solana devnet
@@ -20,7 +18,6 @@ export const USDC_MINT_DEVNET = new PublicKey(
   "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 );
 
-// Pyth USDC/USD push feed (shard 0), mainnet + devnet
 export const PYTH_USDC_USD_DEVNET = PYTH_USDC_USD_PUSH;
 
 function resolveUsdcPriceFeed(): PublicKey {
@@ -39,10 +36,8 @@ async function main(): Promise<void> {
   const priceFeed = resolveUsdcPriceFeed();
 
   const graiState = graiStatePda(GRAI_PROGRAM_ID);
-  const juniorVault = juniorVaultPda(assetMint, GRAI_PROGRAM_ID);
-  const seniorVault = seniorVaultPda(assetMint, GRAI_PROGRAM_ID);
-  const seniorVaultAta = seniorVaultAtaPda(assetMint, GRAI_PROGRAM_ID);
-  const juniorVaultAta = juniorVaultAtaPda(assetMint, GRAI_PROGRAM_ID);
+  const assetConfig = assetConfigPda(assetMint, GRAI_PROGRAM_ID);
+  const vaultAta = vaultAtaPda(assetMint, GRAI_PROGRAM_ID);
 
   const state = await program.account.graiState.fetch(graiState);
   const usdcRegistered = state.assetMints.some((mint) =>
@@ -79,10 +74,8 @@ async function main(): Promise<void> {
       authority,
       assetMint,
       graiState,
-      juniorVault,
-      seniorVault,
-      seniorVaultAta,
-      juniorVaultAta,
+      assetConfig,
+      vaultAta,
       priceFeed,
       tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
@@ -91,17 +84,14 @@ async function main(): Promise<void> {
     .rpc();
 
   const finalState = await program.account.graiState.fetch(graiState);
-  const seniorVaultAccount = await program.account.seniorVault.fetch(
-    seniorVault,
-  );
+  const asset = await program.account.assetConfig.fetch(assetConfig);
 
   console.log(`add_asset (USDC) confirmed: ${signature}`);
   console.log(
     `  assets: ${finalState.assetMints.map((m) => m.toBase58()).join(", ")}`,
   );
-  console.log(`  senior_vault.price_feed: ${seniorVaultAccount.priceFeed.toBase58()}`);
-  console.log(`  senior_vault.mint_split: ${seniorVaultAccount.mintSplit}`);
-  console.log(`  senior_vault.yield_split: ${seniorVaultAccount.yieldSplit}`);
+  console.log(`  asset_config.price_feed: ${asset.priceFeed.toBase58()}`);
+  console.log(`  asset_config.paused: ${asset.paused}`);
 }
 
 runScript(main);
