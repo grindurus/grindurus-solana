@@ -290,7 +290,7 @@ pub struct SetBribeAsset<'info> {
 }
 
 #[derive(Accounts)]
-pub struct AddAsset<'info> {
+pub struct SetPriceFeed<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
@@ -301,68 +301,29 @@ pub struct AddAsset<'info> {
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
         has_one = authority @ ErrorCode::Unauthorized,
-        realloc = GraiState::space(grai_state.asset_mints.len() + 1, grai_state.accounts.len(), grai_state.voters.len()),
-        realloc::payer = authority,
-        realloc::zero = false,
     )]
     pub grai_state: Account<'info, GraiState>,
 
-    #[account(
-        init,
-        payer = authority,
-        space = 8 + AssetConfig::LEN,
-        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
-        bump,
-    )]
-    pub asset_config: Account<'info, AssetConfig>,
+    /// CHECK: AssetConfig PDA — created on list, closed on delist, mutated on update.
+    /// Seeds: `[AssetConfig::SEED, asset_mint]`.
+    #[account(mut)]
+    pub asset_config: UncheckedAccount<'info>,
 
-    #[account(
-        init_if_needed,
-        payer = authority,
-        token::mint = asset_mint,
-        token::authority = grai_state,
-        seeds = [AssetConfig::VAULT_SEED, asset_mint.key().as_ref()],
-        bump,
-    )]
-    pub vault_ata: Account<'info, TokenAccount>,
+    /// CHECK: Vault PDA token account — created on list; must be empty on delist.
+    /// Seeds: `[AssetConfig::VAULT_SEED, asset_mint]`.
+    #[account(mut)]
+    pub vault_ata: UncheckedAccount<'info>,
 
-    /// CHECK: Chainlink, Pyth, or custom price feed for `asset_mint`.
-    #[account(
-        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
-    )]
+    /// CHECK: Price feed for `asset_mint`, or System Program / default for delist (EVM `FEED_NONE`).
     pub price_feed: UncheckedAccount<'info>,
+
+    /// CHECK: Moved asset config when swap-removing mid-list on delist.
+    /// Pass `system_program` when unused (list / update / last asset).
+    pub moved_asset_config: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
-}
-
-#[derive(Accounts)]
-pub struct SetPriceFeed<'info> {
-    pub authority: Signer<'info>,
-
-    pub asset_mint: Account<'info, Mint>,
-
-    #[account(
-        seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
-    )]
-    pub grai_state: Account<'info, GraiState>,
-
-    #[account(
-        mut,
-        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
-        bump = asset_config.bump,
-        constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
-    )]
-    pub asset_config: Account<'info, AssetConfig>,
-
-    /// CHECK: New price feed for `asset_mint`.
-    #[account(
-        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
-    )]
-    pub price_feed: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -385,49 +346,6 @@ pub struct SetAssetConfig<'info> {
         constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
     )]
     pub asset_config: Account<'info, AssetConfig>,
-}
-
-#[derive(Accounts)]
-pub struct RemoveAsset<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-
-    pub asset_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
-        realloc = GraiState::space(grai_state.asset_mints.len().saturating_sub(1), grai_state.accounts.len(), grai_state.voters.len()),
-        realloc::payer = authority,
-        realloc::zero = false,
-    )]
-    pub grai_state: Account<'info, GraiState>,
-
-    #[account(
-        mut,
-        close = authority,
-        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
-        bump = asset_config.bump,
-        constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
-    )]
-    pub asset_config: Account<'info, AssetConfig>,
-
-    #[account(
-        mut,
-        seeds = [AssetConfig::VAULT_SEED, asset_mint.key().as_ref()],
-        bump,
-        constraint = vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = vault_ata.amount == 0 @ ErrorCode::AssetBalanceNonZero,
-    )]
-    pub vault_ata: Account<'info, TokenAccount>,
-
-    /// CHECK: Optional moved asset config when swapping list indices — validated in handler if needed.
-    /// Pass `system_program` as a dummy when unused (last asset / no swap).
-    pub moved_asset_config: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1409,30 +1327,25 @@ pub mod grai {
         config::execute_set_grinders(ctx, grinders)
     }
 
-    pub fn set_protocol_config(ctx: Context<SetConfig>, cfg: Config) -> Result<()> {
-        config::execute_set_protocol_config(ctx, cfg)
-    }
-
     pub fn set_bribe_asset(ctx: Context<SetBribeAsset>) -> Result<()> {
         assets::execute_set_bribe_asset(ctx)
     }
 
-    pub fn add_asset(ctx: Context<AddAsset>) -> Result<()> {
-        assets::execute_add_asset(ctx)
+    pub fn set_protocol_config(ctx: Context<SetConfig>, cfg: Config) -> Result<()> {
+        config::execute_set_protocol_config(ctx, cfg)
     }
 
-    pub fn set_price_feed(ctx: Context<SetPriceFeed>) -> Result<()> {
+    /// List, update, or delist an asset via its price feed (EVM `setFeed`).
+    /// Non-none feed lists (or updates `price_feed`); System Program / default delists
+    /// (`FEED_NONE` — requires pause + zero vault + no open auction).
+    pub fn set_price_feed<'info>(
+        ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>,
+    ) -> Result<()> {
         assets::execute_set_price_feed(ctx)
     }
 
     pub fn set_asset_config(ctx: Context<SetAssetConfig>, paused: bool) -> Result<()> {
         assets::execute_set_asset_config(ctx, paused)
-    }
-
-    pub fn remove_asset<'info>(
-        ctx: Context<'_, '_, 'info, 'info, RemoveAsset<'info>>,
-    ) -> Result<()> {
-        assets::execute_remove_asset(ctx)
     }
 
     pub fn deposit<'info>(
