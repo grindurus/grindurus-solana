@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::tokenomics::{default_protocol_config, validate_protocol_config};
 use crate::{
-    ErrorCode, Initialize, ProtocolConfig, SetGrinders, SetProtocolConfig, SetTreasury,
+    ErrorCode, Initialize, Config, SetGrinders, SetConfig, SetTreasury,
 };
 
 pub fn execute_initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> Result<()> {
@@ -12,15 +12,15 @@ pub fn execute_initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> R
     grai_state.authority = ctx.accounts.authority.key();
     grai_state.treasury = ctx.accounts.authority.key();
     grai_state.grinders = grinders_state;
-    grai_state.settlement_asset = Pubkey::default();
+    grai_state.bribe_asset = Pubkey::default();
     grai_state.total_value = 0;
+    grai_state.total_locked = 0;
     grai_state.total_voted = 0;
-    grai_state.reward_per_vote = 0;
-    grai_state.pending_vote_rewards = 0;
     grai_state.liquidation = false;
     grai_state.liquidation_at = 0;
     grai_state.config = default_protocol_config();
     grai_state.asset_mints = Vec::new();
+    grai_state.accounts = Vec::new();
     grai_state.voters = Vec::new();
     grai_state.bump = ctx.bumps.grai_state;
 
@@ -51,10 +51,16 @@ pub fn execute_set_grinders(ctx: Context<SetGrinders>, grinders: Pubkey) -> Resu
     Ok(())
 }
 
+/// Update the protocol config. Blocked while liquidation is open: `redeem` / `resettle` clocks
+/// are live, so both windows stay frozen for the whole liquidation.
 pub fn execute_set_protocol_config(
-    ctx: Context<SetProtocolConfig>,
-    cfg: ProtocolConfig,
+    ctx: Context<SetConfig>,
+    cfg: Config,
 ) -> Result<()> {
+    require!(
+        !ctx.accounts.grai_state.liquidation,
+        ErrorCode::LiquidationOpen
+    );
     validate_protocol_config(&cfg)?;
     ctx.accounts.grai_state.config = cfg;
     Ok(())

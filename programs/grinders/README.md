@@ -32,7 +32,9 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 | `custodian_swap` | NFT owner | Swap kind only: router CPI + on-chain `limit_price` |
 | `custodian_jupiter_gasless_swap` | NFT owner + `fee_payer` | Jupiter gasless kind only (logic stub) |
 | `custodian_deallocate` | NFT owner | Return principal to GRAI senior vault |
-| `custodian_distribute` | NFT owner | Route yield via GRAI |
+| `custodian_distribute` | NFT owner | Route yield via GRAI (`graiMint` + vault/treasury; no settlement accounts) |
+| `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while liquidation is open |
+| `liquidate_custodian` | anyone | Return custodian base/quote custody to GRAI vaults while liquidation is open |
 | `transfer_custodian_nft` | current NFT owner | Transfer NFT and sync `custodian_record.nft_owner` |
 | `withdraw` | owner | Withdraw SOL from grinders PDA |
 | `withdraw_token` | owner | Withdraw SPL from grinders ATA |
@@ -65,7 +67,8 @@ Add a new kind: constant in `state.rs`, whitelist in `is_known_custodian_kind`, 
 1. Deploy `grinders` and GRAI on the same cluster
 2. `initialize` with owner + GRAI program id (creates collection parent NFT held by grinders PDA)
 3. `grai.set_treasury(wallet)` — point yield skim to the protocol treasury wallet
-4. `mint(custodian_kind, grinder, base_mint, quote_mint)` — kind selects swap module; custodian wallet is a PDA
+4. `grai.set_bribe_asset` — choose the bribe settlement mint (listed asset + feed)
+5. `mint(custodian_kind, grinder, base_mint, quote_mint)` — kind selects swap module; custodian wallet is a PDA
 
 ## Build
 

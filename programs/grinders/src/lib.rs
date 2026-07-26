@@ -6,7 +6,6 @@ use anchor_spl::metadata::{
 };
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
 
-mod buyback;
 mod collection;
 mod custodian;
 mod custodians;
@@ -241,26 +240,6 @@ pub mod grinders {
         )
     }
 
-    pub fn buyback<'info>(
-        ctx: Context<'_, '_, 'info, 'info, Buyback<'info>>,
-        ix_data: Vec<u8>,
-    ) -> Result<()> {
-        let payment = buyback::execute_buyback(
-            &ctx.accounts.grai_state,
-            &ctx.accounts.grinders_state,
-            &ctx.accounts.settlement_mint,
-            &mut ctx.accounts.grinders_settlement_ata,
-            &ctx.accounts.grai_mint,
-            &mut ctx.accounts.grai_grinders_ata,
-            &ctx.accounts.grai_vault_ata,
-            &ctx.accounts.token_program,
-            ctx.remaining_accounts,
-            ix_data,
-        )?;
-        msg!("grinders buyback payment={}", payment);
-        Ok(())
-    }
-
     pub fn allocate(ctx: Context<Allocate>, amount: u64) -> Result<()> {
         custodian::execute_allocate(
             &ctx.accounts.grinders_state,
@@ -304,17 +283,160 @@ pub mod grinders {
             &ctx.accounts.asset_mint,
             &ctx.accounts.asset_config.to_account_info(),
             &ctx.accounts.price_feed.to_account_info(),
-            &ctx.accounts.settlement_mint,
-            &ctx.accounts.settlement_asset_config.to_account_info(),
-            &ctx.accounts.settlement_price_feed.to_account_info(),
+            &ctx.accounts.grai_mint,
             &ctx.accounts.custody_ata,
             &ctx.accounts.vault_ata.to_account_info(),
             &ctx.accounts.treasury_ata.to_account_info(),
-            &ctx.accounts.yield_by.to_account_info(),
+            &ctx.accounts.position.to_account_info(),
             &ctx.accounts.token_program,
             &ctx.accounts.system_program.to_account_info(),
             yield_amount,
         )
+    }
+
+    /// Permissionless idle-reserve sweep while GRAI liquidation is open.
+    /// Remaining accounts: per listed GRAI asset — `[grinders_ata, grai_vault_ata]`.
+    pub fn liquidate_idle<'info>(
+        ctx: Context<'_, '_, 'info, 'info, LiquidateIdle<'info>>,
+    ) -> Result<()> {
+        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
+
+        let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
+        let remaining = ctx.remaining_accounts;
+        require!(
+            remaining.len() == asset_mints.len() * 2,
+            ErrorCode::InvalidRemainingAccounts
+        );
+
+        let grinders_bump = [ctx.accounts.grinders_state.bump];
+        let grinders_signer = ctx
+            .accounts
+            .grinders_state
+            .signer_seeds(&grinders_bump);
+        let token_program = ctx.accounts.token_program.to_account_info();
+        let grinders_info = ctx.accounts.grinders_state.to_account_info();
+
+        for (i, mint) in asset_mints.iter().enumerate() {
+            let grinders_ata_info = &remaining[i * 2];
+            let vault_info = &remaining[i * 2 + 1];
+
+            let bal = {
+                let ata: Account<'info, TokenAccount> =
+                    Account::try_from(grinders_ata_info)?;
+                require_keys_eq!(ata.mint, *mint, ErrorCode::NotTradingAsset);
+                require_keys_eq!(
+                    ata.owner,
+                    ctx.accounts.grinders_state.key(),
+                    ErrorCode::InvalidGrindersTokenAccount
+                );
+                ata.amount
+            };
+            if bal == 0 {
+                continue;
+            }
+
+            token::transfer(
+                CpiContext::new_with_signer(
+                    token_program.clone(),
+                    Transfer {
+                        from: grinders_ata_info.clone(),
+                        to: vault_info.clone(),
+                        authority: grinders_info.clone(),
+                    },
+                    &[&grinders_signer[..]],
+                ),
+                bal,
+            )?;
+        }
+
+        msg!("liquidate_idle assets={}", asset_mints.len());
+        Ok(())
+    }
+
+    /// Permissionless custodian sweep while GRAI liquidation is open.
+    /// Pulls base + quote from one custodian wallet into GRAI vaults.
+    /// Remaining accounts (optional): allocation PDAs to zero — `[base_allocation?, quote_allocation?]`.
+    pub fn liquidate_custodian<'info>(
+        ctx: Context<'_, '_, 'info, 'info, LiquidateCustodian<'info>>,
+    ) -> Result<()> {
+        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
+
+        let custodian_id_bytes = ctx.accounts.custodian_state.custodian_id.to_le_bytes();
+        let bump = [ctx.accounts.custodian_state.bump];
+        let signer_seeds = CustodianState::signer_seeds(
+            ctx.accounts.custodian_state.grinders.as_ref(),
+            &custodian_id_bytes,
+            &bump,
+        );
+        let token_program = ctx.accounts.token_program.to_account_info();
+        let custodian_info = ctx.accounts.custodian_state.to_account_info();
+
+        let base_bal = ctx.accounts.base_custody_ata.amount;
+        if base_bal > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    token_program.clone(),
+                    Transfer {
+                        from: ctx.accounts.base_custody_ata.to_account_info(),
+                        to: ctx.accounts.base_vault_ata.to_account_info(),
+                        authority: custodian_info.clone(),
+                    },
+                    &[&signer_seeds[..]],
+                ),
+                base_bal,
+            )?;
+        }
+
+        let quote_bal = ctx.accounts.quote_custody_ata.amount;
+        if quote_bal > 0 {
+            token::transfer(
+                CpiContext::new_with_signer(
+                    token_program.clone(),
+                    Transfer {
+                        from: ctx.accounts.quote_custody_ata.to_account_info(),
+                        to: ctx.accounts.quote_vault_ata.to_account_info(),
+                        authority: custodian_info.clone(),
+                    },
+                    &[&signer_seeds[..]],
+                ),
+                quote_bal,
+            )?;
+        }
+
+        // Best-effort zero allocation ledgers when passed as remaining accounts.
+        let program_id = ctx.program_id;
+        let custodian_key = ctx.accounts.custodian_state.key();
+        let base_mint = ctx.accounts.base_mint.key();
+        let quote_mint = ctx.accounts.quote_mint.key();
+        for rem in ctx.remaining_accounts.iter() {
+            if rem.owner != program_id || !rem.is_writable {
+                continue;
+            }
+            let (expected_base, _) = Pubkey::find_program_address(
+                &[Allocation::SEED, custodian_key.as_ref(), base_mint.as_ref()],
+                program_id,
+            );
+            let (expected_quote, _) = Pubkey::find_program_address(
+                &[Allocation::SEED, custodian_key.as_ref(), quote_mint.as_ref()],
+                program_id,
+            );
+            if rem.key() != expected_base && rem.key() != expected_quote {
+                continue;
+            }
+            let mut data = rem.try_borrow_mut_data()?;
+            // Allocation layout: 8 discriminator + u64 amount + u8 bump
+            if data.len() >= 16 {
+                data[8..16].fill(0);
+            }
+        }
+
+        msg!(
+            "liquidate_custodian id={} base={} quote={}",
+            ctx.accounts.custodian_state.custodian_id,
+            base_bal,
+            quote_bal
+        );
+        Ok(())
     }
 
     pub fn transfer_custodian_nft(ctx: Context<TransferCustodianNft>) -> Result<()> {
@@ -763,56 +885,6 @@ pub struct CustodianJupiterGaslessSwap<'info> {
 }
 
 #[derive(Accounts)]
-pub struct Buyback<'info> {
-    #[account(
-        signer,
-        seeds = [grai::GraiState::SEED],
-        bump = grai_state.bump,
-        seeds::program = grinders_state.grai_program,
-    )]
-    pub grai_state: Account<'info, grai::GraiState>,
-
-    #[account(
-        seeds = [GrindersState::SEED],
-        bump = grinders_state.bump,
-        constraint = grinders_state.grai_program == grai::ID @ ErrorCode::NotGrai,
-    )]
-    pub grinders_state: Account<'info, GrindersState>,
-
-    #[account(
-        constraint = settlement_mint.key() == grai_state.settlement_asset @ ErrorCode::NotTradingAsset,
-    )]
-    pub settlement_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        constraint = grinders_settlement_ata.owner == grinders_state.key() @ ErrorCode::InvalidGrindersTokenAccount,
-        constraint = grinders_settlement_ata.mint == settlement_mint.key() @ ErrorCode::NotTradingAsset,
-    )]
-    pub grinders_settlement_ata: Account<'info, TokenAccount>,
-
-    pub grai_mint: Account<'info, Mint>,
-
-    #[account(
-        mut,
-        constraint = grai_grinders_ata.owner == grinders_state.key() @ ErrorCode::InvalidGrindersTokenAccount,
-        constraint = grai_grinders_ata.mint == grai_mint.key() @ ErrorCode::NotTradingAsset,
-    )]
-    pub grai_grinders_ata: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        seeds = [grai::AssetConfig::VAULT_SEED, grai_mint.key().as_ref()],
-        bump,
-        seeds::program = grinders_state.grai_program,
-        constraint = grai_vault_ata.mint == grai_mint.key() @ ErrorCode::InvalidGrindersTokenAccount,
-    )]
-    pub grai_vault_ata: Account<'info, TokenAccount>,
-
-    pub token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
 pub struct Allocate<'info> {
     #[account(
         mut,
@@ -954,13 +1026,7 @@ pub struct CustodianDistribute<'info> {
     /// CHECK: price feed for asset_mint.
     pub price_feed: UncheckedAccount<'info>,
 
-    pub settlement_mint: Account<'info, Mint>,
-
-    /// CHECK: GRAI AssetConfig for settlement asset.
-    pub settlement_asset_config: UncheckedAccount<'info>,
-
-    /// CHECK: price feed for settlement asset.
-    pub settlement_price_feed: UncheckedAccount<'info>,
+    pub grai_mint: Account<'info, Mint>,
 
     #[account(
         mut,
@@ -977,18 +1043,104 @@ pub struct CustodianDistribute<'info> {
     #[account(mut)]
     pub treasury_ata: UncheckedAccount<'info>,
 
-    /// CHECK: GRAI YieldBy PDA.
+    /// CHECK: GRAI Position PDA (custodian yield ledger).
     #[account(mut)]
-    pub yield_by: UncheckedAccount<'info>,
+    pub position: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
-#[event]
-pub struct BuybackExecuted {
-    pub payment: u64,
-    pub grai_out: u64,
+#[derive(Accounts)]
+pub struct LiquidateIdle<'info> {
+    #[account(
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+        constraint = grinders_state.grai_program == grai::ID @ ErrorCode::NotGrai,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+        constraint = grai_state.grinders == grinders_state.key() @ ErrorCode::NotGrai,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
+
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct LiquidateCustodian<'info> {
+    #[account(
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+        constraint = grinders_state.grai_program == grai::ID @ ErrorCode::NotGrai,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+        constraint = grai_state.grinders == grinders_state.key() @ ErrorCode::NotGrai,
+    )]
+    pub grai_state: Box<Account<'info, grai::GraiState>>,
+
+    #[account(
+        mut,
+        seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
+        bump = custodian_state.bump,
+        constraint = custodian_state.grinders == grinders_state.key() @ ErrorCode::NotCustodianWallet,
+    )]
+    pub custodian_state: Box<Account<'info, CustodianState>>,
+
+    #[account(
+        seeds = [CustodianRecord::SEED, &custodian_record.custodian_id.to_le_bytes()],
+        bump = custodian_record.bump,
+        constraint = custodian_record.custodian_wallet == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+    )]
+    pub custodian_record: Box<Account<'info, CustodianRecord>>,
+
+    pub base_mint: Box<Account<'info, Mint>>,
+    pub quote_mint: Box<Account<'info, Mint>>,
+
+    #[account(
+        mut,
+        constraint = base_custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = base_custody_ata.mint == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
+        constraint = base_mint.key() == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
+    )]
+    pub base_custody_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        constraint = quote_custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = quote_custody_ata.mint == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
+        constraint = quote_mint.key() == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
+    )]
+    pub quote_custody_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        seeds = [grai::AssetConfig::VAULT_SEED, base_mint.key().as_ref()],
+        bump,
+        seeds::program = grinders_state.grai_program,
+        constraint = base_vault_ata.mint == base_mint.key() @ ErrorCode::InvalidGrindersTokenAccount,
+    )]
+    pub base_vault_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        seeds = [grai::AssetConfig::VAULT_SEED, quote_mint.key().as_ref()],
+        bump,
+        seeds::program = grinders_state.grai_program,
+        constraint = quote_vault_ata.mint == quote_mint.key() @ ErrorCode::InvalidGrindersTokenAccount,
+    )]
+    pub quote_vault_ata: Box<Account<'info, TokenAccount>>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 #[event]

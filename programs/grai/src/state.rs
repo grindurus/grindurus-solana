@@ -1,0 +1,217 @@
+use anchor_lang::prelude::*;
+use anchor_lang::system_program;
+use anchor_spl::token::{self, Transfer};
+
+use crate::dividend;
+use crate::{ErrorCode, Escrow, GraiState};
+
+/// Grow `grai_state` to `new_space`, topping up rent from `payer`.
+pub fn realloc_grai_state<'info>(
+    grai_state_info: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    new_space: usize,
+) -> Result<()> {
+    let rent = Rent::get()?;
+    let new_lamports = rent.minimum_balance(new_space);
+    let current = grai_state_info.lamports();
+    if new_lamports > current {
+        system_program::transfer(
+            CpiContext::new(
+                system_program.clone(),
+                system_program::Transfer {
+                    from: payer.clone(),
+                    to: grai_state_info.clone(),
+                },
+            ),
+            new_lamports - current,
+        )?;
+    }
+    grai_state_info.realloc(new_space, false)?;
+    Ok(())
+}
+
+/// Swap-remove `key` from `list` (order not preserved). Removal is by pubkey (linear search), so
+/// the cached `*_id` indices on other escrows are advisory only.
+pub fn remove_from_list(list: &mut Vec<Pubkey>, key: Pubkey) {
+    if let Some(pos) = list.iter().position(|v| *v == key) {
+        let last = list.len() - 1;
+        if pos != last {
+            list[pos] = list[last];
+        }
+        list.pop();
+    }
+}
+
+/// Clamp `escrow.voted` to `escrow.amount` after the lock shrinks (EVM `_clampVote`).
+pub fn clamp_vote(
+    grai_state: &mut GraiState,
+    escrow: &mut Escrow,
+    account: Pubkey,
+) -> Result<()> {
+    let voted = escrow.voted;
+    if voted == 0 || voted <= escrow.amount {
+        return Ok(());
+    }
+    let excess = voted - escrow.amount;
+    grai_state.total_voted = grai_state
+        .total_voted
+        .checked_sub(excess)
+        .ok_or(ErrorCode::MathOverflow)?;
+    escrow.voted = escrow.amount;
+    if escrow.voted == 0 {
+        remove_from_list(&mut grai_state.voters, account);
+    }
+    Ok(())
+}
+
+/// Lock `add_amount` GRAI from `source_ata` into the GRAI vault and update the escrow / lists.
+///
+/// Accrues (and re-syncs) all listed-asset dividend positions for `owner` across the change in
+/// unvoted escrow (`amount - voted`) using `remaining` pairs `[asset_config, position]`.
+#[allow(clippy::too_many_arguments)]
+pub fn perform_lock<'info>(
+    grai_state: &mut Account<'info, GraiState>,
+    escrow: &mut Account<'info, Escrow>,
+    escrow_bump: u8,
+    add_amount: u64,
+    source_ata: &AccountInfo<'info>,
+    grai_vault_ata: &AccountInfo<'info>,
+    owner: &AccountInfo<'info>,
+    token_program: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    remaining: &[AccountInfo<'info>],
+    program_id: &Pubkey,
+    now: i64,
+) -> Result<()> {
+    require!(add_amount > 0, ErrorCode::AmountZero);
+
+    let old_amount = escrow.amount;
+    let new_amount = old_amount
+        .checked_add(add_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+    let old_unvoted = escrow.unvoted();
+    let new_unvoted = new_amount.saturating_sub(escrow.voted);
+
+    let asset_mints = grai_state.asset_mints.clone();
+    dividend::settle_all_pairs(
+        remaining,
+        &asset_mints,
+        &owner.key(),
+        old_unvoted,
+        new_unvoted,
+        owner,
+        system_program,
+        program_id,
+    )?;
+
+    if old_amount == 0 {
+        let new_space = GraiState::space(
+            grai_state.asset_mints.len(),
+            grai_state.accounts.len() + 1,
+            grai_state.voters.len(),
+        );
+        realloc_grai_state(
+            &grai_state.to_account_info(),
+            owner,
+            system_program,
+            new_space,
+        )?;
+        let id = grai_state.accounts.len() as u32;
+        grai_state.accounts.push(owner.key());
+        escrow.account_id = id;
+        escrow.bump = escrow_bump;
+    }
+
+    grai_state.total_locked = grai_state
+        .total_locked
+        .checked_add(add_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+    escrow.amount = new_amount;
+    escrow.locked_at = now;
+
+    token::transfer(
+        CpiContext::new(
+            token_program.clone(),
+            Transfer {
+                from: source_ata.clone(),
+                to: grai_vault_ata.clone(),
+                authority: owner.clone(),
+            },
+        ),
+        add_amount,
+    )?;
+
+    Ok(())
+}
+
+/// Commit `add_amount` of already-locked GRAI toward liquidation quorum.
+///
+/// Voting removes GRAI from the dividend base, so listed-asset positions are re-settled from the
+/// pre-vote unvoted balance. Callers must ensure `escrow.amount >= escrow.voted + add_amount`
+/// (e.g. by calling `perform_lock` for the shortfall first). `payer` funds any new position /
+/// registry rent and need not be `account` (see dead-GRAI booking in buyback).
+#[allow(clippy::too_many_arguments)]
+pub fn perform_vote<'info>(
+    grai_state: &mut Account<'info, GraiState>,
+    escrow: &mut Account<'info, Escrow>,
+    escrow_bump: u8,
+    add_amount: u64,
+    account: Pubkey,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    remaining: &[AccountInfo<'info>],
+    program_id: &Pubkey,
+    now: i64,
+) -> Result<()> {
+    require!(add_amount > 0, ErrorCode::AmountZero);
+
+    let new_voted = escrow
+        .voted
+        .checked_add(add_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+    require!(escrow.amount >= new_voted, ErrorCode::InvalidAmount);
+
+    let old_unvoted = escrow.unvoted();
+    let new_unvoted = escrow.amount - new_voted;
+
+    let asset_mints = grai_state.asset_mints.clone();
+    dividend::settle_all_pairs(
+        remaining,
+        &asset_mints,
+        &account,
+        old_unvoted,
+        new_unvoted,
+        payer,
+        system_program,
+        program_id,
+    )?;
+
+    if escrow.voted == 0 {
+        let new_space = GraiState::space(
+            grai_state.asset_mints.len(),
+            grai_state.accounts.len(),
+            grai_state.voters.len() + 1,
+        );
+        realloc_grai_state(
+            &grai_state.to_account_info(),
+            payer,
+            system_program,
+            new_space,
+        )?;
+        let id = grai_state.voters.len() as u32;
+        grai_state.voters.push(account);
+        escrow.voter_id = id;
+        escrow.bump = escrow_bump;
+    }
+
+    grai_state.total_voted = grai_state
+        .total_voted
+        .checked_add(add_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+    escrow.voted = new_voted;
+    escrow.voted_at = now;
+
+    Ok(())
+}

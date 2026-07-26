@@ -3,10 +3,15 @@ use anchor_spl::token::{self, MintTo};
 
 use crate::auction::{fetch_asset_price, transfer_from_signer};
 use crate::price_feed::fetch_price_from_feed;
+use crate::state::perform_lock;
 use crate::tokenomics::{preview_deposit, usd_value};
 use crate::{Deposit, DepositSol, ErrorCode};
 
-pub fn execute_deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
+pub fn execute_deposit<'info>(
+    ctx: Context<'_, '_, 'info, 'info, Deposit<'info>>,
+    amount: u64,
+    lock: bool,
+) -> Result<()> {
     require!(amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
     require!(!ctx.accounts.asset_config.paused, ErrorCode::Paused);
@@ -23,6 +28,8 @@ pub fn execute_deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
 
     let supply = ctx.accounts.grai_mint.supply;
     let total_value = ctx.accounts.grai_state.total_value;
+    // A zero book with live shares would bootstrap-mint and tax the new capital.
+    require!(total_value > 0 || supply == 0, ErrorCode::InsolventBook);
     let grai_out = preview_deposit(value, supply, total_value)?;
 
     transfer_from_signer(
@@ -47,27 +54,56 @@ pub fn execute_deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         grai_out,
     )?;
 
-    let grai_state = &mut ctx.accounts.grai_state;
-    grai_state.total_value = grai_state
+    ctx.accounts.grai_state.total_value = ctx
+        .accounts
+        .grai_state
         .total_value
         .checked_add(value)
         .ok_or(ErrorCode::MathOverflow)?;
 
+    if lock {
+        let source = ctx.accounts.depositor_grai_ata.to_account_info();
+        let vault = ctx.accounts.grai_vault_ata.to_account_info();
+        let owner = ctx.accounts.depositor.to_account_info();
+        let token_program = ctx.accounts.token_program.to_account_info();
+        let system_program = ctx.accounts.system_program.to_account_info();
+        let escrow_bump = ctx.bumps.escrow;
+        let program_id = ctx.program_id;
+        perform_lock(
+            ctx.accounts.grai_state.as_mut(),
+            ctx.accounts.escrow.as_mut(),
+            escrow_bump,
+            grai_out,
+            &source,
+            &vault,
+            &owner,
+            &token_program,
+            &system_program,
+            ctx.remaining_accounts,
+            program_id,
+            clock.unix_timestamp,
+        )?;
+    }
+
     msg!(
-        "deposit amount={} value={} grai_out={}",
+        "deposit amount={} value={} grai_out={} lock={}",
         amount,
         value,
-        grai_out
+        grai_out,
+        lock
     );
     Ok(())
 }
 
-pub fn execute_deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
+pub fn execute_deposit_sol<'info>(
+    ctx: Context<'_, '_, 'info, 'info, DepositSol<'info>>,
+    amount: u64,
+    lock: bool,
+) -> Result<()> {
     require!(amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
     require!(!ctx.accounts.asset_config.paused, ErrorCode::Paused);
 
-    // Wrap SOL into depositor WSOL ATA.
     anchor_lang::system_program::transfer(
         CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
@@ -97,6 +133,7 @@ pub fn execute_deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> 
 
     let supply = ctx.accounts.grai_mint.supply;
     let total_value = ctx.accounts.grai_state.total_value;
+    require!(total_value > 0 || supply == 0, ErrorCode::InsolventBook);
     let grai_out = preview_deposit(value, supply, total_value)?;
 
     transfer_from_signer(
@@ -121,11 +158,36 @@ pub fn execute_deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> 
         grai_out,
     )?;
 
-    let grai_state = &mut ctx.accounts.grai_state;
-    grai_state.total_value = grai_state
+    ctx.accounts.grai_state.total_value = ctx
+        .accounts
+        .grai_state
         .total_value
         .checked_add(value)
         .ok_or(ErrorCode::MathOverflow)?;
+
+    if lock {
+        let source = ctx.accounts.depositor_grai_ata.to_account_info();
+        let vault = ctx.accounts.grai_vault_ata.to_account_info();
+        let owner = ctx.accounts.depositor.to_account_info();
+        let token_program = ctx.accounts.token_program.to_account_info();
+        let system_program = ctx.accounts.system_program.to_account_info();
+        let escrow_bump = ctx.bumps.escrow;
+        let program_id = ctx.program_id;
+        perform_lock(
+            ctx.accounts.grai_state.as_mut(),
+            ctx.accounts.escrow.as_mut(),
+            escrow_bump,
+            grai_out,
+            &source,
+            &vault,
+            &owner,
+            &token_program,
+            &system_program,
+            ctx.remaining_accounts,
+            program_id,
+            clock.unix_timestamp,
+        )?;
+    }
 
     Ok(())
 }

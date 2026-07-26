@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
 
-use crate::auction::{clear_auction, put_auction};
+use crate::auction::clear_auction;
 use crate::{
-    AddAsset, ErrorCode, RemoveAsset, SetAssetConfig, SetPriceFeed, SetSettlementAsset,
+    AddAsset, ErrorCode, RemoveAsset, SetAssetConfig, SetBribeAsset, SetPriceFeed,
 };
 
 pub fn execute_add_asset(ctx: Context<AddAsset>) -> Result<()> {
@@ -20,6 +20,8 @@ pub fn execute_add_asset(ctx: Context<AddAsset>) -> Result<()> {
     asset.price_feed = ctx.accounts.price_feed.key();
     asset.paused = false;
     asset.id = id;
+    asset.acc_share = 0;
+    asset.total_claimable = 0;
     clear_auction(asset);
     asset.bump = ctx.bumps.asset_config;
 
@@ -73,64 +75,23 @@ pub fn execute_remove_asset<'info>(
     }
     mints.pop();
 
-    // Zero asset config before close.
     let asset = &mut ctx.accounts.asset_config;
     asset.asset_mint = Pubkey::default();
     asset.price_feed = Pubkey::default();
     asset.paused = false;
     asset.id = 0;
+    asset.acc_share = 0;
+    asset.total_claimable = 0;
     clear_auction(asset);
 
     msg!("remove_asset mint={}", mint);
     Ok(())
 }
 
-pub fn execute_set_settlement_asset<'info>(
-    ctx: Context<'_, '_, 'info, 'info, SetSettlementAsset<'info>>,
-) -> Result<()> {
-    require!(
-        ctx.accounts.grai_state.total_voted == 0,
-        ErrorCode::VotesOpen
-    );
-
-    let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
-    let remaining = ctx.remaining_accounts;
-    require!(
-        remaining.len() == asset_mints.len(),
-        ErrorCode::InvalidRemainingAccounts
-    );
-    for (i, mint) in asset_mints.iter().enumerate() {
-        let data = remaining[i].try_borrow_data()?;
-        let asset = crate::AssetConfig::try_deserialize(&mut &data[..])?;
-        require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
-        require!(asset.auction_start_time == 0, ErrorCode::AuctionsOpen);
-    }
-
-    let previous = ctx.accounts.grai_state.settlement_asset;
-    let new_settlement = ctx.accounts.settlement_mint.key();
-    ctx.accounts.grai_state.settlement_asset = new_settlement;
-
-    // If previous settlement held inventory, list it via put.
-    if previous != Pubkey::default()
-        && previous != new_settlement
-        && ctx.accounts.previous_vault_ata.amount > 0
-    {
-        let clock = Clock::get()?;
-        let amount = ctx.accounts.previous_vault_ata.amount;
-        put_auction(
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.previous_asset_config,
-            amount,
-            &previous,
-            ctx.accounts.previous_mint.decimals,
-            &ctx.accounts.previous_price_feed.to_account_info(),
-            &new_settlement,
-            ctx.accounts.settlement_mint.decimals,
-            &ctx.accounts.settlement_price_feed.to_account_info(),
-            ctx.accounts.settlement_asset_config.price_feed,
-            &clock,
-        )?;
-    }
-
+/// Set the bribe asset. Simple set with a feed check (no inventory auction on switch).
+pub fn execute_set_bribe_asset(ctx: Context<SetBribeAsset>) -> Result<()> {
+    let new_bribe = ctx.accounts.bribe_mint.key();
+    ctx.accounts.grai_state.bribe_asset = new_bribe;
+    msg!("set_bribe_asset mint={}", new_bribe);
     Ok(())
 }

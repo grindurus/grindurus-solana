@@ -12,8 +12,10 @@ pub enum ErrorCode {
     MathOverflow,
     #[msg("BPS value exceeds 10_000")]
     BpsTooHigh,
-    #[msg("Auction duration must be greater than 7 days")]
-    AuctionDurationTooShort,
+    #[msg("Auction duration must be at least 7 days")]
+    BuybackPeriodTooShort,
+    #[msg("Liquidation and redeem periods must be non-zero")]
+    PeriodZero,
     #[msg("GRAI mint authority does not match program config")]
     InvalidMint,
     #[msg("Token account is invalid for this operation")]
@@ -34,11 +36,15 @@ pub enum ErrorCode {
     Paused,
     #[msg("Asset vault balance must be zero to remove")]
     AssetBalanceNonZero,
+    #[msg("Bribe asset is unset")]
+    BribeAssetUnset,
     #[msg("Settlement asset is unset")]
     SettlementAssetUnset,
-    #[msg("Cannot change settlement while auctions are open")]
+    #[msg("Yield cuts must sum to 10_000")]
+    InvalidCuts,
+    #[msg("Cannot change asset while auctions are open")]
     AuctionsOpen,
-    #[msg("Cannot change settlement while votes are open")]
+    #[msg("Cannot change asset while votes are open")]
     VotesOpen,
     #[msg("Liquidation is open")]
     LiquidationOpen,
@@ -78,6 +84,8 @@ pub enum ErrorCode {
     InvalidVoteEscrow,
     #[msg("Insufficient GRAI balance")]
     InsufficientGraiBalance,
-    #[msg("Buyback produced no GRAI")]
-    InvalidBuyback,
+    #[msg("Leftover NAV would dilute remaining shares")]
+    InsolventResettle,
+    #[msg("Deposit book is zero while shares remain")]
+    InsolventBook,
 }

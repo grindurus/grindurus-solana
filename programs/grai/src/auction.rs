@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Transfer};
 
 use crate::price_feed::{fetch_price_from_feed, PriceData};
-use crate::tokenomics::{settlement_amount, usd_value};
+use crate::tokenomics::{preview_deposit_soft, usd_value, BPS, DIVIDEND_PRECISION};
 use crate::{AssetConfig, ErrorCode, GraiState};
 
 /// Clear auction fields (start_time == 0 means no open auction).
@@ -15,25 +15,24 @@ pub fn clear_auction(asset: &mut AssetConfig) {
     asset.auction_duration = 0;
 }
 
-/// Merge `amount` into the asset auction and restart the Dutch clock at oracle fair value.
+/// Merge `amount` of `asset` into its Dutch lot and restart the clock (EVM `_place`).
+///
+/// The ask is priced in **GRAI**: `max_payment` is the full-lot mint ask (`preview_deposit` of the
+/// remaining lot's USD value) and `min_payment = max_payment * (BPS - bribe_premium_bps) / BPS`,
+/// i.e. the max Dutch discount equals the max bribe premium. A lot too small to price is left
+/// unlisted rather than reverting the caller (`distribute` / `bribe`).
 pub fn put_auction<'info>(
     grai_state: &GraiState,
     asset: &mut AssetConfig,
     amount: u64,
-    asset_mint: &Pubkey,
     asset_decimals: u8,
     asset_price_feed: &AccountInfo<'info>,
-    settlement_mint: &Pubkey,
-    settlement_decimals: u8,
-    settlement_price_feed: &AccountInfo<'info>,
-    settlement_expected_feed: Pubkey,
+    total_supply: u64,
     clock: &Clock,
 ) -> Result<()> {
-    require!(
-        grai_state.settlement_asset != Pubkey::default(),
-        ErrorCode::SettlementAssetUnset
-    );
-    require!(amount > 0, ErrorCode::AmountZero);
+    if amount == 0 {
+        return Ok(());
+    }
 
     let remaining = asset
         .auction_remaining
@@ -43,29 +42,86 @@ pub fn put_auction<'info>(
     let asset_price = fetch_price_from_feed(
         asset_price_feed,
         asset.price_feed,
-        asset_mint,
+        &asset.asset_mint,
         clock,
     )?;
     let value = usd_value(remaining, asset_decimals, &asset_price)?;
-    require!(value > 0, ErrorCode::AmountZero);
 
-    let settlement_price = fetch_price_from_feed(
-        settlement_price_feed,
-        settlement_expected_feed,
-        settlement_mint,
-        clock,
-    )?;
-    let max_payment = settlement_amount(value, settlement_decimals, &settlement_price)?;
-    require!(max_payment > 0, ErrorCode::AmountZero);
+    // GRAI book ask for the full lot; dust does not list and does not revert the caller.
+    let max_payment = preview_deposit_soft(value, total_supply, grai_state.total_value)?;
+    if max_payment == 0 {
+        return Ok(());
+    }
+    let min_payment = ((max_payment as u128)
+        .checked_mul((BPS - grai_state.config.bribe_premium_bps) as u128)
+        .and_then(|v| v.checked_div(BPS as u128))
+        .ok_or(ErrorCode::MathOverflow)?) as u64;
 
     asset.auction_remaining = remaining;
     asset.auction_initial = remaining;
     asset.auction_max_payment = max_payment;
-    asset.auction_min_payment = 0;
+    asset.auction_min_payment = min_payment;
     asset.auction_start_time = clock.unix_timestamp;
-    asset.auction_duration = grai_state.config.auction_duration;
+    asset.auction_duration = grai_state.config.buyback_period;
 
     Ok(())
+}
+
+/// Distribute a dividend cut of `asset` to unvoted lockers via the MasterChef index, or merge it
+/// into the auction when there is no eligible base / the index increment would round to zero.
+///
+/// `eligible` is `total_locked - total_voted`: voted GRAI earns no dividends (EVM `_distribute`).
+#[allow(clippy::too_many_arguments)]
+pub fn distribute_dividend<'info>(
+    grai_state: &GraiState,
+    asset: &mut AssetConfig,
+    amount: u64,
+    asset_decimals: u8,
+    asset_price_feed: &AccountInfo<'info>,
+    eligible: u64,
+    total_supply: u64,
+    clock: &Clock,
+) -> Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+
+    let index_increase = if eligible > 0 {
+        (amount as u128)
+            .checked_mul(DIVIDEND_PRECISION)
+            .and_then(|v| v.checked_div(eligible as u128))
+            .ok_or(ErrorCode::MathOverflow)?
+    } else {
+        0
+    };
+
+    if index_increase == 0 {
+        return put_auction(
+            grai_state,
+            asset,
+            amount,
+            asset_decimals,
+            asset_price_feed,
+            total_supply,
+            clock,
+        );
+    }
+
+    asset.acc_share = asset
+        .acc_share
+        .checked_add(index_increase)
+        .ok_or(ErrorCode::MathOverflow)?;
+    asset.total_claimable = asset
+        .total_claimable
+        .checked_add(amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+    Ok(())
+}
+
+/// Vault balance available to liquidation redeem / resettle: excludes the dividend claim reserve
+/// (EVM `_redeemableBalance`).
+pub fn redeemable_balance(vault_amount: u64, total_claimable: u64) -> u64 {
+    vault_amount.saturating_sub(total_claimable)
 }
 
 pub fn fetch_asset_price<'info>(

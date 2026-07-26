@@ -1,14 +1,17 @@
 use anchor_lang::prelude::*;
 
-use crate::auction::{put_auction, transfer_from_signer, transfer_from_vault};
-use crate::tokenomics::treasury_cut;
+use crate::auction::{distribute_dividend, put_auction, transfer_from_signer, transfer_from_vault};
+use crate::tokenomics::split_cuts;
 use crate::{Distribute, ErrorCode};
 
+/// Pull custodian yield into the asset vault and split it per the configured cuts.
+///
+/// The dividend cut only reaches unvoted locked GRAI (`total_locked - total_voted`); with no
+/// eligible base it merges into the Dutch lot instead.
 pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result<()> {
     require!(yield_amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
 
-    // Pull yield from custodian into GRAI vault.
     transfer_from_signer(
         &ctx.accounts.token_program.to_account_info(),
         &ctx.accounts.custody_ata.to_account_info(),
@@ -17,53 +20,68 @@ pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result
         yield_amount,
     )?;
 
-    let (treasury_share, yield_cut) =
-        treasury_cut(yield_amount, ctx.accounts.grai_state.config.treasury_share)?;
+    let (treasury_cut, dividend_cut, buyback_cut) =
+        split_cuts(yield_amount, &ctx.accounts.grai_state.config)?;
 
-    if treasury_share > 0 {
+    let clock = Clock::get()?;
+    let supply = ctx.accounts.grai_mint.supply;
+    let eligible = ctx
+        .accounts
+        .grai_state
+        .total_locked
+        .saturating_sub(ctx.accounts.grai_state.total_voted);
+    let decimals = ctx.accounts.asset_mint.decimals;
+    let price_feed = ctx.accounts.price_feed.to_account_info();
+
+    if dividend_cut > 0 {
+        distribute_dividend(
+            &ctx.accounts.grai_state,
+            &mut ctx.accounts.asset_config,
+            dividend_cut,
+            decimals,
+            &price_feed,
+            eligible,
+            supply,
+            &clock,
+        )?;
+    }
+
+    if buyback_cut > 0 {
+        put_auction(
+            &ctx.accounts.grai_state,
+            &mut ctx.accounts.asset_config,
+            buyback_cut,
+            decimals,
+            &price_feed,
+            supply,
+            &clock,
+        )?;
+    }
+
+    if treasury_cut > 0 {
         transfer_from_vault(
             &ctx.accounts.token_program.to_account_info(),
             &ctx.accounts.vault_ata.to_account_info(),
             &ctx.accounts.treasury_ata.to_account_info(),
             &ctx.accounts.grai_state.to_account_info(),
             ctx.accounts.grai_state.bump,
-            treasury_share,
+            treasury_cut,
         )?;
     }
 
-    let is_settlement = ctx.accounts.asset_mint.key() == ctx.accounts.grai_state.settlement_asset;
-
-    if yield_cut > 0 && !is_settlement {
-        let clock = Clock::get()?;
-        put_auction(
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.asset_config,
-            yield_cut,
-            &ctx.accounts.asset_mint.key(),
-            ctx.accounts.asset_mint.decimals,
-            &ctx.accounts.price_feed.to_account_info(),
-            &ctx.accounts.settlement_mint.key(),
-            ctx.accounts.settlement_mint.decimals,
-            &ctx.accounts.settlement_price_feed.to_account_info(),
-            ctx.accounts.settlement_asset_config.price_feed,
-            &clock,
-        )?;
-    }
-
-    // Track yieldBy for parity.
-    let yield_by = &mut ctx.accounts.yield_by;
-    yield_by.amount = yield_by
-        .amount
+    let position = &mut ctx.accounts.position;
+    position.yielded = position
+        .yielded
         .checked_add(yield_amount)
         .ok_or(ErrorCode::MathOverflow)?;
-    yield_by.bump = ctx.bumps.yield_by;
+    position.bump = ctx.bumps.position;
 
     msg!(
-        "distribute yield={} treasury={} yield_cut={} settlement={}",
+        "distribute yield={} treasury={} dividend={} buyback={}",
         yield_amount,
-        treasury_share,
-        yield_cut,
-        is_settlement
+        treasury_cut,
+        dividend_cut,
+        buyback_cut
     );
     Ok(())
 }

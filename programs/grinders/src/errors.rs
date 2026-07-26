@@ -50,4 +50,8 @@ pub enum ErrorCode {
     InvalidCollection,
     #[msg("Only the configured GRAI program may call this instruction")]
     NotGrai,
+    #[msg("GRAI liquidation is not open")]
+    NoLiquidation,
+    #[msg("Remaining accounts do not match the expected layout")]
+    InvalidRemainingAccounts,
 }
