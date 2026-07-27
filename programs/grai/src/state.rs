@@ -151,7 +151,7 @@ pub fn perform_lock<'info>(
 /// Voting removes GRAI from the dividend base, so listed-asset positions are re-settled from the
 /// pre-vote unvoted balance. Callers must ensure `escrow.amount >= escrow.voted + add_amount`
 /// (e.g. by calling `perform_lock` for the shortfall first). `payer` funds any new position /
-/// registry rent and need not be `account` (see dead-GRAI booking in buyback).
+/// registry rent and need not be `account`.
 #[allow(clippy::too_many_arguments)]
 pub fn perform_vote<'info>(
     grai_state: &mut Account<'info, GraiState>,

@@ -209,6 +209,13 @@ function vaultAtaPda(mint: PublicKey, programId: PublicKey) {
   );
 }
 
+function escrowPda(user: PublicKey, programId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("escrow"), user.toBuffer()],
+    programId,
+  );
+}
+
 function grindersStatePda(grindersProgramId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("grinders")],
@@ -365,7 +372,7 @@ describe("external oracles", () => {
     const solConfigInfo = await connection.getAccountInfo(solAssetConfig);
     if (!solConfigInfo) {
       await program.methods
-        .addAsset()
+        .setPriceFeed()
         .accountsPartial({
           authority,
           assetMint: NATIVE_MINT,
@@ -373,6 +380,7 @@ describe("external oracles", () => {
           assetConfig: solAssetConfig,
           vaultAta: solVaultAta,
           priceFeed: CHAINLINK_SOL_USD_DEVNET,
+          movedAssetConfig: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -394,8 +402,11 @@ describe("external oracles", () => {
       (await connection.getTokenAccountBalance(depositorGraiAta)).value.amount,
     );
 
+    const [escrow] = escrowPda(authority, program.programId);
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+
     await program.methods
-      .depositSol(new anchor.BN(depositLamports))
+      .depositSol(new anchor.BN(depositLamports), false)
       .accountsPartial({
         depositor: authority,
         graiState,
@@ -407,9 +418,12 @@ describe("external oracles", () => {
         depositorWsolAta,
         grindersAta: grindersAta(NATIVE_MINT),
         depositorGraiAta,
+        escrow,
+        graiVaultAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
       })
       .rpc();
 
@@ -450,7 +464,7 @@ describe("external oracles", () => {
     const usdcConfigInfo = await connection.getAccountInfo(usdcAssetConfig);
     if (!usdcConfigInfo) {
       await program.methods
-        .addAsset()
+        .setPriceFeed()
         .accountsPartial({
           authority,
           assetMint: usdcMint.publicKey,
@@ -458,6 +472,7 @@ describe("external oracles", () => {
           assetConfig: usdcAssetConfig,
           vaultAta: usdcVaultAta,
           priceFeed: PYTH_USDC_USD_PUSH,
+          movedAssetConfig: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -523,8 +538,11 @@ describe("external oracles", () => {
       (await program.account.graiState.fetch(graiState)).totalValue.toString(),
     );
 
+    const [escrow] = escrowPda(authority, program.programId);
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+
     await program.methods
-      .deposit(new anchor.BN(depositAmount))
+      .deposit(new anchor.BN(depositAmount), false)
       .accountsPartial({
         depositor: authority,
         graiState,
@@ -536,9 +554,12 @@ describe("external oracles", () => {
         depositorAta: depositorUsdcAta,
         grindersAta: grindersAta(usdcMint.publicKey),
         depositorGraiAta,
+        escrow,
+        graiVaultAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
       })
       .rpc();
 

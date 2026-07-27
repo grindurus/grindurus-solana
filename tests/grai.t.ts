@@ -48,7 +48,16 @@ const GRAI_TOKEN_NAME = "Grinders Artificial Index";
 const GRAI_TOKEN_SYMBOL = "GRAI";
 const GRAI_TOKEN_URI = "https://grindurus.xyz/metadata.json";
 
-const DEFAULT_TREASURY_SHARE = 2_000; // 20%
+/** Matches on-chain `DEFAULT_*_CUT_BPS` / `Config` defaults. */
+const DEFAULT_BUYBACK_CUT_BPS = 3_333; // 33.33%
+const DEFAULT_DIVIDEND_CUT_BPS = 3_334; // 33.34%
+const DEFAULT_TREASURY_CUT_BPS = 3_333; // 33.33%
+const DEFAULT_BRIBE_PREMIUM_BPS = 200; // 2%
+const DEFAULT_QUORUM_BPS = 6_667;
+const DEFAULT_UNLOCK_FEE_BPS = 1_000; // 10% at lock time
+const SEVEN_DAYS = 7 * 24 * 60 * 60;
+const ONE_DAY = 24 * 60 * 60;
+const U64_MAX = new anchor.BN("18446744073709551615");
 
 function readBorshString(data: Buffer, offset: number): { value: string; next: number } {
   const len = data.readUInt32LE(offset);
@@ -107,20 +116,20 @@ function vaultAtaPda(mint: PublicKey, programId: PublicKey) {
   );
 }
 
-function yieldByPda(
-  custodyWallet: PublicKey,
+function positionPda(
+  account: PublicKey,
   mint: PublicKey,
   programId: PublicKey,
 ) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("yield_by"), custodyWallet.toBuffer(), mint.toBuffer()],
+    [Buffer.from("position"), account.toBuffer(), mint.toBuffer()],
     programId,
   );
 }
 
-function voteEscrowPda(voter: PublicKey, programId: PublicKey) {
+function escrowPda(user: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from("vote"), voter.toBuffer()],
+    [Buffer.from("escrow"), user.toBuffer()],
     programId,
   );
 }
@@ -246,12 +255,16 @@ function graiMintAmount(
   return (depositValue * totalSupply) / totalValue;
 }
 
-function treasuryCut(
+/** Split yield like on-chain `split_cuts` (auction absorbs rounding dust). */
+function yieldCuts(
   amount: bigint,
-  treasuryShareBps: number,
-): [bigint, bigint] {
-  const cut = (amount * BigInt(treasuryShareBps)) / 10_000n;
-  return [cut, amount - cut];
+  treasuryCutBps = DEFAULT_TREASURY_CUT_BPS,
+  dividendCutBps = DEFAULT_DIVIDEND_CUT_BPS,
+): { treasury: bigint; dividend: bigint; auction: bigint } {
+  const treasury = (amount * BigInt(treasuryCutBps)) / 10_000n;
+  const dividend = (amount * BigInt(dividendCutBps)) / 10_000n;
+  const auction = amount - treasury - dividend;
+  return { treasury, dividend, auction };
 }
 
 async function expectTransactionError(
@@ -367,14 +380,64 @@ describe("GRAI tokenomics", () => {
     return ata;
   }
 
-  async function settlementRemainingAccounts(): Promise<
+  async function lockRemainingAccounts(
+    user: PublicKey,
+  ): Promise<
     Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }>
   > {
     const state = await program.account.graiState.fetch(graiState);
-    return state.assetMints.map((mint) => {
+    const accounts: Array<{
+      pubkey: PublicKey;
+      isWritable: boolean;
+      isSigner: boolean;
+    }> = [];
+    for (const mint of state.assetMints) {
       const [config] = assetConfigPda(mint, program.programId);
-      return { pubkey: config, isWritable: false, isSigner: false };
-    });
+      const [position] = positionPda(user, mint, program.programId);
+      accounts.push({ pubkey: config, isWritable: false, isSigner: false });
+      accounts.push({ pubkey: position, isWritable: true, isSigner: false });
+    }
+    return accounts;
+  }
+
+  /** Quads `[asset_config, position, vault_ata, holder_ata]` for `unlock` / `redeem`. */
+  async function dividendRemainingAccounts(
+    user: PublicKey,
+  ): Promise<
+    Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }>
+  > {
+    const state = await program.account.graiState.fetch(graiState);
+    const accounts: Array<{
+      pubkey: PublicKey;
+      isWritable: boolean;
+      isSigner: boolean;
+    }> = [];
+    for (const mint of state.assetMints) {
+      const [config] = assetConfigPda(mint, program.programId);
+      const [position] = positionPda(user, mint, program.programId);
+      const [vault] = vaultAtaPda(mint, program.programId);
+      const holderAta = getAssociatedTokenAddressSync(
+        mint,
+        user,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      );
+      accounts.push({ pubkey: config, isWritable: true, isSigner: false });
+      accounts.push({ pubkey: position, isWritable: true, isSigner: false });
+      accounts.push({ pubkey: vault, isWritable: true, isSigner: false });
+      accounts.push({ pubkey: holderAta, isWritable: true, isSigner: false });
+    }
+    return accounts;
+  }
+
+  function depositEscrowAccounts(depositor: PublicKey): {
+    escrow: PublicKey;
+    graiVaultAta: PublicKey;
+  } {
+    const [escrow] = escrowPda(depositor, program.programId);
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+    return { escrow, graiVaultAta };
   }
 
   it("initialize creates graiState (decimals=6), GRAI mint, and Metaplex metadata", async () => {
@@ -412,7 +475,16 @@ describe("GRAI tokenomics", () => {
       expect(grai.totalValue.toString()).to.equal("0");
       expect(grai.treasury.toBase58()).to.equal(authority.toBase58());
       expect(grai.assetMints).to.have.length(0);
-      expect(grai.config.treasuryShare).to.equal(DEFAULT_TREASURY_SHARE);
+      expect(grai.config.treasuryCutBps).to.equal(DEFAULT_TREASURY_CUT_BPS);
+      expect(grai.config.buybackCutBps).to.equal(DEFAULT_BUYBACK_CUT_BPS);
+      expect(grai.config.dividendCutBps).to.equal(DEFAULT_DIVIDEND_CUT_BPS);
+      expect(grai.config.bribePremiumBps).to.equal(DEFAULT_BRIBE_PREMIUM_BPS);
+      expect(grai.config.quorumBps).to.equal(DEFAULT_QUORUM_BPS);
+      expect(grai.config.unlockFeeBps).to.equal(DEFAULT_UNLOCK_FEE_BPS);
+      expect(grai.config.buybackPeriod).to.equal(SEVEN_DAYS);
+      expect(grai.config.liquidationPeriod).to.equal(ONE_DAY);
+      expect(grai.config.redeemPeriod).to.equal(SEVEN_DAYS);
+      expect(grai.config.unlockPenaltyPeriod).to.equal(ONE_DAY);
     }
 
     const mintInfo = await provider.connection.getParsedAccountInfo(graiMint.publicKey);
@@ -447,7 +519,7 @@ describe("GRAI tokenomics", () => {
     expect(grai.treasury.toBase58()).to.equal(treasury.publicKey.toBase58());
   });
 
-  it("add_asset registers USDC and set_settlement_asset selects USDC", async () => {
+  it("set_price_feed lists USDC and set_bribe_asset selects USDC", async () => {
     const priceFeed = await setupUsdcWithPriceFeed(
       feedProgram,
       provider,
@@ -461,34 +533,21 @@ describe("GRAI tokenomics", () => {
     expect(feed.price.toString()).to.equal(USDC_USD_PRICE.toString());
     expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
 
-    const usdcConfigInfo = await provider.connection.getAccountInfo(usdcAssetConfig);
-    if (!usdcConfigInfo) {
-      await program.methods
-        .addAsset()
-        .accountsPartial({
-          authority,
-          assetMint: usdcMint.publicKey,
-          graiState,
-          assetConfig: usdcAssetConfig,
-          vaultAta: usdcVaultAta,
-          priceFeed: usdcUsdFeed,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-          rent: SYSVAR_RENT_PUBKEY,
-        })
-        .rpc();
-    } else {
-      await program.methods
-        .setPriceFeed()
-        .accountsPartial({
-          authority,
-          assetMint: usdcMint.publicKey,
-          graiState,
-          assetConfig: usdcAssetConfig,
-          priceFeed: usdcUsdFeed,
-        })
-        .rpc();
-    }
+    await program.methods
+      .setPriceFeed()
+      .accountsPartial({
+        authority,
+        assetMint: usdcMint.publicKey,
+        graiState,
+        assetConfig: usdcAssetConfig,
+        vaultAta: usdcVaultAta,
+        priceFeed: usdcUsdFeed,
+        movedAssetConfig: SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .rpc();
 
     const asset = await program.account.assetConfig.fetch(usdcAssetConfig);
     expect(asset.assetMint.toBase58()).to.equal(usdcMint.publicKey.toBase58());
@@ -500,26 +559,21 @@ describe("GRAI tokenomics", () => {
       usdcMint.publicKey.toBase58(),
     );
 
-    if (registry.settlementAsset.equals(PublicKey.default)) {
+    if (registry.bribeAsset.equals(PublicKey.default)) {
       await program.methods
-        .setSettlementAsset()
+        .setBribeAsset()
         .accountsPartial({
           authority,
           graiState,
-          settlementMint: usdcMint.publicKey,
-          settlementAssetConfig: usdcAssetConfig,
-          settlementPriceFeed: usdcUsdFeed,
-          previousMint: usdcMint.publicKey,
-          previousAssetConfig: usdcAssetConfig,
-          previousPriceFeed: usdcUsdFeed,
-          previousVaultAta: usdcVaultAta,
+          bribeMint: usdcMint.publicKey,
+          bribeAssetConfig: usdcAssetConfig,
+          bribePriceFeed: usdcUsdFeed,
         })
-        .remainingAccounts(await settlementRemainingAccounts())
         .rpc();
     }
 
-    const afterSettlement = await program.account.graiState.fetch(graiState);
-    expect(afterSettlement.settlementAsset.toBase58()).to.equal(
+    const afterBribe = await program.account.graiState.fetch(graiState);
+    expect(afterBribe.bribeAsset.toBase58()).to.equal(
       usdcMint.publicKey.toBase58(),
     );
   });
@@ -595,8 +649,10 @@ describe("GRAI tokenomics", () => {
       totalValueBefore,
     );
 
+    const { escrow, graiVaultAta } = depositEscrowAccounts(authority);
+
     await program.methods
-      .deposit(new anchor.BN(depositAmount.toString()))
+      .deposit(new anchor.BN(depositAmount.toString()), false)
       .accountsPartial({
         depositor: authority,
         graiState,
@@ -608,9 +664,12 @@ describe("GRAI tokenomics", () => {
         depositorAta,
         grindersAta: grindersUsdcAta,
         depositorGraiAta,
+        escrow,
+        graiVaultAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
       })
       .rpc();
 
@@ -634,43 +693,24 @@ describe("GRAI tokenomics", () => {
     );
   });
 
-  it("add_asset registers SOL / WSOL price feed", async () => {
-    const registryBefore = await program.account.graiState.fetch(graiState);
-    const solAlreadyRegistered = registryBefore.assetMints.some((mint) =>
-      mint.equals(NATIVE_MINT),
-    );
+  it("set_price_feed lists SOL / WSOL price feed", async () => {
+    await setupSolWithPriceFeed(feedProgram, authority);
 
-    if (!solAlreadyRegistered) {
-      const priceFeed = await setupSolWithPriceFeed(feedProgram, authority);
-      expect(priceFeed.toBase58()).to.equal(solUsdFeed.toBase58());
-
-      await program.methods
-        .addAsset()
-        .accountsPartial({
-          authority,
-          assetMint: NATIVE_MINT,
-          graiState,
-          assetConfig: solAssetConfig,
-          vaultAta: solVaultAta,
-          priceFeed: solUsdFeed,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-          rent: SYSVAR_RENT_PUBKEY,
-        })
-        .rpc();
-    } else {
-      await setupSolWithPriceFeed(feedProgram, authority);
-      await program.methods
-        .setPriceFeed()
-        .accountsPartial({
-          authority,
-          assetMint: NATIVE_MINT,
-          graiState,
-          assetConfig: solAssetConfig,
-          priceFeed: solUsdFeed,
-        })
-        .rpc();
-    }
+    await program.methods
+      .setPriceFeed()
+      .accountsPartial({
+        authority,
+        assetMint: NATIVE_MINT,
+        graiState,
+        assetConfig: solAssetConfig,
+        vaultAta: solVaultAta,
+        priceFeed: solUsdFeed,
+        movedAssetConfig: SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .rpc();
 
     const asset = await program.account.assetConfig.fetch(solAssetConfig);
     expect(asset.assetMint.toBase58()).to.equal(NATIVE_MINT.toBase58());
@@ -713,8 +753,10 @@ describe("GRAI tokenomics", () => {
       ).value.amount,
     );
 
+    const { escrow, graiVaultAta } = depositEscrowAccounts(authority);
+
     await program.methods
-      .depositSol(new anchor.BN(depositLamports.toString()))
+      .depositSol(new anchor.BN(depositLamports.toString()), false)
       .accountsPartial({
         depositor: authority,
         graiState,
@@ -726,9 +768,12 @@ describe("GRAI tokenomics", () => {
         depositorWsolAta,
         grindersAta: grindersWsolAta,
         depositorGraiAta,
+        escrow,
+        graiVaultAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
       })
       .rpc();
 
@@ -892,7 +937,7 @@ describe("GRAI tokenomics", () => {
     );
   });
 
-  it("custodian_distribute skims treasury and retains settlement yield in vault", async () => {
+  it("custodian_distribute skims treasury; dividend merges to auction when unlocked", async () => {
     const custodian = await getUsdcCustodian();
     const custodyAta = getAssociatedTokenAddressSync(
       usdcMint.publicKey,
@@ -902,17 +947,16 @@ describe("GRAI tokenomics", () => {
       ASSOCIATED_TOKEN_PROGRAM_ID,
     );
     const treasuryAta = await ensureAta(usdcMint.publicKey, treasury.publicKey);
-    const [yieldBy] = yieldByPda(
+    const [position] = positionPda(
       custodian.custodianState,
       usdcMint.publicKey,
       program.programId,
     );
 
     const yieldAmount = 100_000n;
-    const [treasuryShare, yieldCut] = treasuryCut(
-      yieldAmount,
-      DEFAULT_TREASURY_SHARE,
-    );
+    const { treasury: treasuryShare, dividend, auction } = yieldCuts(yieldAmount);
+    // No unvoted lock yet → the dividend cut merges into the auction lot.
+    const auctionInventory = dividend + auction;
 
     // Fund custodian with yield (above remaining allocated principal).
     await mintUsdcTo(authority, yieldAmount);
@@ -946,6 +990,9 @@ describe("GRAI tokenomics", () => {
 
     expect(custodyBefore >= yieldAmount).to.be.true;
 
+    const graiBefore = await program.account.graiState.fetch(graiState);
+    expect(BigInt(graiBefore.totalLocked.toString())).to.equal(0n);
+
     await grindersProgram.methods
       .custodianDistribute(new anchor.BN(yieldAmount.toString()))
       .accountsPartial({
@@ -958,13 +1005,11 @@ describe("GRAI tokenomics", () => {
         assetMint: usdcMint.publicKey,
         assetConfig: usdcAssetConfig,
         priceFeed: usdcUsdFeed,
-        settlementMint: usdcMint.publicKey,
-        settlementAssetConfig: usdcAssetConfig,
-        settlementPriceFeed: usdcUsdFeed,
+        graiMint: graiMint.publicKey,
         custodyAta,
         vaultAta: usdcVaultAta,
         treasuryAta,
-        yieldBy,
+        position,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -980,16 +1025,21 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(usdcVaultAta)).value
         .amount,
     );
-    const yieldByAccount = await program.account.yieldBy.fetch(yieldBy);
+    const positionAccount = await program.account.position.fetch(position);
+    const usdcAsset = await program.account.assetConfig.fetch(usdcAssetConfig);
 
     expect(custodyBefore - custodyAfter).to.equal(yieldAmount);
     expect(treasuryAfter - treasuryBefore).to.equal(treasuryShare);
-    // Settlement asset: yield cut is retained in vault (no Dutch auction).
-    expect(vaultAfter - vaultBefore).to.equal(yieldCut);
-    expect(yieldByAccount.amount.toString()).to.equal(yieldAmount.toString());
+    // Auction + merged dividend stay in the vault as Dutch lot inventory.
+    expect(vaultAfter - vaultBefore).to.equal(auctionInventory);
+    expect(usdcAsset.auctionStartTime.toNumber()).to.be.greaterThan(0);
+    expect(BigInt(usdcAsset.auctionRemaining.toString())).to.equal(
+      auctionInventory,
+    );
+    expect(positionAccount.yielded.toString()).to.equal(yieldAmount.toString());
   });
 
-  it("distribute of non-settlement WSOL starts a Dutch auction", async () => {
+  it("distribute of WSOL splits by config cuts and starts a Dutch auction", async () => {
     const custodian = await getUsdcCustodian();
     const custodyWsolAta = getAssociatedTokenAddressSync(
       NATIVE_MINT,
@@ -999,7 +1049,7 @@ describe("GRAI tokenomics", () => {
       ASSOCIATED_TOKEN_PROGRAM_ID,
     );
     const treasuryWsolAta = await ensureAta(NATIVE_MINT, treasury.publicKey);
-    const [yieldBy] = yieldByPda(
+    const [position] = positionPda(
       custodian.custodianState,
       NATIVE_MINT,
       program.programId,
@@ -1059,7 +1109,15 @@ describe("GRAI tokenomics", () => {
           .catch(() => ({ value: { amount: "0" } }))
       ).value.amount,
     );
-    const [treasuryShare] = treasuryCut(yieldAmount, DEFAULT_TREASURY_SHARE);
+    const vaultBefore = BigInt(
+      (
+        await provider.connection
+          .getTokenAccountBalance(solVaultAta)
+          .catch(() => ({ value: { amount: "0" } }))
+      ).value.amount,
+    );
+    const { treasury: treasuryShare, dividend, auction } = yieldCuts(yieldAmount);
+    const auctionInventory = dividend + auction;
 
     await grindersProgram.methods
       .custodianDistribute(new anchor.BN(yieldAmount.toString()))
@@ -1073,13 +1131,11 @@ describe("GRAI tokenomics", () => {
         assetMint: NATIVE_MINT,
         assetConfig: solAssetConfig,
         priceFeed: solUsdFeed,
-        settlementMint: usdcMint.publicKey,
-        settlementAssetConfig: usdcAssetConfig,
-        settlementPriceFeed: usdcUsdFeed,
+        graiMint: graiMint.publicKey,
         custodyAta: custodyWsolAta,
         vaultAta: solVaultAta,
         treasuryAta: treasuryWsolAta,
-        yieldBy,
+        position,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -1089,11 +1145,18 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(treasuryWsolAta)).value
         .amount,
     );
+    const vaultAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(solVaultAta)).value
+        .amount,
+    );
     const solAsset = await program.account.assetConfig.fetch(solAssetConfig);
 
     expect(treasuryAfter - treasuryBefore).to.equal(treasuryShare);
+    expect(vaultAfter - vaultBefore).to.equal(auctionInventory);
     expect(solAsset.auctionStartTime.toNumber()).to.be.greaterThan(0);
-    expect(solAsset.auctionRemaining.toNumber()).to.be.greaterThan(0);
+    expect(BigInt(solAsset.auctionRemaining.toString())).to.equal(
+      auctionInventory,
+    );
   });
 
   it("vote locks GRAI; has_quorum is false below quorum", async () => {
@@ -1107,7 +1170,7 @@ describe("GRAI tokenomics", () => {
     const voteAmount = graiBalance / 10n;
     expect(voteAmount > 0n).to.be.true;
 
-    const [voteEscrow] = voteEscrowPda(authority, program.programId);
+    const [escrow] = escrowPda(authority, program.programId);
     const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
 
     await program.methods
@@ -1116,13 +1179,14 @@ describe("GRAI tokenomics", () => {
         voter: authority,
         graiState,
         graiMint: graiMint.publicKey,
-        voteEscrow,
+        escrow,
         voterGraiAta,
         graiVaultAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
       })
+      .remainingAccounts(await lockRemainingAccounts(authority))
       .rpc();
 
     const state = await program.account.graiState.fetch(graiState);
@@ -1138,8 +1202,342 @@ describe("GRAI tokenomics", () => {
     expect(quorum).to.be.false;
   });
 
+  it("lock adds unvoted escrow, which is the dividend base", async () => {
+    const lockerGraiAta = await ensureAta(graiMint.publicKey, authority);
+    const balance = BigInt(
+      (await provider.connection.getTokenAccountBalance(lockerGraiAta)).value
+        .amount,
+    );
+    const lockAmount = balance / 4n;
+    expect(lockAmount > 0n).to.be.true;
+
+    const [escrow] = escrowPda(authority, program.programId);
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+    const before = await program.account.escrow.fetch(escrow);
+
+    await program.methods
+      .lock(new anchor.BN(lockAmount.toString()))
+      .accountsPartial({
+        locker: authority,
+        graiState,
+        graiMint: graiMint.publicKey,
+        escrow,
+        lockerGraiAta,
+        graiVaultAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .remainingAccounts(await lockRemainingAccounts(authority))
+      .rpc();
+
+    const after = await program.account.escrow.fetch(escrow);
+    expect(
+      BigInt(after.amount.toString()) - BigInt(before.amount.toString()),
+    ).to.equal(lockAmount);
+    // The vote from the previous test is unchanged, so the new lock is all unvoted.
+    expect(after.voted.toString()).to.equal(before.voted.toString());
+
+    const state = await program.account.graiState.fetch(graiState);
+    const eligible =
+      BigInt(state.totalLocked.toString()) - BigInt(state.totalVoted.toString());
+    expect(eligible).to.equal(lockAmount);
+  });
+
+  it("distribute credits the dividend cut to unvoted lockers and reserves it", async () => {
+    const custodian = await getUsdcCustodian();
+    const custodyAta = getAssociatedTokenAddressSync(
+      usdcMint.publicKey,
+      custodian.custodianState,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+    const treasuryAta = await ensureAta(usdcMint.publicKey, treasury.publicKey);
+    const [position] = positionPda(
+      custodian.custodianState,
+      usdcMint.publicKey,
+      program.programId,
+    );
+
+    const yieldAmount = 100_000n;
+    const { dividend, auction } = yieldCuts(yieldAmount);
+
+    await mintUsdcTo(authority, yieldAmount);
+    const authorityUsdc = await ensureAta(usdcMint.publicKey, authority);
+    await provider.sendAndConfirm!(
+      new Transaction().add(
+        createTransferInstruction(
+          authorityUsdc,
+          custodyAta,
+          authority,
+          yieldAmount,
+          [],
+          TOKEN_PROGRAM_ID,
+        ),
+      ),
+    );
+
+    const assetBefore = await program.account.assetConfig.fetch(usdcAssetConfig);
+
+    await grindersProgram.methods
+      .custodianDistribute(new anchor.BN(yieldAmount.toString()))
+      .accountsPartial({
+        owner: authority,
+        payer: authority,
+        custodianState: custodian.custodianState,
+        custodianRecord: custodian.custodianRecord,
+        graiProgram: program.programId,
+        graiState,
+        assetMint: usdcMint.publicKey,
+        assetConfig: usdcAssetConfig,
+        priceFeed: usdcUsdFeed,
+        graiMint: graiMint.publicKey,
+        custodyAta,
+        vaultAta: usdcVaultAta,
+        treasuryAta,
+        position,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const assetAfter = await program.account.assetConfig.fetch(usdcAssetConfig);
+
+    // Dividends now index on unvoted lock instead of merging into the lot.
+    expect(
+      BigInt(assetAfter.accShare.toString()) >
+        BigInt(assetBefore.accShare.toString()),
+    ).to.be.true;
+    expect(
+      BigInt(assetAfter.totalClaimable.toString()) -
+        BigInt(assetBefore.totalClaimable.toString()),
+    ).to.equal(dividend);
+    expect(
+      BigInt(assetAfter.auctionRemaining.toString()) -
+        BigInt(assetBefore.auctionRemaining.toString()),
+    ).to.equal(auction);
+  });
+
+  it("claim pays the locker dividend and releases the claim reserve", async () => {
+    const [escrow] = escrowPda(authority, program.programId);
+    const [position] = positionPda(
+      authority,
+      usdcMint.publicKey,
+      program.programId,
+    );
+    const holderAssetAta = await ensureAta(usdcMint.publicKey, authority);
+
+    const assetBefore = await program.account.assetConfig.fetch(usdcAssetConfig);
+    const holderBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(holderAssetAta)).value
+        .amount,
+    );
+    expect(BigInt(assetBefore.totalClaimable.toString()) > 0n).to.be.true;
+
+    await program.methods
+      .claim(U64_MAX)
+      .accountsPartial({
+        payer: authority,
+        graiState,
+        holder: authority,
+        escrow,
+        assetMint: usdcMint.publicKey,
+        assetConfig: usdcAssetConfig,
+        position,
+        vaultAta: usdcVaultAta,
+        holderAssetAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      })
+      .rpc();
+
+    const assetAfter = await program.account.assetConfig.fetch(usdcAssetConfig);
+    const holderAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(holderAssetAta)).value
+        .amount,
+    );
+    const claimed = holderAfter - holderBefore;
+
+    expect(claimed > 0n).to.be.true;
+    expect(
+      BigInt(assetBefore.totalClaimable.toString()) -
+        BigInt(assetAfter.totalClaimable.toString()),
+    ).to.equal(claimed);
+  });
+
+  it("buyback pays GRAI for the lot and locks + votes it on the buyer", async () => {
+    const [escrow] = escrowPda(authority, program.programId);
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+    const buyerGraiAta = await ensureAta(graiMint.publicKey, authority);
+    const buyerAssetAta = await ensureAta(usdcMint.publicKey, authority);
+
+    const assetBefore = await program.account.assetConfig.fetch(usdcAssetConfig);
+    expect(BigInt(assetBefore.auctionRemaining.toString()) > 0n).to.be.true;
+
+    const escrowBefore = await program.account.escrow.fetch(escrow);
+    const graiBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(buyerGraiAta)).value
+        .amount,
+    );
+    const assetBalBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(buyerAssetAta)).value
+        .amount,
+    );
+
+    await program.methods
+      .buyback(U64_MAX, U64_MAX)
+      .accountsPartial({
+        buyer: authority,
+        graiState,
+        graiMint: graiMint.publicKey,
+        assetMint: usdcMint.publicKey,
+        assetConfig: usdcAssetConfig,
+        vaultAta: usdcVaultAta,
+        graiVaultAta,
+        buyerGraiAta,
+        buyerAssetAta,
+        escrow,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .remainingAccounts(await lockRemainingAccounts(authority))
+      .rpc();
+
+    const escrowAfter = await program.account.escrow.fetch(escrow);
+    const graiAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(buyerGraiAta)).value
+        .amount,
+    );
+    const assetBalAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(buyerAssetAta)).value
+        .amount,
+    );
+    const assetAfter = await program.account.assetConfig.fetch(usdcAssetConfig);
+
+    const graiIn = graiBefore - graiAfter;
+    expect(graiIn > 0n).to.be.true;
+    expect(assetBalAfter - assetBalBefore).to.equal(
+      BigInt(assetBefore.auctionRemaining.toString()),
+    );
+    expect(assetAfter.auctionStartTime.toNumber()).to.equal(0);
+
+    // The ask is escrowed and committed to quorum on the buyer, not burned.
+    expect(
+      BigInt(escrowAfter.amount.toString()) -
+        BigInt(escrowBefore.amount.toString()),
+    ).to.equal(graiIn);
+    expect(
+      BigInt(escrowAfter.voted.toString()) -
+        BigInt(escrowBefore.voted.toString()),
+    ).to.equal(graiIn);
+  });
+
+  it("unlock returns GRAI minus a penalty routed to the treasury", async () => {
+    const [escrow] = escrowPda(authority, program.programId);
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+    const accountGraiAta = await ensureAta(graiMint.publicKey, authority);
+    const treasuryGraiAta = await ensureAta(
+      graiMint.publicKey,
+      treasury.publicKey,
+    );
+
+    const escrowBefore = await program.account.escrow.fetch(escrow);
+    const unvoted =
+      BigInt(escrowBefore.amount.toString()) -
+      BigInt(escrowBefore.voted.toString());
+    const unlockAmount = unvoted / 2n;
+    expect(unlockAmount > 0n).to.be.true;
+
+    const accountBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(accountGraiAta)).value
+        .amount,
+    );
+    const treasuryBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(treasuryGraiAta)).value
+        .amount,
+    );
+
+    await program.methods
+      .unlock(new anchor.BN(unlockAmount.toString()))
+      .accountsPartial({
+        account: authority,
+        graiState,
+        graiMint: graiMint.publicKey,
+        escrow,
+        accountGraiAta,
+        treasuryGraiAta,
+        graiVaultAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .remainingAccounts(await dividendRemainingAccounts(authority))
+      .rpc();
+
+    const accountAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(accountGraiAta)).value
+        .amount,
+    );
+    const treasuryAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(treasuryGraiAta)).value
+        .amount,
+    );
+    const escrowAfter = await program.account.escrow.fetch(escrow);
+
+    const returned = accountAfter - accountBefore;
+    const penalty = treasuryAfter - treasuryBefore;
+
+    // Fresh lock (the buyback re-stamped `locked_at`), so the fee has barely decayed.
+    expect(penalty > 0n).to.be.true;
+    expect(returned + penalty).to.equal(unlockAmount);
+    expect(
+      BigInt(escrowBefore.amount.toString()) -
+        BigInt(escrowAfter.amount.toString()),
+    ).to.equal(unlockAmount);
+  });
+
+  it("set_protocol_config rejects invalid cuts, premium, and periods", async () => {
+    const current = (await program.account.graiState.fetch(graiState)).config;
+    const base = {
+      buybackCutBps: current.buybackCutBps,
+      dividendCutBps: current.dividendCutBps,
+      treasuryCutBps: current.treasuryCutBps,
+      bribePremiumBps: current.bribePremiumBps,
+      quorumBps: current.quorumBps,
+      unlockFeeBps: current.unlockFeeBps,
+      buybackPeriod: current.buybackPeriod,
+      liquidationPeriod: current.liquidationPeriod,
+      redeemPeriod: current.redeemPeriod,
+      unlockPenaltyPeriod: current.unlockPenaltyPeriod,
+    };
+    const send = (overrides: Partial<typeof base>) =>
+      program.methods
+        .setProtocolConfig({ ...base, ...overrides })
+        .accountsPartial({ authority, graiState })
+        .rpc();
+
+    await expectTransactionError(send({ buybackCutBps: 100 }), "InvalidCuts");
+    await expectTransactionError(
+      send({ bribePremiumBps: 6_000 }),
+      "BpsTooHigh",
+    );
+    await expectTransactionError(
+      send({ buybackPeriod: ONE_DAY }),
+      "BuybackPeriodTooShort",
+    );
+    await expectTransactionError(send({ redeemPeriod: 0 }), "PeriodZero");
+
+    // Unchanged after the rejected writes.
+    const after = (await program.account.graiState.fetch(graiState)).config;
+    expect(after.buybackCutBps).to.equal(base.buybackCutBps);
+    expect(after.buybackPeriod).to.equal(base.buybackPeriod);
+  });
+
   describe("remediation coverage", () => {
-    it("rejects add_asset when custom price feed asset mint mismatches", async () => {
+    it("rejects set_price_feed when custom price feed asset mint mismatches", async () => {
       const rogueMint = Keypair.generate();
       await createTestSplMint(provider, authority, rogueMint, usdcDecimals);
       const [rogueConfig] = assetConfigPda(rogueMint.publicKey, program.programId);
@@ -1147,7 +1545,7 @@ describe("GRAI tokenomics", () => {
 
       await expectTransactionError(
         program.methods
-          .addAsset()
+          .setPriceFeed()
           .accountsPartial({
             authority,
             assetMint: rogueMint.publicKey,
@@ -1155,6 +1553,7 @@ describe("GRAI tokenomics", () => {
             assetConfig: rogueConfig,
             vaultAta: rogueVault,
             priceFeed: solUsdFeed,
+            movedAssetConfig: SystemProgram.programId,
             tokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
             rent: SYSVAR_RENT_PUBKEY,
@@ -1170,7 +1569,7 @@ describe("GRAI tokenomics", () => {
 
       await expectTransactionError(
         program.methods
-          .deposit(new anchor.BN(1_000_000))
+          .deposit(new anchor.BN(1_000_000), false)
           .accountsPartial({
             depositor: authority,
             graiState,
@@ -1182,16 +1581,18 @@ describe("GRAI tokenomics", () => {
             depositorAta,
             grindersAta: grindersAta(usdcMint.publicKey),
             depositorGraiAta,
+            ...depositEscrowAccounts(authority),
             tokenProgram: TOKEN_PROGRAM_ID,
             associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT_PUBKEY,
           })
           .rpc(),
         "InvalidChainlinkFeed",
       );
     });
 
-    it("rejects remove_asset when asset is not paused", async () => {
+    it("rejects set_price_feed delist when asset is not paused", async () => {
       const rogueMint = Keypair.generate();
       await createTestSplMint(provider, authority, rogueMint, usdcDecimals);
       const rogueFeed = await initTestPriceFeed(
@@ -1206,7 +1607,7 @@ describe("GRAI tokenomics", () => {
       const [rogueVault] = vaultAtaPda(rogueMint.publicKey, program.programId);
 
       await program.methods
-        .addAsset()
+        .setPriceFeed()
         .accountsPartial({
           authority,
           assetMint: rogueMint.publicKey,
@@ -1214,6 +1615,7 @@ describe("GRAI tokenomics", () => {
           assetConfig: rogueConfig,
           vaultAta: rogueVault,
           priceFeed: rogueFeed,
+          movedAssetConfig: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -1222,15 +1624,18 @@ describe("GRAI tokenomics", () => {
 
       await expectTransactionError(
         program.methods
-          .removeAsset()
+          .setPriceFeed()
           .accountsPartial({
             authority,
             assetMint: rogueMint.publicKey,
             graiState,
             assetConfig: rogueConfig,
             vaultAta: rogueVault,
+            priceFeed: SystemProgram.programId,
             movedAssetConfig: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT_PUBKEY,
           })
           .rpc(),
         "NotPaused",

@@ -308,8 +308,10 @@ pub fn preview_fill(
 
 /// Dynamic bribe ask in `bribe_asset` units: `(bribe_amount, premium, discount)`.
 ///
-/// The ask scales linearly with vote share vs half quorum, capped at `|adj| = bribe_premium_bps`:
-/// full premium at zero votes, par at half quorum, full theoretical discount at/above quorum.
+/// The ask scales linearly with vote share vs half quorum:
+/// `adj = bribe_premium_bps * |vote_bps − half_bps| / half_bps`.
+/// `bribe_premium_bps` is the slope scale — `|adj| = bribe_premium_bps` at zero votes and at quorum;
+/// above quorum discount `adj` keeps growing (may reach `BPS` → `full_ask = 0`). Par at half quorum.
 /// In the discount regime only half the gap is applied to the ask; `bribe` carves the other half
 /// into the cut pool. Exactly one of `premium` / `discount` is non-zero (EVM `previewBribe`).
 #[allow(clippy::too_many_arguments)]

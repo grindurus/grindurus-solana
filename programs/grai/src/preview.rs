@@ -138,15 +138,12 @@ pub fn execute_preview_buyback(
     })
 }
 
-/// EVM `previewUnlock(account, graiAmount, timestamp, claimAll_)`.
+/// EVM `previewUnlock(account, graiAmount, timestamp)`.
 /// Pass `timestamp == 0` to use the cluster clock.
-///
-/// When `claim_all`, remaining accounts are pairs `[asset_config, position]` per listed asset.
 pub fn execute_preview_unlock<'info>(
     ctx: Context<'_, '_, 'info, 'info, PreviewUnlock<'info>>,
     grai_amount: u64,
     timestamp: i64,
-    claim_all: bool,
 ) -> Result<UnlockQuote> {
     require!(
         grai_amount <= ctx.accounts.escrow.amount,
@@ -162,23 +159,9 @@ pub fn execute_preview_unlock<'info>(
         ts,
     )?;
 
-    let (claim_assets, claim_amounts) = if claim_all {
-        claim_all_amounts(
-            &ctx.accounts.grai_state.asset_mints,
-            &ctx.accounts.account.key(),
-            ctx.accounts.escrow.unvoted(),
-            ctx.remaining_accounts,
-            ctx.program_id,
-        )?
-    } else {
-        (Vec::new(), Vec::new())
-    };
-
     Ok(UnlockQuote {
         unlock_amount,
         penalty,
-        claim_assets,
-        claim_amounts,
     })
 }
 

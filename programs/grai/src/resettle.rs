@@ -11,8 +11,9 @@ use crate::{AssetConfig, ErrorCode, Resettle};
 ///
 /// Sweeps only redeemable inventory back to Grinders — the locker claim reserve
 /// (`asset_config.total_claimable`) stays on the vaults so post-resettle `claim` still pays. With
-/// leftover shares the book is re-marked to the swept NAV, but only when that does not lower the
-/// mint price (`InsolventResettle` otherwise). Per-asset `paused` flags are left untouched.
+/// leftover shares, sets `total_value = total_nav` when `total_nav >= total_value` (mint price does
+/// not fall); otherwise the book is left unchanged. If no shares remain, the book is cleared to
+/// zero. Per-asset `paused` flags are left untouched.
 ///
 /// Remaining accounts: quints `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per
 /// listed asset in registry order.
@@ -101,12 +102,10 @@ pub fn execute_resettle<'info>(
 
     let grai_state = &mut ctx.accounts.grai_state;
     if supply > 0 {
-        // mint_price = total_value / supply; re-marking must not lower it for leftover holders.
-        require!(
-            total_nav >= grai_state.total_value,
-            ErrorCode::InsolventResettle
-        );
-        grai_state.total_value = total_nav;
+        // mint_price = total_value / supply; only re-mark when NAV does not lower it (EVM `resettle`).
+        if total_nav >= grai_state.total_value {
+            grai_state.total_value = total_nav;
+        }
     } else {
         // Avoid an orphan book with zero supply (would break the next deposit).
         grai_state.total_value = 0;

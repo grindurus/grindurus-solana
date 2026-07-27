@@ -672,18 +672,6 @@ pub struct Buyback<'info> {
     )]
     pub escrow: Box<Account<'info, Escrow>>,
 
-    /// Treasury escrow for dead-GRAI booking (`vault - total_locked`). When the buyer *is* the
-    /// treasury, the client passes the same account as `escrow` (same PDA); buyback syncs fields
-    /// before exit so Anchor writeback does not clobber.
-    #[account(
-        init_if_needed,
-        payer = buyer,
-        space = 8 + Escrow::LEN,
-        seeds = [Escrow::SEED, grai_state.treasury.as_ref()],
-        bump,
-    )]
-    pub treasury_escrow: Box<Account<'info, Escrow>>,
-
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -739,8 +727,8 @@ pub struct Lock<'info> {
 
 /// Unlock escrowed GRAI (minus the decaying penalty, which goes to the treasury wallet).
 ///
-/// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset;
-/// `asset_config` must be writable when `claim_all` is set.
+/// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset
+/// (settle dividend debts when the unvoted base shrinks). Yield payouts use `claim` / `claim_all`.
 #[derive(Accounts)]
 pub struct Unlock<'info> {
     #[account(mut)]
@@ -1092,7 +1080,7 @@ pub struct PreviewBuyback<'info> {
     pub asset_config: Box<Account<'info, AssetConfig>>,
 }
 
-/// EVM `previewUnlock`. Remaining (when `claim_all`): `[asset_config, position]` × N.
+/// EVM `previewUnlock`.
 #[derive(Accounts)]
 pub struct PreviewUnlock<'info> {
     /// CHECK: Account whose escrow is previewed.
@@ -1369,8 +1357,9 @@ pub mod grai {
     }
 
     /// Fill a Dutch lot: buyer pays the GRAI ask, receives the asset, and the paid GRAI is
-    /// locked + voted on the buyer. Dead vault GRAI (`vault - total_locked`) is booked to
-    /// treasury first (EVM `_arise`).
+    /// Fill a Dutch lot: buyer pays GRAI, receives the asset; ask is locked + voted on the buyer.
+    /// Orphan vault GRAI is credited to the buyer then lock+voted with the ask (EVM `buyback`).
+    /// Remaining: `[asset_config, position]` × N for the buyer.
     pub fn buyback<'info>(
         ctx: Context<'_, '_, 'info, 'info, Buyback<'info>>,
         amount: u64,
@@ -1389,9 +1378,8 @@ pub mod grai {
     pub fn unlock<'info>(
         ctx: Context<'_, '_, 'info, 'info, Unlock<'info>>,
         grai_amount: u64,
-        claim_all: bool,
     ) -> Result<()> {
-        unlock::execute_unlock(ctx, grai_amount, claim_all)
+        unlock::execute_unlock(ctx, grai_amount)
     }
 
     /// Claim yield dividends for one listed asset.
@@ -1466,14 +1454,12 @@ pub mod grai {
     }
 
     /// EVM `previewUnlock`. Pass `timestamp == 0` to use the cluster clock.
-    /// When `claim_all`, remaining accounts are `[asset_config, position]` × N.
     pub fn preview_unlock<'info>(
         ctx: Context<'_, '_, 'info, 'info, PreviewUnlock<'info>>,
         grai_amount: u64,
         timestamp: i64,
-        claim_all: bool,
     ) -> Result<UnlockQuote> {
-        preview::execute_preview_unlock(ctx, grai_amount, timestamp, claim_all)
+        preview::execute_preview_unlock(ctx, grai_amount, timestamp)
     }
 
     /// EVM `previewClaim`. `amount == u64::MAX` = full pending.
@@ -1520,12 +1506,10 @@ pub struct BuybackQuote {
 }
 
 /// Return shape of `preview_unlock`.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
 pub struct UnlockQuote {
     pub unlock_amount: u64,
     pub penalty: u64,
-    pub claim_assets: Vec<Pubkey>,
-    pub claim_amounts: Vec<u64>,
 }
 
 /// Return shape of `preview_claim_all`.
