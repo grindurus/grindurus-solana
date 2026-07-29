@@ -78,6 +78,8 @@ pub struct GraiState {
     pub total_locked: u64,
     pub total_voted: u64,
     pub liquidation: bool,
+    /// Owner consent bit for 2-of-2 liquidation open (EVM `confirmed`).
+    pub confirmed: bool,
     pub liquidation_at: i64,
     pub config: Config,
     pub asset_mints: Vec<Pubkey>,
@@ -94,7 +96,7 @@ impl GraiState {
     pub const DECIMALS: u8 = 6;
 
     /// Fixed fields excluding vec payloads.
-    pub const FIXED_LEN: usize = 32 + 32 + 32 + 32 + 16 + 8 + 8 + 1 + 8 + Config::LEN + 1;
+    pub const FIXED_LEN: usize = 32 + 32 + 32 + 32 + 16 + 8 + 8 + 1 + 1 + 8 + Config::LEN + 1;
 
     pub fn space(asset_count: usize, account_count: usize, voter_count: usize) -> usize {
         8 + Self::FIXED_LEN
@@ -601,10 +603,10 @@ pub struct Distribute<'info> {
 }
 
 /// Auction fill: buyer pays the GRAI Dutch ask into the GRAI vault, receives the listed asset,
-/// and the paid GRAI is locked + voted on the buyer. Dead vault GRAI is booked to treasury first.
+/// and the paid GRAI is locked + voted on the buyer. Orphan vault GRAI is credited to the buyer
+/// then lock+voted with the ask (EVM `buyback`).
 ///
-/// Remaining accounts: buyer pairs `[asset_config, position]` × N. If dead GRAI exists and
-/// buyer ≠ treasury, prepend treasury pairs × N.
+/// Remaining accounts: buyer pairs `[asset_config, position]` × N.
 #[derive(Accounts)]
 pub struct Buyback<'info> {
     #[account(mut)]
@@ -728,7 +730,7 @@ pub struct Lock<'info> {
 /// Unlock escrowed GRAI (minus the decaying penalty, which goes to the treasury wallet).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset
-/// (settle dividend debts when the unvoted base shrinks). Yield payouts use `claim` / `claim_all`.
+/// (settle dividend debts when the unvoted base shrinks). Yield payouts use `claim`.
 #[derive(Accounts)]
 pub struct Unlock<'info> {
     #[account(mut)]
@@ -759,13 +761,6 @@ pub struct Unlock<'info> {
         constraint = account_grai_ata.owner == account.key() @ ErrorCode::InvalidDestination,
     )]
     pub account_grai_ata: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        constraint = treasury_grai_ata.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = treasury_grai_ata.owner == grai_state.treasury @ ErrorCode::InvalidDestination,
-    )]
-    pub treasury_grai_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -1184,17 +1179,18 @@ pub struct PreviewRedeem<'info> {
     pub holder_grai_ata: Box<Account<'info, TokenAccount>>,
 }
 
-/// Open liquidation (authority-only, quorum required). Remaining accounts: one `AssetConfig` per
-/// listed asset in registry order.
+/// Open liquidation (2-of-2 with vote quorum, EVM `liquidate`).
+/// Authority: toggle `confirmed` when no quorum; with quorum this call opens.
+/// Anyone else: open when `confirmed && hasQuorum()`.
+/// Remaining accounts: one `AssetConfig` per listed asset in registry order (required to open).
 #[derive(Accounts)]
 pub struct LiquidateOpen<'info> {
-    pub authority: Signer<'info>,
+    pub caller: Signer<'info>,
 
     #[account(
         mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
 

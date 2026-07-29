@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::system_program;
 use anchor_spl::token::{self, InitializeAccount3, TokenAccount};
 
@@ -54,6 +55,11 @@ fn update_feed(ctx: Context<SetPriceFeed>) -> Result<()> {
 
 fn list<'info>(ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>) -> Result<()> {
     let mint = ctx.accounts.asset_mint.key();
+    // EVM `_addAsset(address(this))` is a no-op — GRAI must not enter the redeem basket.
+    require!(
+        ctx.accounts.asset_mint.mint_authority != COption::Some(ctx.accounts.grai_state.key()),
+        ErrorCode::AssetUnknown
+    );
     let program_id = *ctx.program_id;
 
     let (config_pda, config_bump) =
@@ -336,6 +342,11 @@ pub fn execute_set_asset_config(ctx: Context<crate::SetAssetConfig>, paused: boo
 
 /// Set the bribe asset. Simple set with a feed check (no inventory auction on switch).
 pub fn execute_set_bribe_asset(ctx: Context<crate::SetBribeAsset>) -> Result<()> {
+    // EVM `_requireNotGRAI(bribeAsset_)`.
+    require!(
+        ctx.accounts.bribe_mint.mint_authority != COption::Some(ctx.accounts.grai_state.key()),
+        ErrorCode::AssetUnknown
+    );
     let new_bribe = ctx.accounts.bribe_mint.key();
     ctx.accounts.grai_state.bribe_asset = new_bribe;
     msg!("set_bribe_asset mint={}", new_bribe);

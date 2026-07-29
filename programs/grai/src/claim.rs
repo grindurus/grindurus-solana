@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program_option::COption;
 
 use crate::auction::transfer_from_vault;
 use crate::dividend::settle;
@@ -11,6 +12,11 @@ use crate::{Claim, ErrorCode};
 /// claims `min(amount, claimable)`. Allowed during liquidation: the claim reserve is carved out
 /// of the redeem basket, so paying it out does not touch redeemer backing.
 pub fn execute_claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
+    // EVM `_requireNotGRAI(asset)`.
+    require!(
+        ctx.accounts.asset_mint.mint_authority != COption::Some(ctx.accounts.grai_state.key()),
+        ErrorCode::AssetUnknown
+    );
     let acc = ctx.accounts.asset_config.acc_share;
     let unvoted = ctx.accounts.escrow.unvoted();
     let bump = ctx.accounts.grai_state.bump;

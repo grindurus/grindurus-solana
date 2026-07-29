@@ -11,6 +11,11 @@ use crate::{Distribute, ErrorCode};
 pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result<()> {
     require!(yield_amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
+    require_keys_neq!(
+        ctx.accounts.asset_mint.key(),
+        ctx.accounts.grai_mint.key(),
+        ErrorCode::AssetUnknown
+    );
 
     transfer_from_signer(
         &ctx.accounts.token_program.to_account_info(),

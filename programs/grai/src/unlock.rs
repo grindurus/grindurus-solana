@@ -6,8 +6,9 @@ use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::preview_unlock;
 use crate::{ErrorCode, Unlock};
 
-/// Return `grai_amount` of the active lock to the wallet, minus the decaying unlock penalty
-/// (which goes to `treasury`). Yield claims are separate (`claim` / `claim_all`).
+/// Return `grai_amount` of the active lock to the wallet, minus the decaying unlock penalty.
+/// The penalty stays on the GRAI vault as orphan inventory for the next `buyback` scavenger
+/// (EVM `unlock` — not sent to treasury).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset in
 /// registry order (needed to settle dividend debts when the unvoted base shrinks).
@@ -82,18 +83,7 @@ pub fn execute_unlock<'info>(
         account_key,
     )?;
 
-    // The penalty leaves the escrow pool for the treasury wallet (EVM sends it to `treasury`).
-    if penalty > 0 {
-        transfer_from_vault(
-            &ctx.accounts.token_program.to_account_info(),
-            &ctx.accounts.grai_vault_ata.to_account_info(),
-            &ctx.accounts.treasury_grai_ata.to_account_info(),
-            &ctx.accounts.grai_state.to_account_info(),
-            bump,
-            penalty,
-        )?;
-    }
-
+    // Penalty is left on the vault (dead GRAI). Only the net unlock returns to the wallet.
     if unlock_amount > 0 {
         transfer_from_vault(
             &ctx.accounts.token_program.to_account_info(),

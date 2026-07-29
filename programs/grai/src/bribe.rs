@@ -110,7 +110,8 @@ pub fn execute_bribe<'info>(
         )?;
     }
 
-    // Reserve the escrow before pulling payment so the same vote cannot be sold twice.
+    // Reserve escrow and drop book totals before payment (EVM `bribe`). Full `grai_amount` goes
+    // to the briber; SPL transfers are exact so there is no FoT shortfall path.
     ctx.accounts.escrow.voted = ctx
         .accounts
         .escrow
@@ -123,6 +124,27 @@ pub fn execute_bribe<'info>(
         .amount
         .checked_sub(grai_amount)
         .ok_or(ErrorCode::MathOverflow)?;
+    ctx.accounts.grai_state.total_voted = ctx
+        .accounts
+        .grai_state
+        .total_voted
+        .checked_sub(grai_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+    ctx.accounts.grai_state.total_locked = ctx
+        .accounts
+        .grai_state
+        .total_locked
+        .checked_sub(grai_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+    transfer_from_vault(
+        &ctx.accounts.token_program.to_account_info(),
+        &ctx.accounts.grai_vault_ata.to_account_info(),
+        &ctx.accounts.briber_grai_ata.to_account_info(),
+        &ctx.accounts.grai_state.to_account_info(),
+        bump,
+        grai_amount,
+    )?;
 
     transfer_from_signer(
         &ctx.accounts.token_program.to_account_info(),
@@ -133,26 +155,6 @@ pub fn execute_bribe<'info>(
     )?;
     let received = bribe_amount;
 
-    let grai_out = mul_div(grai_amount, received, bribe_amount)?;
-    require!(grai_out > 0, ErrorCode::AmountZero);
-    let grai_out = grai_out.min(grai_amount);
-
-    // Any shortfall stays with the voter (kept for parity; SPL transfers credit in full).
-    let gap = grai_amount - grai_out;
-    if gap > 0 {
-        ctx.accounts.escrow.voted = ctx
-            .accounts
-            .escrow
-            .voted
-            .checked_add(gap)
-            .ok_or(ErrorCode::MathOverflow)?;
-        ctx.accounts.escrow.amount = ctx
-            .accounts
-            .escrow
-            .amount
-            .checked_add(gap)
-            .ok_or(ErrorCode::MathOverflow)?;
-    }
     if ctx.accounts.escrow.voted == 0 {
         remove_from_list(&mut ctx.accounts.grai_state.voters, voter_key);
     }
@@ -236,32 +238,10 @@ pub fn execute_bribe<'info>(
         )?;
     }
 
-    // GRAI leaves the vault and the book drops together.
-    transfer_from_vault(
-        &ctx.accounts.token_program.to_account_info(),
-        &ctx.accounts.grai_vault_ata.to_account_info(),
-        &ctx.accounts.briber_grai_ata.to_account_info(),
-        &ctx.accounts.grai_state.to_account_info(),
-        bump,
-        grai_out,
-    )?;
-    ctx.accounts.grai_state.total_voted = ctx
-        .accounts
-        .grai_state
-        .total_voted
-        .checked_sub(grai_out)
-        .ok_or(ErrorCode::MathOverflow)?;
-    ctx.accounts.grai_state.total_locked = ctx
-        .accounts
-        .grai_state
-        .total_locked
-        .checked_sub(grai_out)
-        .ok_or(ErrorCode::MathOverflow)?;
-
     msg!(
         "bribe voter={} grai_out={} payment={} premium={} discount={} total_voted={}",
         voter_key,
-        grai_out,
+        grai_amount,
         received,
         premium,
         discount,

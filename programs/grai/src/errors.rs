@@ -88,4 +88,6 @@ pub enum ErrorCode {
     InsolventResettle,
     #[msg("Deposit book is zero while shares remain")]
     InsolventBook,
+    #[msg("Liquidation has not been confirmed by the authority")]
+    LiquidationNotConfirmed,
 }

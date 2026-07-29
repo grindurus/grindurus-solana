@@ -112,6 +112,7 @@ pub fn execute_resettle<'info>(
     }
     grai_state.liquidation = false;
     grai_state.liquidation_at = 0;
+    grai_state.confirmed = false;
 
     msg!("resettle total_nav={} supply={}", total_nav, supply);
     Ok(())

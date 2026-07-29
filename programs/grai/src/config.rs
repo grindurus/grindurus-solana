@@ -17,6 +17,7 @@ pub fn execute_initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> R
     grai_state.total_locked = 0;
     grai_state.total_voted = 0;
     grai_state.liquidation = false;
+    grai_state.confirmed = false;
     grai_state.liquidation_at = 0;
     grai_state.config = default_protocol_config();
     grai_state.asset_mints = Vec::new();
@@ -46,6 +47,10 @@ pub fn execute_set_treasury(ctx: Context<SetTreasury>, treasury: Pubkey) -> Resu
 }
 
 pub fn execute_set_grinders(ctx: Context<SetGrinders>, grinders: Pubkey) -> Result<()> {
+    require!(
+        !ctx.accounts.grai_state.liquidation,
+        ErrorCode::LiquidationOpen
+    );
     require_keys_neq!(grinders, Pubkey::default(), ErrorCode::InvalidGrinders);
     ctx.accounts.grai_state.grinders = grinders;
     Ok(())

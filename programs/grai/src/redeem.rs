@@ -7,27 +7,45 @@ use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
 use crate::{AssetConfig, ErrorCode, LiquidateOpen, Redeem};
 
-/// Open liquidation (authority-only, quorum required): cancel open yield auctions so the
-/// inventory falls into the redeem basket, and start the claim clock.
+/// Open liquidation (EVM `liquidate`): 2-of-2 consent with vote quorum.
 ///
-/// Per-asset `paused` flags are left as the owner set them — deposits are already blocked while
-/// liquidation is open (EVM `liquidate`).
+/// - Authority + no quorum → toggle `confirmed` and return.
+/// - Authority + quorum → open (owner consent).
+/// - Anyone else → open only when `confirmed && hasQuorum()`.
 ///
-/// Remaining accounts: one `AssetConfig` per listed asset in registry order.
+/// Cancels open yield auctions so inventory falls into the redeem basket and starts the claim
+/// clock. Per-asset `paused` flags are left unchanged.
+///
+/// Remaining accounts (when opening): one `AssetConfig` per listed asset in registry order.
 pub fn execute_liquidate_open<'info>(
     ctx: Context<'_, '_, 'info, 'info, LiquidateOpen<'info>>,
 ) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
 
     let supply = ctx.accounts.grai_mint.supply;
-    require!(
-        has_quorum(
-            ctx.accounts.grai_state.total_voted,
-            supply,
-            ctx.accounts.grai_state.config.quorum_bps
-        ),
-        ErrorCode::LiquidationQuorumNotMet
+    let quorum = has_quorum(
+        ctx.accounts.grai_state.total_voted,
+        supply,
+        ctx.accounts.grai_state.config.quorum_bps,
     );
+    let is_authority = ctx.accounts.caller.key() == ctx.accounts.grai_state.authority;
+
+    if is_authority {
+        if !quorum {
+            ctx.accounts.grai_state.confirmed = !ctx.accounts.grai_state.confirmed;
+            msg!(
+                "liquidate confirmed={}",
+                ctx.accounts.grai_state.confirmed
+            );
+            return Ok(());
+        }
+    } else {
+        require!(
+            ctx.accounts.grai_state.confirmed,
+            ErrorCode::LiquidationNotConfirmed
+        );
+        require!(quorum, ErrorCode::LiquidationQuorumNotMet);
+    }
 
     let clock = Clock::get()?;
     let program_id = ctx.program_id;
@@ -52,7 +70,11 @@ pub fn execute_liquidate_open<'info>(
     grai_state.liquidation = true;
     grai_state.liquidation_at = clock.unix_timestamp;
 
-    msg!("liquidate open total_voted={} supply={}", grai_state.total_voted, supply);
+    msg!(
+        "liquidate open total_voted={} supply={}",
+        grai_state.total_voted,
+        supply
+    );
     Ok(())
 }
 
