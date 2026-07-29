@@ -1,10 +1,11 @@
 {
-  "license": "ISC",
+  "license": "GPL-3.0-only",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "test": "anchor test",
     "ts-node": "tsx",
+    "deployProtocol": "tsx migrations/deployProtocol.ts",
     "verify": "tsx migrations/verify.ts",
     "depositSol": "tsx migrations/depositSol.ts",
     "deposit": "tsx migrations/deposit.ts",

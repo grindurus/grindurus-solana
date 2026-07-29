@@ -3,6 +3,7 @@ name = "custom_price_feed"
 version = "0.1.0"
 description = "Test / dev custom price feeds for GRAI"
 edition = "2021"
+license = "GPL-3.0-only"
 
 [lib]
 crate-type = ["cdylib", "lib"]
