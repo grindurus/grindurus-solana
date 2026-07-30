@@ -90,4 +90,8 @@ pub enum ErrorCode {
     InsolventBook,
     #[msg("Liquidation has not been confirmed by the authority")]
     LiquidationNotConfirmed,
+    #[msg("Invalid get_lockers range")]
+    InvalidLockerRange,
+    #[msg("Invalid get_voters range")]
+    InvalidVoterRange,
 }

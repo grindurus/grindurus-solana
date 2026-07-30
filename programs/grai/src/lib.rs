@@ -20,6 +20,7 @@ mod resettle;
 mod state;
 mod tokenomics;
 mod unlock;
+mod views;
 mod vote;
 
 pub use errors::ErrorCode;
@@ -83,8 +84,8 @@ pub struct GraiState {
     pub liquidation_at: i64,
     pub config: Config,
     pub asset_mints: Vec<Pubkey>,
-    /// Accounts with an open lock (`escrow.amount > 0`).
-    pub accounts: Vec<Pubkey>,
+    /// Accounts with an open lock (`escrow.amount > 0`). EVM `lockers`.
+    pub lockers: Vec<Pubkey>,
     /// Accounts with an open liquidation vote (`escrow.voted > 0`).
     pub voters: Vec<Pubkey>,
     pub bump: u8,
@@ -98,12 +99,12 @@ impl GraiState {
     /// Fixed fields excluding vec payloads.
     pub const FIXED_LEN: usize = 32 + 32 + 32 + 32 + 16 + 8 + 8 + 1 + 1 + 8 + Config::LEN + 1;
 
-    pub fn space(asset_count: usize, account_count: usize, voter_count: usize) -> usize {
+    pub fn space(asset_count: usize, locker_count: usize, voter_count: usize) -> usize {
         8 + Self::FIXED_LEN
             + 4
             + asset_count * 32
             + 4
-            + account_count * 32
+            + locker_count * 32
             + 4
             + voter_count * 32
     }
@@ -126,13 +127,17 @@ pub struct AssetConfig {
     pub auction_min_payment: u64,
     pub auction_start_time: i64,
     pub auction_duration: u32,
+    /// Listing-time unit USD price (`value * 10^DECIMALS / remaining`). EVM `listingPrice`.
+    pub listing_price: u128,
+    /// Decimals for `listing_price` (EVM `listingPriceDecimals` = `USD_DECIMALS`).
+    pub listing_price_decimals: u8,
     pub bump: u8,
 }
 
 impl AssetConfig {
     pub const SEED: &'static [u8] = b"asset";
     pub const VAULT_SEED: &'static [u8] = b"vault";
-    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1;
+    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 16 + 1 + 1;
 }
 
 /// Per-user lock + liquidation vote escrow (GRAI held by the GRAI vault while locked).
@@ -146,8 +151,8 @@ pub struct Escrow {
     pub locked_at: i64,
     /// Timestamp of the latest `vote`.
     pub voted_at: i64,
-    /// Index of this account in `grai_state.accounts`.
-    pub account_id: u32,
+    /// Index of this account in `grai_state.lockers`.
+    pub locker_id: u32,
     /// Index of this account in `grai_state.voters`.
     pub voter_id: u32,
     pub bump: u8,
@@ -1282,6 +1287,33 @@ pub struct GetAssets<'info> {
 }
 
 #[derive(Accounts)]
+pub struct GetLockers<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+#[derive(Accounts)]
+pub struct GetVoters<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+#[derive(Accounts)]
+pub struct GetRedeemables<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+#[derive(Accounts)]
 pub struct HasQuorum<'info> {
     #[account(
         seeds = [GraiState::SEED],
@@ -1417,8 +1449,38 @@ pub mod grai {
         redeem::execute_redeem(ctx, grai_amount)
     }
 
-    pub fn get_assets(ctx: Context<GetAssets>) -> Result<Vec<Pubkey>> {
-        Ok(ctx.accounts.grai_state.asset_mints.clone())
+    /// EVM `getAssets` — Dutch auction snapshot per listed asset.
+    /// Remaining: `asset_config` × N in registry order.
+    pub fn get_assets<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetAssets<'info>>,
+    ) -> Result<Vec<DutchAuctionView>> {
+        views::execute_get_assets(ctx)
+    }
+
+    /// EVM `getLockers(fromId, toId)`. Remaining: escrow PDA per locker in the slice.
+    pub fn get_lockers<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetLockers<'info>>,
+        from_id: u32,
+        to_id: u32,
+    ) -> Result<Vec<EscrowView>> {
+        views::execute_get_lockers(ctx, from_id, to_id)
+    }
+
+    /// EVM `getVoters(fromId, toId)`. Remaining: escrow PDA per voter in the slice.
+    pub fn get_voters<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetVoters<'info>>,
+        from_id: u32,
+        to_id: u32,
+    ) -> Result<Vec<EscrowView>> {
+        views::execute_get_voters(ctx, from_id, to_id)
+    }
+
+    /// EVM `getRedeemables` — redeemable basket while liquidation is open.
+    /// Remaining: `[asset_config, vault_ata]` × N.
+    pub fn get_redeemables<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetRedeemables<'info>>,
+    ) -> Result<RedeemQuote> {
+        views::execute_get_redeemables(ctx)
     }
 
     pub fn has_quorum(ctx: Context<HasQuorum>) -> Result<bool> {
@@ -1515,9 +1577,35 @@ pub struct ClaimAllQuote {
     pub amounts: Vec<u64>,
 }
 
-/// Return shape of `preview_redeem`.
+/// Return shape of `preview_redeem` / `get_redeemables`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
 pub struct RedeemQuote {
     pub assets: Vec<Pubkey>,
     pub amounts: Vec<u64>,
+}
+
+/// EVM `DutchAuction` view row (zeros when no open auction; `asset` always set).
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
+pub struct DutchAuctionView {
+    pub asset: Pubkey,
+    pub start_time: i64,
+    pub period: u32,
+    pub listing_price_decimals: u8,
+    pub listing_price: u128,
+    pub remaining: u64,
+    pub initial: u64,
+    pub max_payment: u64,
+    pub min_payment: u64,
+}
+
+/// EVM `Escrow` view row for `getLockers` / `getVoters`.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
+pub struct EscrowView {
+    pub account: Pubkey,
+    pub locker_id: u32,
+    pub amount: u64,
+    pub voted: u64,
+    pub locked_at: i64,
+    pub voted_at: i64,
+    pub voter_id: u32,
 }

@@ -108,7 +108,7 @@ pub fn perform_lock<'info>(
     if old_amount == 0 {
         let new_space = GraiState::space(
             grai_state.asset_mints.len(),
-            grai_state.accounts.len() + 1,
+            grai_state.lockers.len() + 1,
             grai_state.voters.len(),
         );
         realloc_grai_state(
@@ -117,9 +117,9 @@ pub fn perform_lock<'info>(
             system_program,
             new_space,
         )?;
-        let id = grai_state.accounts.len() as u32;
-        grai_state.accounts.push(owner.key());
-        escrow.account_id = id;
+        let id = grai_state.lockers.len() as u32;
+        grai_state.lockers.push(owner.key());
+        escrow.locker_id = id;
         escrow.bump = escrow_bump;
     }
 
@@ -191,7 +191,7 @@ pub fn perform_vote<'info>(
     if escrow.voted == 0 {
         let new_space = GraiState::space(
             grai_state.asset_mints.len(),
-            grai_state.accounts.len(),
+            grai_state.lockers.len(),
             grai_state.voters.len() + 1,
         );
         realloc_grai_state(

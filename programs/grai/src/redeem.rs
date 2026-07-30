@@ -189,7 +189,7 @@ pub fn execute_redeem<'info>(
         )?;
 
         if ctx.accounts.escrow.amount == 0 {
-            remove_from_list(&mut ctx.accounts.grai_state.accounts, holder_key);
+            remove_from_list(&mut ctx.accounts.grai_state.lockers, holder_key);
         }
     }
 

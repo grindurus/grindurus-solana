@@ -21,7 +21,7 @@ pub fn execute_initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> R
     grai_state.liquidation_at = 0;
     grai_state.config = default_protocol_config();
     grai_state.asset_mints = Vec::new();
-    grai_state.accounts = Vec::new();
+    grai_state.lockers = Vec::new();
     grai_state.voters = Vec::new();
     grai_state.bump = ctx.bumps.grai_state;
 

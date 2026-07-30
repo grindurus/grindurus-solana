@@ -13,6 +13,8 @@ pub fn clear_auction(asset: &mut AssetConfig) {
     asset.auction_min_payment = 0;
     asset.auction_start_time = 0;
     asset.auction_duration = 0;
+    asset.listing_price = 0;
+    asset.listing_price_decimals = 0;
 }
 
 /// Merge `amount` of `asset` into its Dutch lot and restart the clock (EVM `_place`).
@@ -57,12 +59,21 @@ pub fn put_auction<'info>(
         .and_then(|v| v.checked_div(BPS as u128))
         .ok_or(ErrorCode::MathOverflow)?) as u64;
 
+    // Unit USD price at listing (EVM `_place` listingPrice).
+    let scale = 10u128.pow(GraiState::DECIMALS as u32);
+    let listing_price = value
+        .checked_mul(scale)
+        .and_then(|v| v.checked_div(remaining as u128))
+        .ok_or(ErrorCode::MathOverflow)?;
+
     asset.auction_remaining = remaining;
     asset.auction_initial = remaining;
     asset.auction_max_payment = max_payment;
     asset.auction_min_payment = min_payment;
     asset.auction_start_time = clock.unix_timestamp;
     asset.auction_duration = grai_state.config.buyback_period;
+    asset.listing_price = listing_price;
+    asset.listing_price_decimals = GraiState::DECIMALS;
 
     Ok(())
 }

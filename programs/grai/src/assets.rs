@@ -81,7 +81,7 @@ fn list<'info>(ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>) -> Resul
     let id = ctx.accounts.grai_state.asset_mints.len() as u32;
     let new_space = GraiState::space(
         ctx.accounts.grai_state.asset_mints.len() + 1,
-        ctx.accounts.grai_state.accounts.len(),
+        ctx.accounts.grai_state.lockers.len(),
         ctx.accounts.grai_state.voters.len(),
     );
     realloc_grai_state(
@@ -179,7 +179,7 @@ fn delist<'info>(ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>) -> Res
 
     let new_space = GraiState::space(
         ctx.accounts.grai_state.asset_mints.len(),
-        ctx.accounts.grai_state.accounts.len(),
+        ctx.accounts.grai_state.lockers.len(),
         ctx.accounts.grai_state.voters.len(),
     );
     realloc_grai_state(
@@ -262,6 +262,8 @@ fn ensure_asset_config<'info>(
         auction_min_payment: 0,
         auction_start_time: 0,
         auction_duration: 0,
+        listing_price: 0,
+        listing_price_decimals: 0,
         bump,
     };
     // clear_auction is redundant on zeros but keeps the invariant explicit.

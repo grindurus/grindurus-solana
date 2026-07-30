@@ -159,7 +159,7 @@ pub fn execute_bribe<'info>(
         remove_from_list(&mut ctx.accounts.grai_state.voters, voter_key);
     }
     if ctx.accounts.escrow.amount == 0 {
-        remove_from_list(&mut ctx.accounts.grai_state.accounts, voter_key);
+        remove_from_list(&mut ctx.accounts.grai_state.lockers, voter_key);
     }
 
     // Premium: half stays with the voter, half funds the cuts. Discount: the carved half funds

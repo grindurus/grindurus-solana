@@ -96,7 +96,7 @@ pub fn execute_unlock<'info>(
     }
 
     if ctx.accounts.escrow.amount == 0 {
-        remove_from_list(&mut ctx.accounts.grai_state.accounts, account_key);
+        remove_from_list(&mut ctx.accounts.grai_state.lockers, account_key);
     }
 
     msg!(

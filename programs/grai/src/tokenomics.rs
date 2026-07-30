@@ -381,11 +381,10 @@ pub fn preview_bribe(
     Ok((bribe_amount as u64, premium as u64, discount as u64))
 }
 
-/// Quorum: `total_voted * BPS >= supply * quorum_bps`.
+/// Quorum: `total_voted * BPS >= supply * quorum_bps` (EVM `hasQuorum`; true when supply is 0).
 pub fn has_quorum(total_voted: u64, total_supply: u64, liquidation_quorum_bps: u16) -> bool {
-    total_supply > 0
-        && (total_voted as u128) * (BPS as u128)
-            >= (total_supply as u128) * (liquidation_quorum_bps as u128)
+    (total_voted as u128) * (BPS as u128)
+        >= (total_supply as u128) * (liquidation_quorum_bps as u128)
 }
 
 /// Pro-rata basket share for liquidation: `balance * grai_amount / supply`.
