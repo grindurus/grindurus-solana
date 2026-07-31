@@ -5,25 +5,28 @@ use crate::{
     ErrorCode, Initialize, Config, SetGrinders, SetConfig, SetTreasury,
 };
 
-pub fn execute_initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> Result<()> {
-    require_keys_neq!(grinders_state, Pubkey::default(), ErrorCode::InvalidGrinders);
-
-    let grai_state = &mut ctx.accounts.grai_state;
-    grai_state.authority = ctx.accounts.authority.key();
-    grai_state.treasury = ctx.accounts.authority.key();
-    grai_state.grinders = grinders_state;
-    grai_state.bribe_asset = Pubkey::default();
-    grai_state.total_value = 0;
-    grai_state.total_locked = 0;
-    grai_state.total_voted = 0;
-    grai_state.liquidation = false;
-    grai_state.confirmed = false;
-    grai_state.liquidation_at = 0;
-    grai_state.config = default_protocol_config();
-    grai_state.asset_mints = Vec::new();
-    grai_state.lockers = Vec::new();
-    grai_state.voters = Vec::new();
-    grai_state.bump = ctx.bumps.grai_state;
+pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
+    // Deposit sink starts as the admin wallet; switch later via `set_grinders`.
+    let authority = ctx.accounts.authority.key();
+    let bump = ctx.bumps.grai_state;
+    {
+        let grai_state = &mut ctx.accounts.grai_state;
+        grai_state.authority = authority;
+        grai_state.treasury = authority;
+        grai_state.grinders = authority;
+        grai_state.bribe_asset = Pubkey::default();
+        grai_state.total_value = 0;
+        grai_state.total_locked = 0;
+        grai_state.total_voted = 0;
+        grai_state.liquidation = false;
+        grai_state.confirmed = false;
+        grai_state.liquidation_at = 0;
+        grai_state.config = default_protocol_config();
+        grai_state.asset_mints = Vec::new();
+        grai_state.lockers = Vec::new();
+        grai_state.voters = Vec::new();
+        grai_state.bump = bump;
+    }
 
     crate::metadata::create_grai_metadata(
         ctx.accounts.metadata.to_account_info(),
@@ -33,10 +36,13 @@ pub fn execute_initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> R
         ctx.accounts.token_metadata_program.to_account_info(),
         ctx.accounts.system_program.to_account_info(),
         ctx.accounts.rent.to_account_info(),
-        ctx.bumps.grai_state,
+        bump,
     )?;
 
-    msg!("GRAI initialized grinders={}", grinders_state);
+    msg!(
+        "GRAI initialized authority={} grinders(=authority temporarily)",
+        authority
+    );
     Ok(())
 }
 

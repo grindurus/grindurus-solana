@@ -5,7 +5,7 @@
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "test": "anchor test",
     "ts-node": "tsx",
-    "deployProtocol": "tsx migrations/deployProtocol.ts",
+    "deployGrai": "tsx migrations/deployGrai.ts",
     "verify": "tsx migrations/verify.ts",
     "depositSol": "tsx migrations/depositSol.ts",
     "deposit": "tsx migrations/deposit.ts",
@@ -15,6 +15,7 @@
     "distribute": "tsx migrations/distribute.ts",
     "unwrapSol": "tsx migrations/unwrapSol.ts",
     "addAsset": "tsx migrations/addAsset.ts",
+    "setBribeAsset": "tsx migrations/setBribeAsset.ts",
     "setPriceFeed": "tsx migrations/setPriceFeed.ts",
     "status": "tsx migrations/status.ts"
   },

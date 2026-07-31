@@ -9,7 +9,7 @@ import {
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY, ComputeBudgetProgram } from "@solana/web3.js";
 
 export const GRINDERS_PROGRAM_ID = new PublicKey(
-  "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa",
+  "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v",
 );
 
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey(

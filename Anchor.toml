@@ -7,16 +7,17 @@ skip-lint = false
 
 [programs.devnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
-grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
-grinders = "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa"
+grai = "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z"
+grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
 
 [programs.localnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
-grai = "APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8"
-grinders = "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa"
+grai = "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z"
+grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
 
 [programs.mainnet]
-grinders = "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa"
+grai = "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z"
+grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
 
 [registry]
 url = "https://api.apr.dev"
@@ -39,16 +40,12 @@ program = "tests/fixtures/mpl_token_metadata.so"
 
 [test.validator]
 bind_address = "0.0.0.0"
+url = "https://api.devnet.solana.com"
 ledger = ".anchor/test-ledger"
 rpc_port = 8899
-url = "https://api.devnet.solana.com"
 
-# Oracle accounts cloned from devnet for `tests/oracles.t.ts` (see `url` above).
-
-# Chainlink SOL/USD transmissions feed (devnet).
 [[test.validator.clone]]
 address = "99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR"
 
-# Pyth push USDC/USD feed (devnet, sponsored).
 [[test.validator.clone]]
 address = "Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX"

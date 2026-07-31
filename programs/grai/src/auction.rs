@@ -59,10 +59,12 @@ pub fn put_auction<'info>(
         .and_then(|v| v.checked_div(BPS as u128))
         .ok_or(ErrorCode::MathOverflow)?) as u64;
 
-    // Unit USD price at listing (EVM `_place` listingPrice).
+    // USD price of **one whole token** at listing (EVM `_place` listingPrice).
+    // `value` is lot USD (`USD_DECIMALS`); `remaining` is raw base units — scale by asset decimals.
     let scale = 10u128.pow(GraiState::DECIMALS as u32);
     let listing_price = value
         .checked_mul(scale)
+        .and_then(|v| v.checked_mul(10u128.pow(u32::from(asset_decimals))))
         .and_then(|v| v.checked_div(remaining as u128))
         .ok_or(ErrorCode::MathOverflow)?;
 

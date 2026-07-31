@@ -31,7 +31,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::metadata::Metadata;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
-declare_id!("APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8");
+declare_id!("CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z");
 
 /// Yield split, bribe premium, liquidation quorum, unlock fee, and timing.
 ///
@@ -127,7 +127,8 @@ pub struct AssetConfig {
     pub auction_min_payment: u64,
     pub auction_start_time: i64,
     pub auction_duration: u32,
-    /// Listing-time unit USD price (`value * 10^DECIMALS / remaining`). EVM `listingPrice`.
+    /// Listing-time USD price of **one whole token** (`value * 10^DECIMALS * 10^asset_decimals / remaining`).
+    /// EVM `listingPrice`.
     pub listing_price: u128,
     /// Decimals for `listing_price` (EVM `listingPriceDecimals` = `USD_DECIMALS`).
     pub listing_price_decimals: u8,
@@ -1331,8 +1332,8 @@ pub struct HasQuorum<'info> {
 pub mod grai {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, grinders_state: Pubkey) -> Result<()> {
-        config::execute_initialize(ctx, grinders_state)
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        config::execute_initialize(ctx)
     }
 
     pub fn set_treasury(ctx: Context<SetTreasury>, treasury: Pubkey) -> Result<()> {
@@ -1384,18 +1385,6 @@ pub mod grai {
         distribute::execute_distribute(ctx, yield_amount)
     }
 
-    /// Fill a Dutch lot: buyer pays the GRAI ask, receives the asset, and the paid GRAI is
-    /// Fill a Dutch lot: buyer pays GRAI, receives the asset; ask is locked + voted on the buyer.
-    /// Orphan vault GRAI is credited to the buyer then lock+voted with the ask (EVM `buyback`).
-    /// Remaining: `[asset_config, position]` × N for the buyer.
-    pub fn buyback<'info>(
-        ctx: Context<'_, '_, 'info, 'info, Buyback<'info>>,
-        amount: u64,
-        payment_max: u64,
-    ) -> Result<()> {
-        buyback::execute_buyback(ctx, amount, payment_max)
-    }
-
     pub fn lock<'info>(
         ctx: Context<'_, '_, 'info, 'info, Lock<'info>>,
         grai_amount: u64,
@@ -1410,6 +1399,18 @@ pub mod grai {
         unlock::execute_unlock(ctx, grai_amount)
     }
 
+    /// Fill a Dutch lot: buyer pays the GRAI ask, receives the asset, and the paid GRAI is
+    /// Fill a Dutch lot: buyer pays GRAI, receives the asset; ask is locked + voted on the buyer.
+    /// Orphan vault GRAI is credited to the buyer then lock+voted with the ask (EVM `buyback`).
+    /// Remaining: `[asset_config, position]` × N for the buyer.
+    pub fn buyback<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Buyback<'info>>,
+        amount: u64,
+        payment_max: u64,
+    ) -> Result<()> {
+        buyback::execute_buyback(ctx, amount, payment_max)
+    }
+    
     /// Claim yield dividends for one listed asset.
     /// `amount == u64::MAX` claims the full accrued balance; otherwise `min(amount, claimable)`.
     pub fn claim(ctx: Context<Claim>, amount: u64) -> Result<()> {

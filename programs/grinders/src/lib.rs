@@ -20,7 +20,7 @@ pub use state::{
     NATIVE_ASSET,
 };
 
-declare_id!("HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa");
+declare_id!("7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v");
 
 /// Per-item NFT symbol; collection name is `collection::COLLECTION_NAME`.
 pub const CUSTODIAN_NFT_SYMBOL: &str = "GRINDERS";

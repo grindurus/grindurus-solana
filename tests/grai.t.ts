@@ -446,7 +446,7 @@ describe("GRAI tokenomics", () => {
 
     if (!existing) {
       await program.methods
-        .initialize(grindersState)
+        .initialize()
         .accountsPartial({
           authority,
           graiState,
@@ -466,6 +466,14 @@ describe("GRAI tokenomics", () => {
       authority,
       program.programId,
     );
+
+    const graiAfterInit = await program.account.graiState.fetch(graiState);
+    if (!graiAfterInit.grinders.equals(grindersState)) {
+      await program.methods
+        .setGrinders(grindersState)
+        .accountsPartial({ authority, graiState })
+        .rpc();
+    }
 
     const grai = await program.account.graiState.fetch(graiState);
     expect(grai.authority.toBase58()).to.equal(authority.toBase58());
@@ -807,13 +815,24 @@ describe("GRAI tokenomics", () => {
     ).to.equal(depositValue);
   });
 
-  it("get_assets returns registered asset mints", async () => {
+  it("get_assets returns Dutch auction rows per listed mint", async () => {
+    const state = await program.account.graiState.fetch(graiState);
+    const remaining = state.assetMints.map(
+      (mint) => assetConfigPda(mint, program.programId)[0],
+    );
     const assets = await program.methods
       .getAssets()
       .accountsPartial({ graiState })
+      .remainingAccounts(
+        remaining.map((pubkey) => ({
+          pubkey,
+          isWritable: false,
+          isSigner: false,
+        })),
+      )
       .view();
 
-    expect(assets.map((mint) => mint.toBase58())).to.include.members([
+    expect(assets.map((row) => row.asset.toBase58())).to.include.members([
       usdcMint.publicKey.toBase58(),
       NATIVE_MINT.toBase58(),
     ]);
@@ -1436,14 +1455,10 @@ describe("GRAI tokenomics", () => {
     ).to.equal(graiIn);
   });
 
-  it("unlock returns GRAI minus a penalty routed to the treasury", async () => {
+  it("unlock returns GRAI minus a penalty left as dead vault inventory", async () => {
     const [escrow] = escrowPda(authority, program.programId);
     const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
     const accountGraiAta = await ensureAta(graiMint.publicKey, authority);
-    const treasuryGraiAta = await ensureAta(
-      graiMint.publicKey,
-      treasury.publicKey,
-    );
 
     const escrowBefore = await program.account.escrow.fetch(escrow);
     const unvoted =
@@ -1456,10 +1471,12 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(accountGraiAta)).value
         .amount,
     );
-    const treasuryBefore = BigInt(
-      (await provider.connection.getTokenAccountBalance(treasuryGraiAta)).value
+    const vaultBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(graiVaultAta)).value
         .amount,
     );
+    const stateBefore = await program.account.graiState.fetch(graiState);
+    const lockedBefore = BigInt(stateBefore.totalLocked.toString());
 
     await program.methods
       .unlock(new anchor.BN(unlockAmount.toString()))
@@ -1469,7 +1486,6 @@ describe("GRAI tokenomics", () => {
         graiMint: graiMint.publicKey,
         escrow,
         accountGraiAta,
-        treasuryGraiAta,
         graiVaultAta,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
@@ -1481,18 +1497,24 @@ describe("GRAI tokenomics", () => {
       (await provider.connection.getTokenAccountBalance(accountGraiAta)).value
         .amount,
     );
-    const treasuryAfter = BigInt(
-      (await provider.connection.getTokenAccountBalance(treasuryGraiAta)).value
+    const vaultAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(graiVaultAta)).value
         .amount,
     );
     const escrowAfter = await program.account.escrow.fetch(escrow);
+    const stateAfter = await program.account.graiState.fetch(graiState);
 
     const returned = accountAfter - accountBefore;
-    const penalty = treasuryAfter - treasuryBefore;
+    const vaultDrop = vaultBefore - vaultAfter;
+    const lockedDrop =
+      lockedBefore - BigInt(stateAfter.totalLocked.toString());
 
     // Fresh lock (the buyback re-stamped `locked_at`), so the fee has barely decayed.
-    expect(penalty > 0n).to.be.true;
-    expect(returned + penalty).to.equal(unlockAmount);
+    expect(returned > 0n).to.be.true;
+    expect(returned < unlockAmount).to.be.true;
+    // Only unlock_amount leaves the vault; penalty stays as dead GRAI.
+    expect(vaultDrop).to.equal(returned);
+    expect(lockedDrop).to.equal(unlockAmount);
     expect(
       BigInt(escrowBefore.amount.toString()) -
         BigInt(escrowAfter.amount.toString()),

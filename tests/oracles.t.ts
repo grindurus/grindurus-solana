@@ -224,7 +224,7 @@ function grindersStatePda(grindersProgramId: PublicKey) {
 }
 
 const GRINDERS_PROGRAM_ID = new PublicKey(
-  "HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa",
+  "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v",
 );
 
 async function createTestSplMint(
@@ -329,7 +329,7 @@ describe("external oracles", () => {
 
     const metadata = graiMetadataPda(graiMint.publicKey);
     await program.methods
-      .initialize(grindersState)
+      .initialize()
       .accountsPartial({
         authority,
         graiState,
@@ -341,6 +341,11 @@ describe("external oracles", () => {
         rent: SYSVAR_RENT_PUBKEY,
       })
       .signers([graiMint])
+      .rpc();
+
+    await program.methods
+      .setGrinders(grindersState)
+      .accountsPartial({ authority, graiState })
       .rpc();
   }
 
