@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 use anchor_spl::token::{self, Transfer};
 
 use crate::price_feed::{fetch_price_from_feed, PriceData};
@@ -13,16 +14,17 @@ pub fn clear_auction(asset: &mut AssetConfig) {
     asset.auction_min_payment = 0;
     asset.auction_start_time = 0;
     asset.auction_duration = 0;
-    asset.listing_price = 0;
-    asset.listing_price_decimals = 0;
 }
 
-/// Merge `amount` of `asset` into its Dutch lot and restart the clock (EVM `_place`).
+/// Merge `amount` into the asset auction and restart the Dutch clock (EVM `_place`).
 ///
-/// The ask is priced in **GRAI**: `max_payment` is the full-lot mint ask (`preview_deposit` of the
-/// remaining lot's USD value) and `min_payment = max_payment * (BPS - bribe_premium_bps) / BPS`,
-/// i.e. the max Dutch discount equals the max bribe premium. A lot too small to price is left
-/// unlisted rather than reverting the caller (`distribute` / `bribe`).
+/// Payment is always the current mint-price GRAI for the full lot (`preview_deposit` of the
+/// remaining lot) — no average of a stale ask. Decays to `(BPS - bribe_premium_bps)` of that mint
+/// ask over `buyback_period`. Clock restart on every merge is intentional: the protocol prefers
+/// frequent re-lists at the live mint ask over preserving Dutch elapsed across top-ups.
+///
+/// Dust (`value == 0` or `grai_amount == 0`): don't list, don't revert the caller
+/// (`distribute` / `bribe`).
 pub fn put_auction<'info>(
     grai_state: &GraiState,
     asset: &mut AssetConfig,
@@ -32,6 +34,12 @@ pub fn put_auction<'info>(
     total_supply: u64,
     clock: &Clock,
 ) -> Result<()> {
+    // EVM `_requireNotGRAI` / `FEED_NONE` → `AssetUnknown`. Listed assets always have a real feed;
+    // default / system-program feed means delisted.
+    require!(
+        asset.price_feed != Pubkey::default() && asset.price_feed != system_program::ID,
+        ErrorCode::AssetUnknown
+    );
     if amount == 0 {
         return Ok(());
     }
@@ -48,34 +56,23 @@ pub fn put_auction<'info>(
         clock,
     )?;
     let value = usd_value(remaining, asset_decimals, &asset_price)?;
-
-    // GRAI book ask for the full lot; dust does not list and does not revert the caller.
-    let max_payment = preview_deposit_soft(value, total_supply, grai_state.total_value)?;
-    if max_payment == 0 {
+    // GRAI book ask for the full lot (EVM `previewDeposit(asset, remaining)`).
+    let grai_amount = preview_deposit_soft(value, total_supply, grai_state.total_value)?;
+    if value == 0 || grai_amount == 0 {
         return Ok(());
     }
-    let min_payment = ((max_payment as u128)
+
+    let min_payment = ((grai_amount as u128)
         .checked_mul((BPS - grai_state.config.bribe_premium_bps) as u128)
         .and_then(|v| v.checked_div(BPS as u128))
         .ok_or(ErrorCode::MathOverflow)?) as u64;
 
-    // USD price of **one whole token** at listing (EVM `_place` listingPrice).
-    // `value` is lot USD (`USD_DECIMALS`); `remaining` is raw base units — scale by asset decimals.
-    let scale = 10u128.pow(GraiState::DECIMALS as u32);
-    let listing_price = value
-        .checked_mul(scale)
-        .and_then(|v| v.checked_mul(10u128.pow(u32::from(asset_decimals))))
-        .and_then(|v| v.checked_div(remaining as u128))
-        .ok_or(ErrorCode::MathOverflow)?;
-
     asset.auction_remaining = remaining;
     asset.auction_initial = remaining;
-    asset.auction_max_payment = max_payment;
+    asset.auction_max_payment = grai_amount;
     asset.auction_min_payment = min_payment;
     asset.auction_start_time = clock.unix_timestamp;
     asset.auction_duration = grai_state.config.buyback_period;
-    asset.listing_price = listing_price;
-    asset.listing_price_decimals = GraiState::DECIMALS;
 
     Ok(())
 }

@@ -121,24 +121,22 @@ pub struct AssetConfig {
     /// Vault inventory reserved for locker claims (excluded from redeem / resettle).
     pub total_claimable: u64,
     // Dutch auction (start_time == 0 means none); payment unit is GRAI.
+    // `remaining`/`initial` = sold asset qty; `max`/`min_payment` = full-lot GRAI ask
+    // (mint-price max → floor over `auction_duration`). Unit ask =
+    // `max_payment * 10^decimals / initial` (no stored listing USD — matches EVM DutchAuction).
     pub auction_remaining: u64,
     pub auction_initial: u64,
     pub auction_max_payment: u64,
     pub auction_min_payment: u64,
     pub auction_start_time: i64,
     pub auction_duration: u32,
-    /// Listing-time USD price of **one whole token** (`value * 10^DECIMALS * 10^asset_decimals / remaining`).
-    /// EVM `listingPrice`.
-    pub listing_price: u128,
-    /// Decimals for `listing_price` (EVM `listingPriceDecimals` = `USD_DECIMALS`).
-    pub listing_price_decimals: u8,
     pub bump: u8,
 }
 
 impl AssetConfig {
     pub const SEED: &'static [u8] = b"asset";
     pub const VAULT_SEED: &'static [u8] = b"vault";
-    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 16 + 1 + 1;
+    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1;
 }
 
 /// Per-user lock + liquidation vote escrow (GRAI held by the GRAI vault while locked).
@@ -1590,12 +1588,13 @@ pub struct RedeemQuote {
 pub struct DutchAuctionView {
     pub asset: Pubkey,
     pub start_time: i64,
+    /// Snapshot of `config.buyback_period` at last `put_auction`.
     pub period: u32,
-    pub listing_price_decimals: u8,
-    pub listing_price: u128,
     pub remaining: u64,
     pub initial: u64,
+    /// Full-lot Dutch start: GRAI ask at listing (mint price).
     pub max_payment: u64,
+    /// Full-lot Dutch end: GRAI ask after `period` (floor at `BPS - bribe_premium_bps`).
     pub min_payment: u64,
 }
 

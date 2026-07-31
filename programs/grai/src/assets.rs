@@ -262,8 +262,6 @@ fn ensure_asset_config<'info>(
         auction_min_payment: 0,
         auction_start_time: 0,
         auction_duration: 0,
-        listing_price: 0,
-        listing_price_decimals: 0,
         bump,
     };
     // clear_auction is redundant on zeros but keeps the invariant explicit.

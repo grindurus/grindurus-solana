@@ -41,8 +41,6 @@ pub fn execute_get_assets<'info>(
                 asset: *mint,
                 start_time: asset.auction_start_time,
                 period: asset.auction_duration,
-                listing_price_decimals: asset.listing_price_decimals,
-                listing_price: asset.listing_price,
                 remaining: asset.auction_remaining,
                 initial: asset.auction_initial,
                 max_payment: asset.auction_max_payment,
