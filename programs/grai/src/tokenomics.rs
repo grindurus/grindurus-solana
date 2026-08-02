@@ -15,6 +15,9 @@ pub const USD_DECIMALS: u8 = 6;
 pub const DEFAULT_BUYBACK_CUT_BPS: u16 = 3_333;
 pub const DEFAULT_DIVIDEND_CUT_BPS: u16 = 3_334;
 pub const DEFAULT_TREASURY_CUT_BPS: u16 = 3_333;
+/// EVM default `claimTipBps` = 1%.
+pub const DEFAULT_CLAIM_TIP_BPS: u16 = 100;
+pub const MAX_CLAIM_TIP_BPS: u16 = 2_000;
 pub const DEFAULT_BRIBE_PREMIUM_BPS: u16 = 200;
 pub const DEFAULT_QUORUM_BPS: u16 = 6_667;
 pub const DEFAULT_UNLOCK_FEE_BPS: u16 = 1_000;
@@ -29,6 +32,7 @@ pub fn default_protocol_config() -> Config {
         buyback_cut_bps: DEFAULT_BUYBACK_CUT_BPS,
         dividend_cut_bps: DEFAULT_DIVIDEND_CUT_BPS,
         treasury_cut_bps: DEFAULT_TREASURY_CUT_BPS,
+        claim_tip_bps: DEFAULT_CLAIM_TIP_BPS,
         bribe_premium_bps: DEFAULT_BRIBE_PREMIUM_BPS,
         quorum_bps: DEFAULT_QUORUM_BPS,
         unlock_fee_bps: DEFAULT_UNLOCK_FEE_BPS,
@@ -43,6 +47,7 @@ pub fn validate_protocol_config(cfg: &Config) -> Result<()> {
     require!(cfg.buyback_cut_bps <= BPS, ErrorCode::BpsTooHigh);
     require!(cfg.dividend_cut_bps <= BPS, ErrorCode::BpsTooHigh);
     require!(cfg.treasury_cut_bps <= BPS, ErrorCode::BpsTooHigh);
+    require!(cfg.claim_tip_bps <= MAX_CLAIM_TIP_BPS, ErrorCode::BpsTooHigh);
     require!(cfg.quorum_bps <= BPS, ErrorCode::BpsTooHigh);
     require!(cfg.unlock_fee_bps <= BPS, ErrorCode::BpsTooHigh);
     // The premium is also the max Dutch discount, so the buyback floor must stay non-negative

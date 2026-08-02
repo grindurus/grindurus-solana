@@ -2,8 +2,15 @@ use anchor_lang::prelude::*;
 
 use crate::tokenomics::{default_protocol_config, validate_protocol_config};
 use crate::{
-    ErrorCode, Initialize, Config, SetGrinders, SetConfig, SetTreasury,
+    Config, ErrorCode, Initialize, SetConfig, SetGrinders, SetTreasury,
 };
+
+/// Sibling grinders program (`programs/grinders` `declare_id!`).
+pub const GRINDERS_PROGRAM_ID: Pubkey = pubkey!("7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v");
+
+/// Offset of `grai_program` in `GrindersState` after the 8-byte Anchor discriminator.
+/// Layout: owner(32) grai_program(32) …
+const GRINDERS_STATE_GRAI_PROGRAM_OFFSET: usize = 8 + 32;
 
 pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
     // Deposit sink starts as the admin wallet; switch later via `set_grinders`.
@@ -58,6 +65,29 @@ pub fn execute_set_grinders(ctx: Context<SetGrinders>, grinders: Pubkey) -> Resu
         ErrorCode::LiquidationOpen
     );
     require_keys_neq!(grinders, Pubkey::default(), ErrorCode::InvalidGrinders);
+    require_keys_eq!(
+        ctx.accounts.grinders_state.key(),
+        grinders,
+        ErrorCode::InvalidGrinders
+    );
+    require_keys_eq!(
+        *ctx.accounts.grinders_state.owner,
+        GRINDERS_PROGRAM_ID,
+        ErrorCode::InvalidGrinders
+    );
+
+    let data = ctx.accounts.grinders_state.try_borrow_data()?;
+    require!(
+        data.len() >= GRINDERS_STATE_GRAI_PROGRAM_OFFSET + 32,
+        ErrorCode::InvalidGrinders
+    );
+    let linked = Pubkey::new_from_array(
+        data[GRINDERS_STATE_GRAI_PROGRAM_OFFSET..GRINDERS_STATE_GRAI_PROGRAM_OFFSET + 32]
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidGrinders))?,
+    );
+    require_keys_eq!(linked, crate::ID, ErrorCode::GrindersGraiMismatch);
+
     ctx.accounts.grai_state.grinders = grinders;
     Ok(())
 }

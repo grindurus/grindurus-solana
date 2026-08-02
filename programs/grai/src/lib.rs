@@ -45,6 +45,8 @@ pub struct Config {
     pub dividend_cut_bps: u16,
     /// Share of distributed yield / bribe cut pool sent to `treasury`, in bps.
     pub treasury_cut_bps: u16,
+    /// Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
+    pub claim_tip_bps: u16,
     /// Max |ask adjustment| for dynamic bribes, in bps of book value.
     ///
     /// Also the max buyback Dutch discount: `min_payment = max_payment * (BPS - this) / BPS`.
@@ -64,7 +66,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub const LEN: usize = 2 * 6 + 4 * 4;
+    pub const LEN: usize = 2 * 7 + 4 * 4;
 }
 
 #[account]
@@ -249,6 +251,9 @@ pub struct SetGrinders<'info> {
         has_one = authority @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
+
+    /// CHECK: GrindersState PDA — must be owned by the grinders program and link back to this GRAI.
+    pub grinders_state: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -833,10 +838,43 @@ pub struct Claim<'info> {
     )]
     pub holder_asset_ata: Box<Account<'info, TokenAccount>>,
 
+    /// Caller tip ATA (EVM `msg.sender` tip from `claimTipBps`). Same as holder ATA when self-claiming.
+    #[account(
+        init_if_needed,
+        payer = payer,
+        associated_token::mint = asset_mint,
+        associated_token::authority = payer,
+    )]
+    pub tip_asset_ata: Box<Account<'info, TokenAccount>>,
+
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+/// EVM `claimAll(locker)`. Remaining: `[mint, asset_config, position, vault, holder_ata, tip_ata]` × N.
+#[derive(Accounts)]
+pub struct ClaimAll<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+    )]
+    pub grai_state: Box<Account<'info, GraiState>>,
+
+    /// CHECK: Holder whose locks earn the dividends.
+    pub holder: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [Escrow::SEED, holder.key().as_ref()],
+        bump = escrow.bump,
+    )]
+    pub escrow: Box<Account<'info, Escrow>>,
+
+    pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -1411,8 +1449,16 @@ pub mod grai {
     
     /// Claim yield dividends for one listed asset.
     /// `amount == u64::MAX` claims the full accrued balance; otherwise `min(amount, claimable)`.
+    /// Tip (`claim_tip_bps`) is paid to `payer`; remainder to `holder`.
     pub fn claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
         claim::execute_claim(ctx, amount)
+    }
+
+    /// EVM `claimAll(locker)`. Remaining: `[mint, asset_config, position, vault, holder_ata, tip_ata]` × N.
+    pub fn claim_all<'info>(
+        ctx: Context<'_, '_, 'info, 'info, ClaimAll<'info>>,
+    ) -> Result<()> {
+        claim::execute_claim_all(ctx)
     }
 
     pub fn vote<'info>(

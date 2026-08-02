@@ -24,6 +24,8 @@ pub enum ErrorCode {
     InvalidDepositSource,
     #[msg("Grinders state does not match grai config")]
     InvalidGrinders,
+    #[msg("Grinders.grai_program does not match this GRAI program")]
+    GrindersGraiMismatch,
     #[msg("Treasury must be a valid pubkey")]
     InvalidTreasury,
     #[msg("Asset is unknown / not listed")]
