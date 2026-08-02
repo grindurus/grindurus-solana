@@ -69,7 +69,7 @@ pub fn require_not_liquidation(grai_state: &AccountInfo) -> Result<()> {
 pub fn execute_allocate<'info>(
     grinders_state: &Account<'info, GrindersState>,
     grinders_ata: &Account<'info, TokenAccount>,
-    custody_ata: &Account<'info, TokenAccount>,
+    custodian_ata: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
     amount: u64,
 ) -> Result<()> {
@@ -87,7 +87,7 @@ pub fn execute_allocate<'info>(
             token_program.to_account_info(),
             Transfer {
                 from: grinders_ata.to_account_info(),
-                to: custody_ata.to_account_info(),
+                to: custodian_ata.to_account_info(),
                 authority: grinders_state.to_account_info(),
             },
             &[&signer[..]],
@@ -106,7 +106,7 @@ pub fn execute_custodian_deallocate<'info>(
     grinders_state: &Account<'info, GrindersState>,
     custodian_state: &Account<'info, CustodianState>,
     grai_state: &AccountInfo<'info>,
-    custody_ata: &Account<'info, TokenAccount>,
+    custodian_ata: &Account<'info, TokenAccount>,
     grinders_ata: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
     amount: u64,
@@ -132,7 +132,7 @@ pub fn execute_custodian_deallocate<'info>(
         CpiContext::new_with_signer(
             token_program.to_account_info(),
             Transfer {
-                from: custody_ata.to_account_info(),
+                from: custodian_ata.to_account_info(),
                 to: grinders_ata.to_account_info(),
                 authority: custodian_state.to_account_info(),
             },
@@ -156,7 +156,7 @@ pub fn execute_custodian_distribute<'info>(
     asset_config: &AccountInfo<'info>,
     price_feed: &AccountInfo<'info>,
     grai_mint: &Account<'info, Mint>,
-    custody_ata: &Account<'info, TokenAccount>,
+    custodian_ata: &Account<'info, TokenAccount>,
     vault_ata: &AccountInfo<'info>,
     treasury_ata: &AccountInfo<'info>,
     position: &AccountInfo<'info>,
@@ -195,7 +195,7 @@ pub fn execute_custodian_distribute<'info>(
             AccountMeta::new(asset_config.key(), false),
             AccountMeta::new_readonly(price_feed.key(), false),
             AccountMeta::new_readonly(grai_mint.key(), false),
-            AccountMeta::new(custody_ata.key(), false),
+            AccountMeta::new(custodian_ata.key(), false),
             AccountMeta::new(vault_ata.key(), false),
             AccountMeta::new(treasury_ata.key(), false),
             AccountMeta::new(position.key(), false),
@@ -215,7 +215,7 @@ pub fn execute_custodian_distribute<'info>(
             asset_config.clone(),
             price_feed.clone(),
             grai_mint.to_account_info(),
-            custody_ata.to_account_info(),
+            custodian_ata.to_account_info(),
             vault_ata.clone(),
             treasury_ata.clone(),
             position.clone(),
@@ -232,8 +232,8 @@ pub fn execute_set_assets(
     owner: &Signer,
     grinders_state: &Account<GrindersState>,
     custodian_state: &mut Account<CustodianState>,
-    base_custody_ata: &Account<TokenAccount>,
-    quote_custody_ata: &Account<TokenAccount>,
+    base_custodian_ata: &Account<TokenAccount>,
+    quote_custodian_ata: &Account<TokenAccount>,
     new_base_mint: Pubkey,
     new_quote_mint: Pubkey,
 ) -> Result<()> {
@@ -244,7 +244,7 @@ pub fn execute_set_assets(
         ErrorCode::NotCustodianWallet
     );
     require!(
-        base_custody_ata.amount == 0 && quote_custody_ata.amount == 0,
+        base_custodian_ata.amount == 0 && quote_custodian_ata.amount == 0,
         ErrorCode::NonZeroBalance
     );
     require!(new_base_mint != Pubkey::default(), ErrorCode::BaseZero);

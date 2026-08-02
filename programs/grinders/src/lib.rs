@@ -124,11 +124,7 @@ pub mod grinders {
         custodian.nft_owner = ctx.accounts.custodian_owner.key();
         custodian.bump = ctx.bumps.custodian_state;
 
-        let uri = grinder_art::token_json_uri(
-            custodian_id,
-            &derived_custodian_wallet,
-            &custodian_kind,
-        );
+        let uri = grinder_art::token_json_uri(custodian_id);
 
         let grinders_bump_arr = [grinders_bump];
         let grinders_signer = ctx
@@ -245,7 +241,7 @@ pub mod grinders {
         custodian::execute_allocate(
             &ctx.accounts.grinders_state,
             &ctx.accounts.grinders_ata,
-            &ctx.accounts.custody_ata,
+            &ctx.accounts.custodian_ata,
             &ctx.accounts.token_program,
             amount,
         )?;
@@ -265,8 +261,8 @@ pub mod grinders {
             &ctx.accounts.owner,
             &ctx.accounts.grinders_state,
             &mut ctx.accounts.custodian_state,
-            &ctx.accounts.base_custody_ata,
-            &ctx.accounts.quote_custody_ata,
+            &ctx.accounts.base_custodian_ata,
+            &ctx.accounts.quote_custodian_ata,
             new_base,
             new_quote,
         )?;
@@ -301,7 +297,7 @@ pub mod grinders {
             &ctx.accounts.grinders_state,
             &ctx.accounts.custodian_state,
             &ctx.accounts.grai_state.to_account_info(),
-            &ctx.accounts.custody_ata,
+            &ctx.accounts.custodian_ata,
             &ctx.accounts.grinders_ata,
             &ctx.accounts.token_program,
             amount,
@@ -329,7 +325,7 @@ pub mod grinders {
             &ctx.accounts.asset_config.to_account_info(),
             &ctx.accounts.price_feed.to_account_info(),
             &ctx.accounts.grai_mint,
-            &ctx.accounts.custody_ata,
+            &ctx.accounts.custodian_ata,
             &ctx.accounts.vault_ata.to_account_info(),
             &ctx.accounts.treasury_ata.to_account_info(),
             &ctx.accounts.position.to_account_info(),
@@ -424,14 +420,14 @@ pub mod grinders {
         let custodian_info = ctx.accounts.custodian_state.to_account_info();
         let grinders_info = ctx.accounts.grinders_state.to_account_info();
 
-        let base_bal = ctx.accounts.base_custody_ata.amount;
+        let base_bal = ctx.accounts.base_custodian_ata.amount;
         if base_bal > 0 {
             // Custodian → Grinders (EVM Custodian.liquidate).
             token::transfer(
                 CpiContext::new_with_signer(
                     token_program.clone(),
                     Transfer {
-                        from: ctx.accounts.base_custody_ata.to_account_info(),
+                        from: ctx.accounts.base_custodian_ata.to_account_info(),
                         to: ctx.accounts.base_grinders_ata.to_account_info(),
                         authority: custodian_info.clone(),
                     },
@@ -454,13 +450,13 @@ pub mod grinders {
             )?;
         }
 
-        let quote_bal = ctx.accounts.quote_custody_ata.amount;
+        let quote_bal = ctx.accounts.quote_custodian_ata.amount;
         if quote_bal > 0 {
             token::transfer(
                 CpiContext::new_with_signer(
                     token_program.clone(),
                     Transfer {
-                        from: ctx.accounts.quote_custody_ata.to_account_info(),
+                        from: ctx.accounts.quote_custodian_ata.to_account_info(),
                         to: ctx.accounts.quote_grinders_ata.to_account_info(),
                         authority: custodian_info.clone(),
                     },
@@ -940,10 +936,10 @@ pub struct Allocate<'info> {
 
     #[account(
         mut,
-        constraint = custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::NotTradingAsset,
+        constraint = custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = custodian_ata.mint == asset_mint.key() @ ErrorCode::NotTradingAsset,
     )]
-    pub custody_ata: Account<'info, TokenAccount>,
+    pub custodian_ata: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -987,19 +983,19 @@ pub struct SetAssets<'info> {
     )]
     pub custodian_state: Account<'info, CustodianState>,
 
-    /// Current base custody ATA (must be empty).
+    /// Current base custodian ATA (must be empty).
     #[account(
-        constraint = base_custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = base_custody_ata.mint == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
+        constraint = base_custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = base_custodian_ata.mint == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
     )]
-    pub base_custody_ata: Account<'info, TokenAccount>,
+    pub base_custodian_ata: Account<'info, TokenAccount>,
 
-    /// Current quote custody ATA (must be empty).
+    /// Current quote custodian ATA (must be empty).
     #[account(
-        constraint = quote_custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = quote_custody_ata.mint == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
+        constraint = quote_custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = quote_custodian_ata.mint == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
     )]
-    pub quote_custody_ata: Account<'info, TokenAccount>,
+    pub quote_custodian_ata: Account<'info, TokenAccount>,
 
     pub new_base_mint: Account<'info, Mint>,
     pub new_quote_mint: Account<'info, Mint>,
@@ -1037,10 +1033,10 @@ pub struct CustodianDeallocate<'info> {
 
     #[account(
         mut,
-        constraint = custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::NotTradingAsset,
+        constraint = custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = custodian_ata.mint == asset_mint.key() @ ErrorCode::NotTradingAsset,
     )]
-    pub custody_ata: Account<'info, TokenAccount>,
+    pub custodian_ata: Account<'info, TokenAccount>,
 
     #[account(
         mut,
@@ -1097,10 +1093,10 @@ pub struct CustodianDistribute<'info> {
 
     #[account(
         mut,
-        constraint = custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = custody_ata.mint == asset_mint.key() @ ErrorCode::NotTradingAsset,
+        constraint = custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = custodian_ata.mint == asset_mint.key() @ ErrorCode::NotTradingAsset,
     )]
-    pub custody_ata: Account<'info, TokenAccount>,
+    pub custodian_ata: Account<'info, TokenAccount>,
 
     /// CHECK: GRAI vault ATA for asset_mint.
     #[account(mut)]
@@ -1166,19 +1162,19 @@ pub struct LiquidateCustodian<'info> {
 
     #[account(
         mut,
-        constraint = base_custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = base_custody_ata.mint == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
+        constraint = base_custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = base_custodian_ata.mint == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
         constraint = base_mint.key() == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
     )]
-    pub base_custody_ata: Box<Account<'info, TokenAccount>>,
+    pub base_custodian_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
-        constraint = quote_custody_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
-        constraint = quote_custody_ata.mint == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
+        constraint = quote_custodian_ata.owner == custodian_state.key() @ ErrorCode::NotCustodianOwner,
+        constraint = quote_custodian_ata.mint == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
         constraint = quote_mint.key() == custodian_state.quote_mint @ ErrorCode::NotTradingAsset,
     )]
-    pub quote_custody_ata: Box<Account<'info, TokenAccount>>,
+    pub quote_custodian_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,

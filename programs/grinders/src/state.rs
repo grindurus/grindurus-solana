@@ -22,7 +22,7 @@ impl GrindersState {
     }
 }
 
-/// On-chain custodian wallet PDA — custody authority + registry (former `CustodianRecord`).
+/// On-chain custodian wallet PDA — custodian authority + registry (former `CustodianRecord`).
 #[account]
 pub struct CustodianState {
     pub grinders: Pubkey,

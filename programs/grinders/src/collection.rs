@@ -14,40 +14,6 @@ pub const COLLECTION_URI: &str = "https://grindurus.xyz/metadata.json";
 
 pub const COLLECTION_MINT_SEED: &[u8] = b"collection";
 
-pub fn collection_metadata_pda(collection_mint: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            b"metadata",
-            anchor_spl::metadata::ID.as_ref(),
-            collection_mint.as_ref(),
-        ],
-        &anchor_spl::metadata::ID,
-    )
-}
-
-pub fn collection_master_edition_pda(collection_mint: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            b"metadata",
-            anchor_spl::metadata::ID.as_ref(),
-            collection_mint.as_ref(),
-            b"edition",
-        ],
-        &anchor_spl::metadata::ID,
-    )
-}
-
-pub fn custodian_metadata_pda(custodian_mint: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[
-            b"metadata",
-            anchor_spl::metadata::ID.as_ref(),
-            custodian_mint.as_ref(),
-        ],
-        &anchor_spl::metadata::ID,
-    )
-}
-
 pub fn create_collection<'info>(
     grinders_state: &AccountInfo<'info>,
     grinders_bump: u8,

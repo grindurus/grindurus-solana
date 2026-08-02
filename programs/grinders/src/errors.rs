@@ -62,7 +62,7 @@ pub enum ErrorCode {
     QuoteZero,
     #[msg("Base and quote mints must differ")]
     SameAsset,
-    #[msg("Cannot change assets while custody balances are non-zero")]
+    #[msg("Cannot change assets while custodian balances are non-zero")]
     NonZeroBalance,
     #[msg("GRAI program id cannot be default")]
     GraiTokenZero,
