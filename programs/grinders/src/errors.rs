@@ -52,6 +52,18 @@ pub enum ErrorCode {
     NotGrai,
     #[msg("GRAI liquidation is not open")]
     NoLiquidation,
+    #[msg("GRAI liquidation is open")]
+    LiquidationOpen,
     #[msg("Remaining accounts do not match the expected layout")]
     InvalidRemainingAccounts,
+    #[msg("Base mint cannot be default")]
+    BaseZero,
+    #[msg("Quote mint cannot be default")]
+    QuoteZero,
+    #[msg("Base and quote mints must differ")]
+    SameAsset,
+    #[msg("Cannot change assets while custody balances are non-zero")]
+    NonZeroBalance,
+    #[msg("GRAI program id cannot be default")]
+    GraiTokenZero,
 }

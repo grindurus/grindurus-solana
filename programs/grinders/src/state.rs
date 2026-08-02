@@ -22,42 +22,7 @@ impl GrindersState {
     }
 }
 
-#[account]
-pub struct CustodianRecord {
-    pub custodian_id: u64,
-    pub custodian_wallet: Pubkey,
-    pub nft_mint: Pubkey,
-    pub nft_owner: Pubkey,
-    pub custodian_kind: [u8; 32],
-    pub base_mint: Pubkey,
-    pub quote_mint: Pubkey,
-    pub bump: u8,
-}
-
-impl CustodianRecord {
-    pub const SEED: &'static [u8] = b"custodian";
-    pub const LEN: usize = 8 + 32 + 32 + 32 + 32 + 32 + 32 + 1;
-
-    pub fn signer_seeds<'a>(
-        custodian_id_bytes: &'a [u8; 8],
-        bump: &'a [u8; 1],
-    ) -> [&'a [u8]; 3] {
-        [Self::SEED, custodian_id_bytes, bump]
-    }
-}
-
-#[account]
-pub struct CustodianIndex {
-    pub custodian_id: u64,
-    pub bump: u8,
-}
-
-impl CustodianIndex {
-    pub const SEED: &'static [u8] = b"custodian_index";
-    pub const LEN: usize = 8 + 1;
-}
-
-/// On-chain swap custodian wallet PDA (mirrors `SwapCustodian.sol` proxy address).
+/// On-chain custodian wallet PDA — custody authority + registry (former `CustodianRecord`).
 #[account]
 pub struct CustodianState {
     pub grinders: Pubkey,
@@ -67,12 +32,14 @@ pub struct CustodianState {
     pub custodian_kind: [u8; 32],
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
+    pub nft_mint: Pubkey,
+    pub nft_owner: Pubkey,
     pub bump: u8,
 }
 
 impl CustodianState {
     pub const SEED: &'static [u8] = b"custodian_wallet";
-    pub const LEN: usize = 32 + 8 + 32 + 32 + 32 + 32 + 1;
+    pub const LEN: usize = 32 + 8 + 32 + 32 + 32 + 32 + 32 + 32 + 1;
 
     pub fn signer_seeds<'a>(
         grinders: &'a [u8],
@@ -108,16 +75,4 @@ pub fn custodian_state_pda(grinders: &Pubkey, custodian_id: u64) -> (Pubkey, u8)
         ],
         &crate::ID,
     )
-}
-
-/// Per-custodian issuance ledger for an asset (mirrors EVM `Grinders.allocated`).
-#[account]
-pub struct Allocation {
-    pub allocated_amount: u64,
-    pub bump: u8,
-}
-
-impl Allocation {
-    pub const SEED: &'static [u8] = b"allocation";
-    pub const LEN: usize = 8 + 1;
 }

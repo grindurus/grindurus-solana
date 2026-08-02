@@ -7,13 +7,12 @@ use anchor_spl::token::{Mint, TokenAccount};
 
 use crate::custodian::{assert_custodian_owner, require_custodian_kind};
 use crate::errors::ErrorCode;
-use crate::state::{CustodianRecord, CustodianState, JUPITER_GASLESS_CUSTODIAN_KIND};
+use crate::state::{CustodianState, JUPITER_GASLESS_CUSTODIAN_KIND};
 
 pub fn execute_jupiter_gasless_swap<'info>(
     owner: &Signer,
     fee_payer: &AccountInfo<'info>,
     custodian_state: &Account<'info, CustodianState>,
-    custodian_record: &Account<'info, CustodianRecord>,
     base_custodian_ata: &Account<'info, TokenAccount>,
     quote_custodian_ata: &Account<'info, TokenAccount>,
     base_mint: &Account<'info, Mint>,
@@ -22,8 +21,8 @@ pub fn execute_jupiter_gasless_swap<'info>(
     _min_out_amount: u64,
     _ix_data: Vec<u8>,
 ) -> Result<()> {
-    require_custodian_kind(custodian_record, &JUPITER_GASLESS_CUSTODIAN_KIND)?;
-    assert_custodian_owner(owner, custodian_record, custodian_state)?;
+    require_custodian_kind(custodian_state, &JUPITER_GASLESS_CUSTODIAN_KIND)?;
+    assert_custodian_owner(owner, custodian_state)?;
     require_keys_neq!(fee_payer.key(), owner.key(), ErrorCode::GrinderMustNotPayGas);
 
     require_keys_eq!(

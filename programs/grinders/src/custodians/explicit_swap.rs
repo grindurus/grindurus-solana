@@ -9,14 +9,13 @@ use anchor_spl::token::{Mint, TokenAccount};
 
 use crate::custodian::{assert_custodian_owner, require_custodian_kind};
 use crate::errors::ErrorCode;
-use crate::state::{CustodianRecord, CustodianState, EXPLICIT_SWAP_CUSTODIAN_KIND};
+use crate::state::{CustodianState, EXPLICIT_SWAP_CUSTODIAN_KIND};
 
 const PRICE_DECIMALS: u128 = 1_000_000_000_000_000_000;
 
 pub fn execute_swap<'info>(
     owner: &Signer,
     custodian_state: &Account<'info, CustodianState>,
-    custodian_record: &Account<'info, CustodianRecord>,
     base_custodian_ata: &mut Account<'info, TokenAccount>,
     quote_custodian_ata: &mut Account<'info, TokenAccount>,
     base_mint: &Account<'info, Mint>,
@@ -25,8 +24,8 @@ pub fn execute_swap<'info>(
     limit_price: u128,
     ix_data: Vec<u8>,
 ) -> Result<()> {
-    require_custodian_kind(custodian_record, &EXPLICIT_SWAP_CUSTODIAN_KIND)?;
-    assert_custodian_owner(owner, custodian_record, custodian_state)?;
+    require_custodian_kind(custodian_state, &EXPLICIT_SWAP_CUSTODIAN_KIND)?;
+    assert_custodian_owner(owner, custodian_state)?;
 
     require!(!ix_data.is_empty(), ErrorCode::DataEmpty);
     require!(!remaining_accounts.is_empty(), ErrorCode::TargetZero);

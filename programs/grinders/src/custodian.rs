@@ -6,42 +6,68 @@ use anchor_lang::solana_program::{
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 use crate::errors::ErrorCode;
-use crate::state::{Allocation, CustodianRecord, CustodianState, GrindersState};
+use crate::state::{CustodianState, GrindersState};
 
 /// Anchor discriminator for `grai::distribute` (sha256("global:distribute")[..8]).
 const GRAI_DISTRIBUTE_DISCRIMINATOR: [u8; 8] = [191, 44, 223, 207, 164, 236, 126, 61];
 
+/// Offset of `liquidation: bool` in `GraiState` after 8-byte Anchor discriminator.
+/// Layout: authority(32) treasury(32) grinders(32) bribe(32) total_value(16)
+///         total_locked(8) total_voted(8) liquidation(1) …
+const GRAI_STATE_LIQUIDATION_OFFSET: usize = 8 + 32 + 32 + 32 + 32 + 16 + 8 + 8;
+
 pub fn assert_custodian_owner(
     owner: &Signer,
-    record: &Account<CustodianRecord>,
     custodian_state: &Account<CustodianState>,
 ) -> Result<()> {
-    require_keys_eq!(record.nft_owner, owner.key(), ErrorCode::NotCustodianOwner);
     require_keys_eq!(
-        record.custodian_wallet,
-        custodian_state.key(),
-        ErrorCode::NotCustodianOwner
-    );
-    require!(
-        record.custodian_id == custodian_state.custodian_id,
+        custodian_state.nft_owner,
+        owner.key(),
         ErrorCode::NotCustodianOwner
     );
     Ok(())
 }
 
-pub fn require_custodian_kind(record: &CustodianRecord, expected: &[u8; 32]) -> Result<()> {
+/// Protocol owner gate (EVM `Grinders.onlyOwner`) for inventory/yield admin ops.
+pub fn assert_protocol_owner(
+    owner: &Signer,
+    grinders_state: &Account<GrindersState>,
+) -> Result<()> {
+    require_keys_eq!(
+        grinders_state.owner,
+        owner.key(),
+        ErrorCode::Unauthorized
+    );
+    Ok(())
+}
+
+pub fn require_custodian_kind(state: &CustodianState, expected: &[u8; 32]) -> Result<()> {
     require!(
-        record.custodian_kind == *expected,
+        state.custodian_kind == *expected,
         ErrorCode::CustodianKindMismatch
     );
     Ok(())
 }
 
+/// Read GRAI `liquidation` flag from raw account data (EVM `Custodian.liquidation()`).
+pub fn grai_liquidation_open(grai_state: &AccountInfo) -> Result<bool> {
+    let data = grai_state.try_borrow_data()?;
+    require!(
+        data.len() > GRAI_STATE_LIQUIDATION_OFFSET,
+        ErrorCode::NotGrai
+    );
+    Ok(data[GRAI_STATE_LIQUIDATION_OFFSET] != 0)
+}
+
+pub fn require_not_liquidation(grai_state: &AccountInfo) -> Result<()> {
+    require!(!grai_liquidation_open(grai_state)?, ErrorCode::LiquidationOpen);
+    Ok(())
+}
+
 /// Owner moves reserve inventory from grinders ATA → custodian (mirrors EVM `Grinders.allocate`).
+/// No on-chain issuance ledger — track `Allocate` / `Deallocate` events off-chain.
 pub fn execute_allocate<'info>(
     grinders_state: &Account<'info, GrindersState>,
-    allocation: &mut Account<'info, Allocation>,
-    allocation_bump: u8,
     grinders_ata: &Account<'info, TokenAccount>,
     custody_ata: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
@@ -69,29 +95,29 @@ pub fn execute_allocate<'info>(
         amount,
     )?;
 
-    allocation.allocated_amount = allocation
-        .allocated_amount
-        .checked_add(amount)
-        .ok_or(ErrorCode::MathOverflow)?;
-    allocation.bump = allocation_bump;
-
     Ok(())
 }
 
-/// Custodian returns inventory to grinders reserve (mirrors EVM `Grinders.deallocate`).
-/// Not capped by `allocated` — ledger floors at zero.
+/// Custodian returns inventory to grinders reserve (mirrors EVM `Grinders.deallocate` /
+/// `Custodian.deallocate`). Not capped by prior allocations — after swaps the returned
+/// token/size need not match what was sent. Blocked while GRAI liquidation is open.
 pub fn execute_custodian_deallocate<'info>(
     owner: &Signer,
+    grinders_state: &Account<'info, GrindersState>,
     custodian_state: &Account<'info, CustodianState>,
-    custodian_record: &Account<'info, CustodianRecord>,
-    allocation: &mut Account<'info, Allocation>,
-    allocation_bump: u8,
+    grai_state: &AccountInfo<'info>,
     custody_ata: &Account<'info, TokenAccount>,
     grinders_ata: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
     amount: u64,
 ) -> Result<()> {
-    assert_custodian_owner(owner, custodian_record, custodian_state)?;
+    assert_protocol_owner(owner, grinders_state)?;
+    require_keys_eq!(
+        custodian_state.grinders,
+        grinders_state.key(),
+        ErrorCode::NotCustodianWallet
+    );
+    require_not_liquidation(grai_state)?;
     require!(amount > 0, ErrorCode::AmountZero);
 
     let custodian_id_bytes = custodian_state.custodian_id.to_le_bytes();
@@ -115,18 +141,14 @@ pub fn execute_custodian_deallocate<'info>(
         amount,
     )?;
 
-    let prev = allocation.allocated_amount;
-    allocation.allocated_amount = prev.saturating_sub(amount);
-    allocation.bump = allocation_bump;
-
     Ok(())
 }
 
 /// Custodian pushes yield into GRAI `distribute` (mirrors EVM `Custodian.distribute`).
 pub fn execute_custodian_distribute<'info>(
     owner: &Signer<'info>,
+    grinders_state: &Account<'info, GrindersState>,
     custodian_state: &Account<'info, CustodianState>,
-    custodian_record: &Account<'info, CustodianRecord>,
     grai_program: &AccountInfo<'info>,
     payer: &Signer<'info>,
     grai_state: &AccountInfo<'info>,
@@ -142,7 +164,13 @@ pub fn execute_custodian_distribute<'info>(
     system_program: &AccountInfo<'info>,
     yield_amount: u64,
 ) -> Result<()> {
-    assert_custodian_owner(owner, custodian_record, custodian_state)?;
+    assert_protocol_owner(owner, grinders_state)?;
+    require_keys_eq!(
+        custodian_state.grinders,
+        grinders_state.key(),
+        ErrorCode::NotCustodianWallet
+    );
+    require_not_liquidation(grai_state)?;
     require!(yield_amount > 0, ErrorCode::AmountZero);
 
     let custodian_id_bytes = custodian_state.custodian_id.to_le_bytes();
@@ -197,4 +225,33 @@ pub fn execute_custodian_distribute<'info>(
         &[&signer_seeds[..]],
     )
     .map_err(Into::into)
+}
+
+/// Protocol owner retargets trading assets (mirrors EVM `Grinders.setAssets` / `Custodian.setAssets`).
+pub fn execute_set_assets(
+    owner: &Signer,
+    grinders_state: &Account<GrindersState>,
+    custodian_state: &mut Account<CustodianState>,
+    base_custody_ata: &Account<TokenAccount>,
+    quote_custody_ata: &Account<TokenAccount>,
+    new_base_mint: Pubkey,
+    new_quote_mint: Pubkey,
+) -> Result<()> {
+    assert_protocol_owner(owner, grinders_state)?;
+    require_keys_eq!(
+        custodian_state.grinders,
+        grinders_state.key(),
+        ErrorCode::NotCustodianWallet
+    );
+    require!(
+        base_custody_ata.amount == 0 && quote_custody_ata.amount == 0,
+        ErrorCode::NonZeroBalance
+    );
+    require!(new_base_mint != Pubkey::default(), ErrorCode::BaseZero);
+    require!(new_quote_mint != Pubkey::default(), ErrorCode::QuoteZero);
+    require_keys_neq!(new_base_mint, new_quote_mint, ErrorCode::SameAsset);
+
+    custodian_state.base_mint = new_base_mint;
+    custodian_state.quote_mint = new_quote_mint;
+    Ok(())
 }
