@@ -1,17 +1,17 @@
 use anchor_lang::prelude::*;
 
-use crate::auction::{distribute_dividend, put_auction, transfer_from_signer, transfer_from_vault};
-use crate::dividend::settle_all_pairs;
+use crate::dividend::{distribute_dividend, settle_all_pairs};
 use crate::price_feed::fetch_price_from_feed;
 use crate::state::remove_from_list;
-use crate::tokenomics::{bps_of, mul_div, preview_bribe};
+use crate::tokenomics::{mul_div, preview_bribe, split_cuts};
+use crate::vault::{transfer_from_signer, transfer_from_vault};
 use crate::{Bribe, BribeQuote, ErrorCode, PreviewBribe};
 
 /// Quote the dynamic bribe ask without mutating state.
 pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Result<BribeQuote> {
     require!(
-        ctx.accounts.grai_state.bribe_asset != Pubkey::default(),
-        ErrorCode::BribeAssetUnset
+        ctx.accounts.grai_state.settlement_asset != Pubkey::default(),
+        ErrorCode::SettlementAssetUnset
     );
     require!(
         grai_amount <= ctx.accounts.escrow.voted,
@@ -20,9 +20,9 @@ pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Re
 
     let clock = Clock::get()?;
     let price = fetch_price_from_feed(
-        &ctx.accounts.bribe_price_feed.to_account_info(),
-        ctx.accounts.bribe_asset_config.price_feed,
-        &ctx.accounts.bribe_mint.key(),
+        &ctx.accounts.settlement_price_feed.to_account_info(),
+        ctx.accounts.settlement_asset_config.price_feed,
+        &ctx.accounts.settlement_mint.key(),
         &clock,
     )?;
 
@@ -33,7 +33,7 @@ pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Re
         ctx.accounts.grai_state.total_voted,
         ctx.accounts.grai_state.config.quorum_bps,
         ctx.accounts.grai_state.config.bribe_premium_bps,
-        ctx.accounts.bribe_mint.decimals,
+        ctx.accounts.settlement_mint.decimals,
         &price,
     )?;
 
@@ -44,7 +44,7 @@ pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Re
     })
 }
 
-/// Buy out `grai_amount` of `voter`'s vote for the dynamic `preview_bribe` ask in `bribe_asset`.
+/// Buy out `grai_amount` of `voter`'s vote for the dynamic `preview_bribe` ask in `settlement_asset`.
 ///
 /// Scarce votes (below half quorum) carry a premium: the voter keeps book plus half the premium
 /// and the rest funds the cut pool. Excess votes carry a discount: the ask is book minus half the
@@ -58,8 +58,8 @@ pub fn execute_bribe<'info>(
 ) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
     require!(
-        ctx.accounts.grai_state.bribe_asset != Pubkey::default(),
-        ErrorCode::BribeAssetUnset
+        ctx.accounts.grai_state.settlement_asset != Pubkey::default(),
+        ErrorCode::SettlementAssetUnset
     );
     require!(grai_amount > 0, ErrorCode::AmountZero);
     require!(
@@ -73,9 +73,9 @@ pub fn execute_bribe<'info>(
     let supply = ctx.accounts.grai_mint.supply;
 
     let bribe_price = fetch_price_from_feed(
-        &ctx.accounts.bribe_price_feed.to_account_info(),
-        ctx.accounts.bribe_asset_config.price_feed,
-        &ctx.accounts.bribe_mint.key(),
+        &ctx.accounts.settlement_price_feed.to_account_info(),
+        ctx.accounts.settlement_asset_config.price_feed,
+        &ctx.accounts.settlement_mint.key(),
         &clock,
     )?;
 
@@ -87,7 +87,7 @@ pub fn execute_bribe<'info>(
         ctx.accounts.grai_state.total_voted,
         ctx.accounts.grai_state.config.quorum_bps,
         ctx.accounts.grai_state.config.bribe_premium_bps,
-        ctx.accounts.bribe_mint.decimals,
+        ctx.accounts.settlement_mint.decimals,
         &bribe_price,
     )?;
 
@@ -148,8 +148,8 @@ pub fn execute_bribe<'info>(
 
     transfer_from_signer(
         &ctx.accounts.token_program.to_account_info(),
-        &ctx.accounts.briber_bribe_ata.to_account_info(),
-        &ctx.accounts.bribe_vault_ata.to_account_info(),
+        &ctx.accounts.briber_settlement_ata.to_account_info(),
+        &ctx.accounts.settlement_vault_ata.to_account_info(),
         &ctx.accounts.briber.to_account_info(),
         bribe_amount,
     )?;
@@ -179,59 +179,42 @@ pub fn execute_bribe<'info>(
     let voter_cut = received
         .checked_sub(cut_pool)
         .ok_or(ErrorCode::MathOverflow)?;
-    let treasury_cut = bps_of(cut_pool, ctx.accounts.grai_state.config.treasury_cut_bps)?;
-    let dividend_cut = bps_of(cut_pool, ctx.accounts.grai_state.config.dividend_cut_bps)?;
-    let buyback_cut = cut_pool
-        .checked_sub(treasury_cut)
-        .and_then(|v| v.checked_sub(dividend_cut))
-        .ok_or(ErrorCode::MathOverflow)?;
+    let (treasury_cut, dividend_cut) =
+        split_cuts(cut_pool, &ctx.accounts.grai_state.config)?;
 
     let eligible = ctx
         .accounts
         .grai_state
         .total_locked
         .saturating_sub(ctx.accounts.grai_state.total_voted);
-    let decimals = ctx.accounts.bribe_mint.decimals;
-    let bribe_feed = ctx.accounts.bribe_price_feed.to_account_info();
 
-    if buyback_cut > 0 {
-        put_auction(
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.bribe_asset_config,
-            buyback_cut,
-            decimals,
-            &bribe_feed,
-            supply,
-            &clock,
-        )?;
-    }
-    if dividend_cut > 0 {
+    let dust = if dividend_cut > 0 {
         distribute_dividend(
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.bribe_asset_config,
+            &mut ctx.accounts.settlement_asset_config,
             dividend_cut,
-            decimals,
-            &bribe_feed,
             eligible,
-            supply,
-            &clock,
-        )?;
-    }
-    if treasury_cut > 0 {
+        )?
+    } else {
+        0
+    };
+    let to_treasury = treasury_cut
+        .checked_add(dust)
+        .ok_or(ErrorCode::MathOverflow)?;
+    if to_treasury > 0 {
         transfer_from_vault(
             &ctx.accounts.token_program.to_account_info(),
-            &ctx.accounts.bribe_vault_ata.to_account_info(),
-            &ctx.accounts.treasury_bribe_ata.to_account_info(),
+            &ctx.accounts.settlement_vault_ata.to_account_info(),
+            &ctx.accounts.treasury_vault.to_account_info(),
             &ctx.accounts.grai_state.to_account_info(),
             bump,
-            treasury_cut,
+            to_treasury,
         )?;
     }
     if voter_cut > 0 {
         transfer_from_vault(
             &ctx.accounts.token_program.to_account_info(),
-            &ctx.accounts.bribe_vault_ata.to_account_info(),
-            &ctx.accounts.voter_bribe_ata.to_account_info(),
+            &ctx.accounts.settlement_vault_ata.to_account_info(),
+            &ctx.accounts.voter_settlement_ata.to_account_info(),
             &ctx.accounts.grai_state.to_account_info(),
             bump,
             voter_cut,

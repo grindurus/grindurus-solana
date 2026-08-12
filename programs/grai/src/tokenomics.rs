@@ -12,58 +12,61 @@ pub const DIVIDEND_PRECISION: u128 = 1_000_000_000_000_000_000;
 /// USD / GRAI decimal scale (matches EVM `USD_DECIMALS`).
 pub const USD_DECIMALS: u8 = 6;
 
-pub const DEFAULT_BUYBACK_CUT_BPS: u16 = 3_333;
-pub const DEFAULT_DIVIDEND_CUT_BPS: u16 = 3_334;
-pub const DEFAULT_TREASURY_CUT_BPS: u16 = 3_333;
+/// EVM defaults: dividend 50% / treasury 50%.
+pub const DEFAULT_DIVIDEND_CUT_BPS: u16 = 5_000;
+pub const DEFAULT_TREASURY_CUT_BPS: u16 = 5_000;
+/// EVM `revenueShareBps` — affiliate slice of yield from treasury income on claim (5%).
+pub const DEFAULT_REVENUE_SHARE_BPS: u16 = 500;
 /// EVM default `claimTipBps` = 1%.
 pub const DEFAULT_CLAIM_TIP_BPS: u16 = 100;
-pub const MAX_CLAIM_TIP_BPS: u16 = 2_000;
+pub const MAX_CLAIM_TIP_BPS: u16 = 500;
 pub const DEFAULT_BRIBE_PREMIUM_BPS: u16 = 200;
 pub const DEFAULT_QUORUM_BPS: u16 = 6_667;
-pub const DEFAULT_UNLOCK_FEE_BPS: u16 = 1_000;
-pub const DEFAULT_BUYBACK_PERIOD: u32 = 7 * 24 * 60 * 60;
+/// EVM `unlockPenaltyBps` = 1% flat on every unlock.
+pub const DEFAULT_UNLOCK_PENALTY_BPS: u16 = 100;
+pub const MAX_UNLOCK_PENALTY_BPS: u16 = 1_000;
 pub const DEFAULT_LIQUIDATION_PERIOD: u32 = 24 * 60 * 60;
 pub const DEFAULT_REDEEM_PERIOD: u32 = 7 * 24 * 60 * 60;
-pub const DEFAULT_UNLOCK_PENALTY_PERIOD: u32 = 24 * 60 * 60;
-pub const MIN_BUYBACK_PERIOD: u32 = 7 * 24 * 60 * 60;
 
 pub fn default_protocol_config() -> Config {
     Config {
-        buyback_cut_bps: DEFAULT_BUYBACK_CUT_BPS,
         dividend_cut_bps: DEFAULT_DIVIDEND_CUT_BPS,
         treasury_cut_bps: DEFAULT_TREASURY_CUT_BPS,
+        revenue_share_bps: DEFAULT_REVENUE_SHARE_BPS,
         claim_tip_bps: DEFAULT_CLAIM_TIP_BPS,
         bribe_premium_bps: DEFAULT_BRIBE_PREMIUM_BPS,
         quorum_bps: DEFAULT_QUORUM_BPS,
-        unlock_fee_bps: DEFAULT_UNLOCK_FEE_BPS,
-        buyback_period: DEFAULT_BUYBACK_PERIOD,
+        unlock_penalty_bps: DEFAULT_UNLOCK_PENALTY_BPS,
         liquidation_period: DEFAULT_LIQUIDATION_PERIOD,
         redeem_period: DEFAULT_REDEEM_PERIOD,
-        unlock_penalty_period: DEFAULT_UNLOCK_PENALTY_PERIOD,
     }
 }
 
 pub fn validate_protocol_config(cfg: &Config) -> Result<()> {
-    require!(cfg.buyback_cut_bps <= BPS, ErrorCode::BpsTooHigh);
     require!(cfg.dividend_cut_bps <= BPS, ErrorCode::BpsTooHigh);
     require!(cfg.treasury_cut_bps <= BPS, ErrorCode::BpsTooHigh);
+    require!(
+        cfg.revenue_share_bps <= cfg.treasury_cut_bps,
+        ErrorCode::BpsTooHigh
+    );
     require!(cfg.claim_tip_bps <= MAX_CLAIM_TIP_BPS, ErrorCode::BpsTooHigh);
-    require!(cfg.quorum_bps <= BPS, ErrorCode::BpsTooHigh);
-    require!(cfg.unlock_fee_bps <= BPS, ErrorCode::BpsTooHigh);
-    // The premium is also the max Dutch discount, so the buyback floor must stay non-negative
-    // with room for the symmetric discount leg (EVM `2 * bribePremiumBps <= BPS`).
+    require!(
+        cfg.quorum_bps >= 2 && cfg.quorum_bps < BPS,
+        ErrorCode::BpsTooHigh
+    );
+    require!(cfg.dividend_cut_bps != 0, ErrorCode::InvalidCuts);
+    require!(
+        cfg.unlock_penalty_bps <= MAX_UNLOCK_PENALTY_BPS,
+        ErrorCode::BpsTooHigh
+    );
+    // Symmetric bribe premium/discount must stay within BPS (EVM `2 * bribePremiumBps <= BPS`).
     require!(
         2 * (cfg.bribe_premium_bps as u32) <= BPS as u32,
         ErrorCode::BpsTooHigh
     );
     require!(
-        (cfg.buyback_cut_bps as u32) + (cfg.dividend_cut_bps as u32) + (cfg.treasury_cut_bps as u32)
-            == BPS as u32,
+        (cfg.dividend_cut_bps as u32) + (cfg.treasury_cut_bps as u32) == BPS as u32,
         ErrorCode::InvalidCuts
-    );
-    require!(
-        cfg.buyback_period >= MIN_BUYBACK_PERIOD,
-        ErrorCode::BuybackPeriodTooShort
     );
     require!(
         cfg.liquidation_period != 0 && cfg.redeem_period != 0,
@@ -93,58 +96,37 @@ pub fn mul_div(a: u64, b: u64, d: u64) -> Result<u64> {
     Ok(value as u64)
 }
 
-/// Split yield/cut pool into treasury / dividend / buyback cuts.
-/// `buyback = amount - treasury - dividend` (buyback absorbs rounding dust).
-pub fn split_cuts(amount: u64, cfg: &Config) -> Result<(u64, u64, u64)> {
+/// Split yield/cut pool into treasury / dividend cuts (EVM `_distribute` / bribe).
+/// `treasury = amount * treasuryCutBps / BPS`; `dividend = amount - treasury` (absorbs dust).
+pub fn split_cuts(amount: u64, cfg: &Config) -> Result<(u64, u64)> {
     let treasury = bps_of(amount, cfg.treasury_cut_bps)?;
-    let dividend = bps_of(amount, cfg.dividend_cut_bps)?;
-    let buyback = amount
+    let dividend = amount
         .checked_sub(treasury)
-        .and_then(|v| v.checked_sub(dividend))
         .ok_or(ErrorCode::MathOverflow)?;
-    Ok((treasury, dividend, buyback))
+    Ok((treasury, dividend))
 }
 
-/// Linear decay of `unlock_fee_bps` -> 0 over `unlock_penalty_period` since `locked_at`.
+/// Flat unlock penalty (EVM `previewUnlock`): `penalty = ceil(grai_amount * unlockPenaltyBps / BPS)`.
 ///
-/// Returns `(unlock_amount, penalty)` where `unlock_amount = grai_amount - penalty` (to the
-/// account) and `penalty` goes to `treasury`. While the live fee is non-zero, partial unlocks
-/// below `ceil(BPS / penalty_bps)` are rejected so dust chunks cannot floor the fee to zero;
-/// exiting the full remaining escrow is always allowed (EVM `previewUnlock`).
+/// Reverts if `grai_amount > escrow_amount`, or while fee > 0 if
+/// `grai_amount < ceil(BPS / unlockPenaltyBps)`. Penalty stays on GRAI as dead inventory.
 pub fn preview_unlock(
     grai_amount: u64,
     escrow_amount: u64,
-    locked_at: i64,
-    unlock_fee_bps: u16,
-    unlock_penalty_period: u32,
-    timestamp: i64,
+    unlock_penalty_bps: u16,
 ) -> Result<(u64, u64)> {
-    if unlock_fee_bps == 0 || unlock_penalty_period == 0 || grai_amount == 0 {
+    require!(grai_amount <= escrow_amount, ErrorCode::InvalidAmount);
+    if unlock_penalty_bps == 0 || grai_amount == 0 {
         return Ok((grai_amount, 0));
     }
-    let elapsed = if timestamp > locked_at {
-        (timestamp - locked_at) as u64
-    } else {
-        0
-    };
-    if elapsed >= unlock_penalty_period as u64 {
-        return Ok((grai_amount, 0));
-    }
-    let penalty_bps = (unlock_fee_bps as u128)
-        .checked_mul((unlock_penalty_period as u128) - (elapsed as u128))
-        .and_then(|v| v.checked_div(unlock_penalty_period as u128))
-        .ok_or(ErrorCode::MathOverflow)?;
 
-    if penalty_bps > 0 {
-        let min_unlock = ((BPS as u128) + penalty_bps - 1) / penalty_bps;
-        require!(
-            (grai_amount as u128) >= min_unlock || grai_amount >= escrow_amount,
-            ErrorCode::InvalidAmount
-        );
-    }
+    let min_unlock =
+        ((BPS as u128) + (unlock_penalty_bps as u128) - 1) / (unlock_penalty_bps as u128);
+    require!((grai_amount as u128) >= min_unlock, ErrorCode::InvalidAmount);
 
     let penalty = (grai_amount as u128)
-        .checked_mul(penalty_bps)
+        .checked_mul(unlock_penalty_bps as u128)
+        .and_then(|v| v.checked_add(BPS as u128 - 1))
         .and_then(|v| v.checked_div(BPS as u128))
         .ok_or(ErrorCode::MathOverflow)?;
     require!(penalty <= u64::MAX as u128, ErrorCode::MathOverflow);
@@ -234,20 +216,6 @@ pub fn settlement_amount(
     Ok(amount as u64)
 }
 
-/// Linear Dutch price: decays `max_payment` → `min_payment` over `duration`.
-pub fn dutch_price(max_payment: u64, min_payment: u64, elapsed: u64, duration: u64) -> u64 {
-    if duration == 0 || elapsed >= duration {
-        return min_payment;
-    }
-    if max_payment <= min_payment {
-        return min_payment;
-    }
-    let decay = ((max_payment - min_payment) as u128)
-        .saturating_mul(elapsed as u128)
-        / duration as u128;
-    max_payment.saturating_sub(decay as u64)
-}
-
 /// Book-value mint: `grai_out = total_value > 0 ? value * supply / total_value : value`.
 /// Returns 0 for dust instead of reverting (EVM `previewDeposit`).
 pub fn preview_deposit_soft(value: u128, total_supply: u64, total_value: u128) -> Result<u64> {
@@ -270,48 +238,7 @@ pub fn preview_deposit(value: u128, total_supply: u64, total_value: u128) -> Res
     Ok(grai_out)
 }
 
-/// Dutch fill preview. `amount == u64::MAX` means fill the entire remaining lot.
-#[allow(clippy::too_many_arguments)]
-pub fn preview_fill(
-    amount: u64,
-    remaining: u64,
-    initial: u64,
-    max_payment: u64,
-    min_payment: u64,
-    start_time: i64,
-    duration: u32,
-    timestamp: i64,
-) -> Result<(u64, u64)> {
-    require!(start_time != 0, ErrorCode::AuctionNotFound);
-
-    let fill_amount = if amount == u64::MAX {
-        remaining
-    } else {
-        amount.min(remaining)
-    };
-    if fill_amount == 0 {
-        return Ok((0, 0));
-    }
-
-    let elapsed = if timestamp > start_time {
-        (timestamp - start_time) as u64
-    } else {
-        0
-    };
-    let price = dutch_price(max_payment, min_payment, elapsed, duration as u64);
-    let payment = if initial == 0 {
-        0
-    } else {
-        ((price as u128)
-            .checked_mul(fill_amount as u128)
-            .and_then(|v| v.checked_div(initial as u128))
-            .ok_or(ErrorCode::MathOverflow)?) as u64
-    };
-
-    Ok((fill_amount, payment))
-}
-
-/// Dynamic bribe ask in `bribe_asset` units: `(bribe_amount, premium, discount)`.
+/// Dynamic bribe ask in `settlement_asset` units: `(bribe_amount, premium, discount)`.
 ///
 /// The ask scales linearly with vote share vs half quorum:
 /// `adj = bribe_premium_bps * |vote_bps − half_bps| / half_bps`.
@@ -386,10 +313,10 @@ pub fn preview_bribe(
     Ok((bribe_amount as u64, premium as u64, discount as u64))
 }
 
-/// Quorum: `total_voted * BPS >= supply * quorum_bps` (EVM `hasQuorum`; true when supply is 0).
+/// Quorum: `total_voted * BPS > supply * quorum_bps` (EVM `hasQuorum`; false when supply is 0).
 pub fn has_quorum(total_voted: u64, total_supply: u64, liquidation_quorum_bps: u16) -> bool {
     (total_voted as u128) * (BPS as u128)
-        >= (total_supply as u128) * (liquidation_quorum_bps as u128)
+        > (total_supply as u128) * (liquidation_quorum_bps as u128)
 }
 
 /// Pro-rata basket share for liquidation: `balance * grai_amount / supply`.

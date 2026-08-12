@@ -2,9 +2,51 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::associated_token::get_associated_token_address;
 
-use crate::auction::transfer_from_vault;
 use crate::tokenomics::DIVIDEND_PRECISION;
+use crate::vault::transfer_from_vault;
 use crate::{AssetConfig, ErrorCode, Position};
+
+/// Accrue a dividend cut of `asset` to unvoted lockers via the MasterChef index (EVM `_distribute`).
+///
+/// Returns the amount that must go to the treasury vault: the full cut when there is no eligible
+/// base / the index bump would be zero, or index dust (`amount - reserved`) otherwise.
+///
+/// `eligible` is `total_locked - total_voted`: voted GRAI earns no dividends.
+pub fn distribute_dividend(asset: &mut AssetConfig, amount: u64, eligible: u64) -> Result<u64> {
+    if amount == 0 {
+        return Ok(0);
+    }
+
+    let index_increase = if eligible > 0 {
+        (amount as u128)
+            .checked_mul(DIVIDEND_PRECISION)
+            .and_then(|v| v.checked_div(eligible as u128))
+            .ok_or(ErrorCode::MathOverflow)?
+    } else {
+        0
+    };
+
+    // No eligible locks, or cut too small to move the index → full cut to treasury.
+    if index_increase == 0 {
+        return Ok(amount);
+    }
+
+    asset.acc_share = asset
+        .acc_share
+        .checked_add(index_increase)
+        .ok_or(ErrorCode::MathOverflow)?;
+    let reserved = index_increase
+        .checked_mul(eligible as u128)
+        .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
+        .ok_or(ErrorCode::MathOverflow)?;
+    require!(reserved <= u64::MAX as u128, ErrorCode::MathOverflow);
+    let reserved = reserved as u64;
+    asset.total_claimable = asset
+        .total_claimable
+        .checked_add(reserved)
+        .ok_or(ErrorCode::MathOverflow)?;
+    Ok(amount.saturating_sub(reserved))
+}
 
 /// MasterChef checkpoint: settle a position from `old_unvoted` to `new_unvoted` GRAI.
 ///

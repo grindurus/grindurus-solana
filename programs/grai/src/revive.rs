@@ -2,23 +2,21 @@ use anchor_lang::prelude::*;
 use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{Mint, TokenAccount};
 
-use crate::auction::{redeemable_balance, transfer_from_vault};
-use crate::price_feed::fetch_price_from_feed;
-use crate::tokenomics::usd_value;
-use crate::{AssetConfig, ErrorCode, Resettle};
+use crate::vault::{redeemable_balance, transfer_from_vault};
+use crate::{ErrorCode, Revive};
 
 /// Close liquidation (permissionless after `liquidation_period + redeem_period`).
 ///
 /// Sweeps only redeemable inventory back to Grinders — the locker claim reserve
-/// (`asset_config.total_claimable`) stays on the vaults so post-resettle `claim` still pays. With
-/// leftover shares, sets `total_value = total_nav` when `total_nav >= total_value` (mint price does
-/// not fall); otherwise the book is left unchanged. If no shares remain, the book is cleared to
-/// zero. Per-asset `paused` flags are left untouched.
+/// (`asset_config.total_claimable`) stays on the vaults so post-revive `claim` still pays.
+/// Does **not** reprice `total_value` from leftover NAV — book stays at the post-redeem level
+/// (EVM `revive`). If no shares remain, `total_value = 0`. Per-asset `paused` flags are left
+/// untouched.
 ///
 /// Remaining accounts: quints `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per
-/// listed asset in registry order.
-pub fn execute_resettle<'info>(
-    ctx: Context<'_, '_, 'info, 'info, Resettle<'info>>,
+/// listed asset in registry order. `price_feed` is accepted for client symmetry but unused.
+pub fn execute_revive<'info>(
+    ctx: Context<'_, '_, 'info, 'info, Revive<'info>>,
 ) -> Result<()> {
     require!(
         ctx.accounts.grai_state.liquidation && ctx.accounts.grai_state.liquidation_at != 0,
@@ -51,30 +49,29 @@ pub fn execute_resettle<'info>(
     let grai_state_info = ctx.accounts.grai_state.to_account_info();
     let token_program_info = ctx.accounts.token_program.to_account_info();
 
-    let mut total_nav: u128 = 0;
     for (i, mint) in asset_mints.iter().enumerate() {
         let asset_info = &remaining[i * 5];
         let mint_info = &remaining[i * 5 + 1];
-        let price_feed_info = &remaining[i * 5 + 2];
+        let _price_feed_info = &remaining[i * 5 + 2];
         let vault_info = &remaining[i * 5 + 3];
         let grinders_ata_info = &remaining[i * 5 + 4];
 
         require_keys_eq!(mint_info.key(), *mint, ErrorCode::AssetUnknown);
-        // Sweep destination must be the Grinders ATA (resettle is permissionless).
+        // Sweep destination must be the Grinders ATA (revive is permissionless).
         require_keys_eq!(
             grinders_ata_info.key(),
             get_associated_token_address(&grinders, mint),
             ErrorCode::InvalidDestination
         );
-        let decimals = {
+        {
             let mint_acc: Account<'info, Mint> = Account::try_from(mint_info)?;
-            mint_acc.decimals
-        };
+            let _ = mint_acc.decimals;
+        }
 
-        let (expected_feed, reserved) = {
-            let asset: Account<'info, AssetConfig> = Account::try_from(asset_info)?;
+        let reserved = {
+            let asset: Account<'info, crate::AssetConfig> = Account::try_from(asset_info)?;
             require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
-            (asset.price_feed, asset.total_claimable)
+            asset.total_claimable
         };
 
         let bal = {
@@ -85,10 +82,6 @@ pub fn execute_resettle<'info>(
         let sweepable = redeemable_balance(bal, reserved);
 
         if sweepable > 0 {
-            let price = fetch_price_from_feed(price_feed_info, expected_feed, mint, &clock)?;
-            let value = usd_value(sweepable, decimals, &price)?;
-            total_nav = total_nav.checked_add(value).ok_or(ErrorCode::MathOverflow)?;
-
             transfer_from_vault(
                 &token_program_info,
                 vault_info,
@@ -101,12 +94,7 @@ pub fn execute_resettle<'info>(
     }
 
     let grai_state = &mut ctx.accounts.grai_state;
-    if supply > 0 {
-        // mint_price = total_value / supply; only re-mark when NAV does not lower it (EVM `resettle`).
-        if total_nav >= grai_state.total_value {
-            grai_state.total_value = total_nav;
-        }
-    } else {
+    if supply == 0 {
         // Avoid an orphan book with zero supply (would break the next deposit).
         grai_state.total_value = 0;
     }
@@ -114,6 +102,6 @@ pub fn execute_resettle<'info>(
     grai_state.liquidation_at = 0;
     grai_state.confirmed = false;
 
-    msg!("resettle total_nav={} supply={}", total_nav, supply);
+    msg!("revive supply={}", supply);
     Ok(())
 }

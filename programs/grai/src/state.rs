@@ -31,6 +31,28 @@ pub fn realloc_grai_state<'info>(
     Ok(())
 }
 
+/// Append `key` to `grai_state.referrers` once (EVM `_ensure` / enumerable mint order).
+pub fn register_referrer<'info>(
+    grai_state: &mut GraiState,
+    grai_state_info: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    key: Pubkey,
+) -> Result<()> {
+    if grai_state.referrers.iter().any(|k| *k == key) {
+        return Ok(());
+    }
+    let new_space = GraiState::space(
+        grai_state.asset_mints.len(),
+        grai_state.lockers.len(),
+        grai_state.voters.len(),
+        grai_state.referrers.len() + 1,
+    );
+    realloc_grai_state(grai_state_info, payer, system_program, new_space)?;
+    grai_state.referrers.push(key);
+    Ok(())
+}
+
 /// Swap-remove `key` from `list` (order not preserved). Removal is by pubkey (linear search), so
 /// the cached `*_id` indices on other escrows are advisory only.
 pub fn remove_from_list(list: &mut Vec<Pubkey>, key: Pubkey) {
@@ -110,6 +132,7 @@ pub fn perform_lock<'info>(
             grai_state.asset_mints.len(),
             grai_state.lockers.len() + 1,
             grai_state.voters.len(),
+            grai_state.referrers.len(),
         );
         realloc_grai_state(
             &grai_state.to_account_info(),
@@ -193,6 +216,7 @@ pub fn perform_vote<'info>(
             grai_state.asset_mints.len(),
             grai_state.lockers.len(),
             grai_state.voters.len() + 1,
+            grai_state.referrers.len(),
         );
         realloc_grai_state(
             &grai_state.to_account_info(),

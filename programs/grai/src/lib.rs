@@ -2,9 +2,7 @@
 
 mod arise;
 mod assets;
-mod auction;
 mod bribe;
-mod buyback;
 mod claim;
 mod config;
 mod deposit;
@@ -16,10 +14,12 @@ mod metadata;
 mod preview;
 mod price_feed;
 mod redeem;
-mod resettle;
+mod revive;
 mod state;
 mod tokenomics;
+mod treasury;
 mod unlock;
+mod vault;
 mod views;
 mod vote;
 
@@ -33,49 +33,47 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 
 declare_id!("CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z");
 
-/// Yield split, bribe premium, liquidation quorum, unlock fee, and timing.
+/// Yield split, bribe premium, liquidation quorum, unlock penalty, and timing.
 ///
-/// Mirrors the EVM `Config`. `buyback_cut_bps + dividend_cut_bps + treasury_cut_bps`
-/// MUST sum to `BPS` (10_000).
+/// Mirrors the EVM `Config`. `dividend_cut_bps + treasury_cut_bps` MUST sum to `BPS` (10_000).
+/// Yield cuts are immutable after `initialize`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Config {
-    /// Share of distributed yield / bribe cut pool listed for GRAI buyback, in bps.
-    pub buyback_cut_bps: u16,
     /// Share of distributed yield / bribe cut pool paid as dividends on unvoted locked GRAI, in bps.
     pub dividend_cut_bps: u16,
-    /// Share of distributed yield / bribe cut pool sent to `treasury`, in bps.
+    /// Share of distributed yield / bribe cut pool sent to the in-program treasury vault, in bps.
     pub treasury_cut_bps: u16,
-    /// Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 20%).
+    /// Affiliate slice of treasury income allocated on claim (`claimed * this / dividend_cut`).
+    /// EVM default `5_55` (~5.55% of yield → affiliates).
+    pub revenue_share_bps: u16,
+    /// Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 5%).
     pub claim_tip_bps: u16,
     /// Max |ask adjustment| for dynamic bribes, in bps of book value.
-    ///
-    /// Also the max buyback Dutch discount: `min_payment = max_payment * (BPS - this) / BPS`.
     pub bribe_premium_bps: u16,
     /// Voted / supply needed to open liquidation, in bps.
     pub quorum_bps: u16,
-    /// Max unlock fee in bps of unlocked GRAI at `locked_at` (linearly decays to 0).
-    pub unlock_fee_bps: u16,
-    /// Buyback Dutch duration from `max_payment` to `min_payment`.
-    pub buyback_period: u32,
+    /// Flat unlock fee in bps of unlocked GRAI (EVM `unlockPenaltyBps`).
+    pub unlock_penalty_bps: u16,
     /// Delay after liquidation opens before `redeem` is allowed.
     pub liquidation_period: u32,
-    /// Extra window after `liquidation_period` before liquidation can be closed via `resettle`.
+    /// Extra window after `liquidation_period` before liquidation can be closed via `revive`.
     pub redeem_period: u32,
-    /// Unlock penalty decay window from `locked_at` (`unlock_fee_bps` -> 0).
-    pub unlock_penalty_period: u32,
 }
 
 impl Config {
-    pub const LEN: usize = 2 * 7 + 4 * 4;
+    pub const LEN: usize = 2 * 7 + 4 * 2;
 }
 
 #[account]
 pub struct GraiState {
-    pub authority: Pubkey,
-    pub treasury: Pubkey,
+    /// Protocol admin (EVM `Ownable.owner`).
+    pub owner: Pubkey,
+    /// Protocol fee recipient for the non-affiliate slice of claim-time treasury income
+    /// (EVM `Treasury.beneficiar`).
+    pub beneficiar: Pubkey,
     pub grinders: Pubkey,
-    /// Asset used for bribe payments. `Pubkey::default()` means unset.
-    pub bribe_asset: Pubkey,
+    /// Asset used for bribe payments (EVM `settlementAsset`). `Pubkey::default()` means unset.
+    pub settlement_asset: Pubkey,
     pub total_value: u128,
     /// Total escrowed GRAI (`total_locked - total_voted` is the dividend base).
     pub total_locked: u64,
@@ -85,11 +83,19 @@ pub struct GraiState {
     pub confirmed: bool,
     pub liquidation_at: i64,
     pub config: Config,
+    /// Secondary-sale royalty in bps (EVM ERC-2981 `royaltyBps`); receiver = locker.
+    pub royalty_bps: u16,
+    /// Active affiliate referrer levels (`affiliate_share_bps[0..affiliate_levels]`).
+    pub affiliate_levels: u8,
+    /// Per-level split of claim-time revenue share (bps; active prefix sums to 10_000).
+    pub affiliate_share_bps: [u16; treasury::MAX_AFFILIATE_LEVELS],
     pub asset_mints: Vec<Pubkey>,
     /// Accounts with an open lock (`escrow.amount > 0`). EVM `lockers`.
     pub lockers: Vec<Pubkey>,
     /// Accounts with an open liquidation vote (`escrow.voted > 0`).
     pub voters: Vec<Pubkey>,
+    /// Treasury-bound lockers in mint order (EVM ERC-721 enumerable / `getReferralsData`).
+    pub referrers: Vec<Pubkey>,
     pub bump: u8,
 }
 
@@ -99,9 +105,28 @@ impl GraiState {
     pub const DECIMALS: u8 = 6;
 
     /// Fixed fields excluding vec payloads.
-    pub const FIXED_LEN: usize = 32 + 32 + 32 + 32 + 16 + 8 + 8 + 1 + 1 + 8 + Config::LEN + 1;
+    pub const FIXED_LEN: usize = 32
+        + 32
+        + 32
+        + 32
+        + 16
+        + 8
+        + 8
+        + 1
+        + 1
+        + 8
+        + Config::LEN
+        + 2
+        + 1
+        + 2 * treasury::MAX_AFFILIATE_LEVELS
+        + 1;
 
-    pub fn space(asset_count: usize, locker_count: usize, voter_count: usize) -> usize {
+    pub fn space(
+        asset_count: usize,
+        locker_count: usize,
+        voter_count: usize,
+        referrer_count: usize,
+    ) -> usize {
         8 + Self::FIXED_LEN
             + 4
             + asset_count * 32
@@ -109,6 +134,8 @@ impl GraiState {
             + locker_count * 32
             + 4
             + voter_count * 32
+            + 4
+            + referrer_count * 32
     }
 }
 
@@ -120,25 +147,15 @@ pub struct AssetConfig {
     pub id: u32,
     /// Dividend index per unvoted locked GRAI, scaled by 1e18 (EVM `TotalPosition.accShare`).
     pub acc_share: u128,
-    /// Vault inventory reserved for locker claims (excluded from redeem / resettle).
+    /// Vault inventory reserved for locker claims (excluded from redeem / revive).
     pub total_claimable: u64,
-    // Dutch auction (start_time == 0 means none); payment unit is GRAI.
-    // `remaining`/`initial` = sold asset qty; `max`/`min_payment` = full-lot GRAI ask
-    // (mint-price max → floor over `auction_duration`). Unit ask =
-    // `max_payment * 10^decimals / initial` (no stored listing USD — matches EVM DutchAuction).
-    pub auction_remaining: u64,
-    pub auction_initial: u64,
-    pub auction_max_payment: u64,
-    pub auction_min_payment: u64,
-    pub auction_start_time: i64,
-    pub auction_duration: u32,
     pub bump: u8,
 }
 
 impl AssetConfig {
     pub const SEED: &'static [u8] = b"asset";
     pub const VAULT_SEED: &'static [u8] = b"vault";
-    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1;
+    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 1;
 }
 
 /// Per-user lock + liquidation vote escrow (GRAI held by the GRAI vault while locked).
@@ -189,15 +206,40 @@ impl Position {
     pub const LEN: usize = 16 + 8 + 8 + 1;
 }
 
+/// Sticky referrer tree + Metaplex cashflow NFT for a locker (EVM Treasury three-layer slot).
+///
+/// - `referrer` = sticky tree link (`referrerOf`); moved only by first `mint` / `poach`.
+/// - `nft_mint` = Metaplex 1/1 cashflow NFT (`ownerOf`); OTC via ordinary NFT transfer.
+/// - `value` / `l1_value` / `l2_value` = deposit books keyed by locker identity.
+#[account]
+pub struct Referrer {
+    /// Sticky referrer locker (EVM `ReferralBook.referrer`); `Pubkey::default()` means unbound.
+    pub referrer: Pubkey,
+    /// Treasury cashflow NFT mint (`["treasury-nft", locker]`); default = not minted yet.
+    pub nft_mint: Pubkey,
+    /// This locker's cumulative deposited USD value.
+    pub value: u128,
+    /// Cumulative value directly referred by this wallet.
+    pub l1_value: u128,
+    /// Cumulative value referred through its direct affiliates.
+    pub l2_value: u128,
+    pub bump: u8,
+}
+
+impl Referrer {
+    pub const SEED: &'static [u8] = b"referrer";
+    pub const LEN: usize = 32 + 32 + 16 + 16 + 16 + 1;
+}
+
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub owner: Signer<'info>,
 
     #[account(
         init,
-        payer = authority,
-        space = GraiState::space(0, 0, 0),
+        payer = owner,
+        space = GraiState::space(0, 0, 0, 0),
         seeds = [GraiState::SEED],
         bump,
     )]
@@ -205,7 +247,7 @@ pub struct Initialize<'info> {
 
     #[account(
         init,
-        payer = authority,
+        payer = owner,
         mint::decimals = GraiState::DECIMALS,
         mint::authority = grai_state,
     )]
@@ -228,27 +270,126 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SetTreasury<'info> {
-    pub authority: Signer<'info>,
+pub struct SetBeneficiar<'info> {
+    pub owner: Signer<'info>,
 
     #[account(
         mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
+        has_one = owner @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
 }
 
 #[derive(Accounts)]
-pub struct SetGrinders<'info> {
-    pub authority: Signer<'info>,
+pub struct SetRoyaltyBps<'info> {
+    pub owner: Signer<'info>,
 
     #[account(
         mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
+        has_one = owner @ ErrorCode::Unauthorized,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+#[derive(Accounts)]
+pub struct SetRevenueShareBps<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+        has_one = owner @ ErrorCode::Unauthorized,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+/// Purchase a locker's referral slot at its accumulated book price.
+#[derive(Accounts)]
+pub struct Poach<'info> {
+    #[account(mut)]
+    pub poacher: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+    )]
+    pub grai_state: Box<Account<'info, GraiState>>,
+
+    /// CHECK: Locker whose referral slot is being purchased.
+    pub locker: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [Referrer::SEED, locker.key().as_ref()],
+        bump = locker_referrer.bump,
+    )]
+    pub locker_referrer: Account<'info, Referrer>,
+
+    /// CHECK: Poacher's Referrer PDA, created manually if absent.
+    #[account(mut)]
+    pub buyer_book: UncheckedAccount<'info>,
+
+    /// CHECK: Seller's Referrer PDA; pass System Program for self-owned slots.
+    #[account(mut)]
+    pub seller_book: UncheckedAccount<'info>,
+
+    /// CHECK: Previous seller referrer's Referrer PDA; pass System Program when unused.
+    #[account(mut)]
+    pub old_l2_book: UncheckedAccount<'info>,
+
+    /// CHECK: New buyer referrer's Referrer PDA; pass System Program when unused.
+    #[account(mut)]
+    pub new_l2_book: UncheckedAccount<'info>,
+
+    pub grai_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = poacher_grai_ata.mint == grai_mint.key() @ ErrorCode::InvalidDepositSource,
+        constraint = poacher_grai_ata.owner == poacher.key() @ ErrorCode::InvalidDepositSource,
+    )]
+    pub poacher_grai_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = seller_grai_ata.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
+    )]
+    pub seller_grai_ata: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct PreviewPoach<'info> {
+    /// CHECK: Wallet intending to buy the referral slot.
+    pub poacher: UncheckedAccount<'info>,
+
+    /// CHECK: Locker whose referral slot is being quoted.
+    pub locker: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [Referrer::SEED, locker.key().as_ref()],
+        bump = locker_referrer.bump,
+    )]
+    pub locker_referrer: Account<'info, Referrer>,
+}
+
+#[derive(Accounts)]
+pub struct SetGrinders<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+        has_one = owner @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
 
@@ -258,52 +399,51 @@ pub struct SetGrinders<'info> {
 
 #[derive(Accounts)]
 pub struct SetConfig<'info> {
-    pub authority: Signer<'info>,
+    pub owner: Signer<'info>,
 
     #[account(
         mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
+        has_one = owner @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
 }
 
-/// Set the bribe asset. Simple set with a feed check; auctions price in GRAI, so open lots / locks
-/// do not block the switch (no inventory auction on switch — matches EVM `setBribeAsset`).
+/// Set the settlement asset for bribes (EVM `setSettlementAsset`).
 #[derive(Accounts)]
-pub struct SetBribeAsset<'info> {
-    pub authority: Signer<'info>,
+pub struct SetSettlementAsset<'info> {
+    pub owner: Signer<'info>,
 
     #[account(
         mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
+        has_one = owner @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
 
-    pub bribe_mint: Account<'info, Mint>,
+    pub settlement_mint: Account<'info, Mint>,
 
     #[account(
-        seeds = [AssetConfig::SEED, bribe_mint.key().as_ref()],
-        bump = bribe_asset_config.bump,
-        constraint = bribe_asset_config.asset_mint == bribe_mint.key() @ ErrorCode::AssetUnknown,
+        seeds = [AssetConfig::SEED, settlement_mint.key().as_ref()],
+        bump = settlement_asset_config.bump,
+        constraint = settlement_asset_config.asset_mint == settlement_mint.key() @ ErrorCode::AssetUnknown,
     )]
-    pub bribe_asset_config: Account<'info, AssetConfig>,
+    pub settlement_asset_config: Account<'info, AssetConfig>,
 
-    /// CHECK: Price feed for the bribe asset (must be listed with a valid feed).
+    /// CHECK: Price feed for the settlement asset (must be listed with a valid feed).
     #[account(
-        constraint = bribe_price_feed.key() == bribe_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
-        constraint = price_feed::matches_asset_mint(&bribe_price_feed.to_account_info(), bribe_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+        constraint = settlement_price_feed.key() == settlement_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
+        constraint = price_feed::matches_asset_mint(&settlement_price_feed.to_account_info(), settlement_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
     )]
-    pub bribe_price_feed: UncheckedAccount<'info>,
+    pub settlement_price_feed: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
 pub struct SetPriceFeed<'info> {
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub owner: Signer<'info>,
 
     pub asset_mint: Account<'info, Mint>,
 
@@ -311,7 +451,7 @@ pub struct SetPriceFeed<'info> {
         mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
+        has_one = owner @ ErrorCode::Unauthorized,
     )]
     pub grai_state: Account<'info, GraiState>,
 
@@ -325,6 +465,14 @@ pub struct SetPriceFeed<'info> {
     #[account(mut)]
     pub vault_ata: UncheckedAccount<'info>,
 
+    /// CHECK: Per-mint in-program treasury vault. Created on list and closed only while empty.
+    #[account(
+        mut,
+        seeds = [treasury::TREASURY_VAULT_SEED, asset_mint.key().as_ref()],
+        bump,
+    )]
+    pub treasury_vault: UncheckedAccount<'info>,
+
     /// CHECK: Price feed for `asset_mint`, or System Program / default for delist (EVM `FEED_NONE`).
     pub price_feed: UncheckedAccount<'info>,
 
@@ -335,28 +483,6 @@ pub struct SetPriceFeed<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
-}
-
-#[derive(Accounts)]
-pub struct SetAssetConfig<'info> {
-    pub authority: Signer<'info>,
-
-    pub asset_mint: Account<'info, Mint>,
-
-    #[account(
-        seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-        has_one = authority @ ErrorCode::Unauthorized,
-    )]
-    pub grai_state: Account<'info, GraiState>,
-
-    #[account(
-        mut,
-        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
-        bump = asset_config.bump,
-        constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
-    )]
-    pub asset_config: Account<'info, AssetConfig>,
 }
 
 #[derive(Accounts)]
@@ -398,6 +524,53 @@ pub struct Deposit<'info> {
         constraint = grinders_state.key() == grai_state.grinders @ ErrorCode::InvalidGrinders,
     )]
     pub grinders_state: UncheckedAccount<'info>,
+
+    /// CHECK: ReferralBook PDA, manually initialized by `treasury::mint_referrer`.
+    #[account(
+        mut,
+        seeds = [Referrer::SEED, depositor.key().as_ref()],
+        bump,
+    )]
+    pub referrer: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex cashflow NFT mint PDA `["treasury-nft", depositor]` (created on first bind).
+    #[account(
+        mut,
+        seeds = [metadata::TREASURY_NFT_SEED, depositor.key().as_ref()],
+        bump,
+    )]
+    pub treasury_nft_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex metadata PDA for `treasury_nft_mint`.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            treasury_nft_mint.key().as_ref(),
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub treasury_nft_metadata: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex master edition PDA for `treasury_nft_mint`.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            treasury_nft_mint.key().as_ref(),
+            b"edition",
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub treasury_nft_edition: UncheckedAccount<'info>,
+
+    /// CHECK: Depositor ATA for the Treasury NFT (created on first bind).
+    #[account(mut)]
+    pub treasury_nft_ata: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -443,6 +616,7 @@ pub struct Deposit<'info> {
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_metadata_program: Program<'info, Metadata>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -490,6 +664,53 @@ pub struct DepositSol<'info> {
     )]
     pub grinders_state: UncheckedAccount<'info>,
 
+    /// CHECK: ReferralBook PDA, manually initialized by `treasury::mint_referrer`.
+    #[account(
+        mut,
+        seeds = [Referrer::SEED, depositor.key().as_ref()],
+        bump,
+    )]
+    pub referrer: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex cashflow NFT mint PDA `["treasury-nft", depositor]` (created on first bind).
+    #[account(
+        mut,
+        seeds = [metadata::TREASURY_NFT_SEED, depositor.key().as_ref()],
+        bump,
+    )]
+    pub treasury_nft_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex metadata PDA for `treasury_nft_mint`.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            treasury_nft_mint.key().as_ref(),
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub treasury_nft_metadata: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex master edition PDA for `treasury_nft_mint`.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            treasury_nft_mint.key().as_ref(),
+            b"edition",
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub treasury_nft_edition: UncheckedAccount<'info>,
+
+    /// CHECK: Depositor ATA for the Treasury NFT (created on first bind).
+    #[account(mut)]
+    pub treasury_nft_ata: UncheckedAccount<'info>,
+
     #[account(
         init_if_needed,
         payer = depositor,
@@ -535,6 +756,7 @@ pub struct DepositSol<'info> {
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
+    pub token_metadata_program: Program<'info, Metadata>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -591,12 +813,15 @@ pub struct Distribute<'info> {
     )]
     pub vault_ata: Box<Account<'info, TokenAccount>>,
 
+    /// In-program treasury inventory vault (EVM `Treasury` balance for this asset).
+    /// Created on `set_price_feed` list alongside the asset vault.
     #[account(
         mut,
-        constraint = treasury_ata.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = treasury_ata.owner == grai_state.treasury @ ErrorCode::InvalidDestination,
+        seeds = [treasury::TREASURY_VAULT_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = treasury_vault.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
     )]
-    pub treasury_ata: Box<Account<'info, TokenAccount>>,
+    pub treasury_vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         init_if_needed,
@@ -608,83 +833,6 @@ pub struct Distribute<'info> {
     pub position: Account<'info, Position>,
 
     pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
-}
-
-/// Auction fill: buyer pays the GRAI Dutch ask into the GRAI vault, receives the listed asset,
-/// and the paid GRAI is locked + voted on the buyer. Orphan vault GRAI is credited to the buyer
-/// then lock+voted with the ask (EVM `buyback`).
-///
-/// Remaining accounts: buyer pairs `[asset_config, position]` × N.
-#[derive(Accounts)]
-pub struct Buyback<'info> {
-    #[account(mut)]
-    pub buyer: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-    )]
-    pub grai_state: Box<Account<'info, GraiState>>,
-
-    #[account(
-        constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
-    )]
-    pub grai_mint: Box<Account<'info, Mint>>,
-
-    pub asset_mint: Box<Account<'info, Mint>>,
-
-    #[account(
-        mut,
-        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
-        bump = asset_config.bump,
-        constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
-    )]
-    pub asset_config: Box<Account<'info, AssetConfig>>,
-
-    #[account(
-        mut,
-        seeds = [AssetConfig::VAULT_SEED, asset_mint.key().as_ref()],
-        bump,
-        constraint = vault_ata.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
-    )]
-    pub vault_ata: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        seeds = [AssetConfig::VAULT_SEED, grai_mint.key().as_ref()],
-        bump,
-        constraint = grai_vault_ata.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
-    )]
-    pub grai_vault_ata: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut,
-        constraint = buyer_grai_ata.mint == grai_mint.key() @ ErrorCode::InvalidDepositSource,
-        constraint = buyer_grai_ata.owner == buyer.key() @ ErrorCode::InvalidDepositSource,
-    )]
-    pub buyer_grai_ata: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        init_if_needed,
-        payer = buyer,
-        associated_token::mint = asset_mint,
-        associated_token::authority = buyer,
-    )]
-    pub buyer_asset_ata: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        init_if_needed,
-        payer = buyer,
-        space = 8 + Escrow::LEN,
-        seeds = [Escrow::SEED, buyer.key().as_ref()],
-        bump,
-    )]
-    pub escrow: Box<Account<'info, Escrow>>,
-
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -813,6 +961,13 @@ pub struct Claim<'info> {
     )]
     pub asset_config: Box<Account<'info, AssetConfig>>,
 
+    /// CHECK: Oracle for `claimedValue` book credit (EVM `usdValue(asset, claimed)`).
+    #[account(
+        constraint = price_feed.key() == asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
+        constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
+    )]
+    pub price_feed: UncheckedAccount<'info>,
+
     #[account(
         init_if_needed,
         payer = payer,
@@ -831,6 +986,14 @@ pub struct Claim<'info> {
     pub vault_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
+        mut,
+        seeds = [treasury::TREASURY_VAULT_SEED, asset_mint.key().as_ref()],
+        bump,
+        constraint = treasury_vault.mint == asset_mint.key() @ ErrorCode::InvalidDestination,
+    )]
+    pub treasury_vault: Box<Account<'info, TokenAccount>>,
+
+    #[account(
         init_if_needed,
         payer = payer,
         associated_token::mint = asset_mint,
@@ -847,19 +1010,33 @@ pub struct Claim<'info> {
     )]
     pub tip_asset_ata: Box<Account<'info, TokenAccount>>,
 
+    /// CHECK: Beneficiar destination. Invalid or missing accounts soft-fail treasury payout.
+    #[account(mut)]
+    pub beneficiar_ata: UncheckedAccount<'info>,
+
+    /// CHECK: Locker ReferralBook — credited with `claimedValue` before treasury payouts.
+    #[account(
+        mut,
+        seeds = [Referrer::SEED, holder.key().as_ref()],
+        bump,
+    )]
+    pub holder_referrer: UncheckedAccount<'info>,
+
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
-/// EVM `claimAll(locker)`. Remaining: `[mint, asset_config, position, vault, holder_ata, tip_ata]` × N.
+/// EVM `claimAll(locker)`. Remaining: `[mint, asset_config, price_feed, position, vault,
+/// holder_ata, tip_ata, treasury_vault, beneficiar_ata, referrer_pda, affiliate_ata…]` × N.
 #[derive(Accounts)]
 pub struct ClaimAll<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
     )]
@@ -875,6 +1052,7 @@ pub struct ClaimAll<'info> {
     pub escrow: Box<Account<'info, Escrow>>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -956,23 +1134,23 @@ pub struct Bribe<'info> {
     pub escrow: Box<Account<'info, Escrow>>,
 
     #[account(
-        constraint = bribe_mint.key() == grai_state.bribe_asset @ ErrorCode::BribeAssetUnset,
+        constraint = settlement_mint.key() == grai_state.settlement_asset @ ErrorCode::SettlementAssetUnset,
     )]
-    pub bribe_mint: Box<Account<'info, Mint>>,
+    pub settlement_mint: Box<Account<'info, Mint>>,
 
     #[account(
         mut,
-        seeds = [AssetConfig::SEED, bribe_mint.key().as_ref()],
-        bump = bribe_asset_config.bump,
-        constraint = bribe_asset_config.asset_mint == bribe_mint.key() @ ErrorCode::AssetUnknown,
+        seeds = [AssetConfig::SEED, settlement_mint.key().as_ref()],
+        bump = settlement_asset_config.bump,
+        constraint = settlement_asset_config.asset_mint == settlement_mint.key() @ ErrorCode::AssetUnknown,
     )]
-    pub bribe_asset_config: Box<Account<'info, AssetConfig>>,
+    pub settlement_asset_config: Box<Account<'info, AssetConfig>>,
 
-    /// CHECK: Bribe asset price feed.
+    /// CHECK: Settlement asset price feed.
     #[account(
-        constraint = bribe_price_feed.key() == bribe_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
+        constraint = settlement_price_feed.key() == settlement_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
-    pub bribe_price_feed: UncheckedAccount<'info>,
+    pub settlement_price_feed: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -984,11 +1162,11 @@ pub struct Bribe<'info> {
 
     #[account(
         mut,
-        seeds = [AssetConfig::VAULT_SEED, bribe_mint.key().as_ref()],
+        seeds = [AssetConfig::VAULT_SEED, settlement_mint.key().as_ref()],
         bump,
-        constraint = bribe_vault_ata.mint == bribe_mint.key() @ ErrorCode::InvalidDestination,
+        constraint = settlement_vault_ata.mint == settlement_mint.key() @ ErrorCode::InvalidDestination,
     )]
-    pub bribe_vault_ata: Box<Account<'info, TokenAccount>>,
+    pub settlement_vault_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         init_if_needed,
@@ -1000,25 +1178,26 @@ pub struct Bribe<'info> {
 
     #[account(
         mut,
-        constraint = briber_bribe_ata.mint == bribe_mint.key() @ ErrorCode::InvalidDepositSource,
-        constraint = briber_bribe_ata.owner == briber.key() @ ErrorCode::InvalidDepositSource,
+        constraint = briber_settlement_ata.mint == settlement_mint.key() @ ErrorCode::InvalidDepositSource,
+        constraint = briber_settlement_ata.owner == briber.key() @ ErrorCode::InvalidDepositSource,
     )]
-    pub briber_bribe_ata: Box<Account<'info, TokenAccount>>,
+    pub briber_settlement_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         init_if_needed,
         payer = briber,
-        associated_token::mint = bribe_mint,
+        associated_token::mint = settlement_mint,
         associated_token::authority = voter,
     )]
-    pub voter_bribe_ata: Box<Account<'info, TokenAccount>>,
+    pub voter_settlement_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
-        constraint = treasury_bribe_ata.mint == bribe_mint.key() @ ErrorCode::InvalidDestination,
-        constraint = treasury_bribe_ata.owner == grai_state.treasury @ ErrorCode::InvalidDestination,
+        seeds = [treasury::TREASURY_VAULT_SEED, settlement_mint.key().as_ref()],
+        bump,
+        constraint = treasury_vault.mint == settlement_mint.key() @ ErrorCode::InvalidDestination,
     )]
-    pub treasury_bribe_ata: Box<Account<'info, TokenAccount>>,
+    pub treasury_vault: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -1049,22 +1228,22 @@ pub struct PreviewBribe<'info> {
     pub escrow: Box<Account<'info, Escrow>>,
 
     #[account(
-        constraint = bribe_mint.key() == grai_state.bribe_asset @ ErrorCode::BribeAssetUnset,
+        constraint = settlement_mint.key() == grai_state.settlement_asset @ ErrorCode::SettlementAssetUnset,
     )]
-    pub bribe_mint: Box<Account<'info, Mint>>,
+    pub settlement_mint: Box<Account<'info, Mint>>,
 
     #[account(
-        seeds = [AssetConfig::SEED, bribe_mint.key().as_ref()],
-        bump = bribe_asset_config.bump,
-        constraint = bribe_asset_config.asset_mint == bribe_mint.key() @ ErrorCode::AssetUnknown,
+        seeds = [AssetConfig::SEED, settlement_mint.key().as_ref()],
+        bump = settlement_asset_config.bump,
+        constraint = settlement_asset_config.asset_mint == settlement_mint.key() @ ErrorCode::AssetUnknown,
     )]
-    pub bribe_asset_config: Box<Account<'info, AssetConfig>>,
+    pub settlement_asset_config: Box<Account<'info, AssetConfig>>,
 
-    /// CHECK: Bribe asset price feed.
+    /// CHECK: Settlement asset price feed.
     #[account(
-        constraint = bribe_price_feed.key() == bribe_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
+        constraint = settlement_price_feed.key() == settlement_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
-    pub bribe_price_feed: UncheckedAccount<'info>,
+    pub settlement_price_feed: UncheckedAccount<'info>,
 }
 
 /// EVM `previewDeposit`.
@@ -1096,25 +1275,6 @@ pub struct PreviewDeposit<'info> {
         constraint = price_feed::matches_asset_mint(&price_feed.to_account_info(), asset_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
     )]
     pub price_feed: UncheckedAccount<'info>,
-}
-
-/// EVM `previewBuyback`.
-#[derive(Accounts)]
-pub struct PreviewBuyback<'info> {
-    #[account(
-        seeds = [GraiState::SEED],
-        bump = grai_state.bump,
-    )]
-    pub grai_state: Box<Account<'info, GraiState>>,
-
-    pub asset_mint: Box<Account<'info, Mint>>,
-
-    #[account(
-        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
-        bump = asset_config.bump,
-        constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
-    )]
-    pub asset_config: Box<Account<'info, AssetConfig>>,
 }
 
 /// EVM `previewUnlock`.
@@ -1224,9 +1384,10 @@ pub struct PreviewRedeem<'info> {
 /// Open liquidation (2-of-2 with vote quorum, EVM `liquidate`).
 /// Authority: toggle `confirmed` when no quorum; with quorum this call opens.
 /// Anyone else: open when `confirmed && hasQuorum()`.
-/// Remaining accounts: one `AssetConfig` per listed asset in registry order (required to open).
+/// On open, orphan vault GRAI (`grai_vault − total_locked`) is sent to `caller`.
 #[derive(Accounts)]
 pub struct LiquidateOpen<'info> {
+    #[account(mut)]
     pub caller: Signer<'info>,
 
     #[account(
@@ -1241,13 +1402,31 @@ pub struct LiquidateOpen<'info> {
     )]
     pub grai_mint: Account<'info, Mint>,
 
+    #[account(
+        mut,
+        seeds = [AssetConfig::VAULT_SEED, grai_mint.key().as_ref()],
+        bump,
+        constraint = grai_vault_ata.mint == grai_mint.key() @ ErrorCode::InvalidDestination,
+    )]
+    pub grai_vault_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = caller,
+        associated_token::mint = grai_mint,
+        associated_token::authority = caller,
+    )]
+    pub caller_grai_ata: Account<'info, TokenAccount>,
+
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 /// Close liquidation (permissionless). Remaining accounts: quints
 /// `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per listed asset in registry order.
 #[derive(Accounts)]
-pub struct Resettle<'info> {
+pub struct Revive<'info> {
     pub caller: Signer<'info>,
 
     #[account(
@@ -1342,6 +1521,15 @@ pub struct GetVoters<'info> {
 }
 
 #[derive(Accounts)]
+pub struct GetReferrals<'info> {
+    #[account(
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+#[derive(Accounts)]
 pub struct GetRedeemables<'info> {
     #[account(
         seeds = [GraiState::SEED],
@@ -1372,49 +1560,70 @@ pub mod grai {
         config::execute_initialize(ctx)
     }
 
-    pub fn set_treasury(ctx: Context<SetTreasury>, treasury: Pubkey) -> Result<()> {
-        config::execute_set_treasury(ctx, treasury)
+    pub fn set_beneficiar(ctx: Context<SetBeneficiar>, beneficiar: Pubkey) -> Result<()> {
+        treasury::execute_set_beneficiar(ctx, beneficiar)
+    }
+
+    pub fn set_royalty_bps(ctx: Context<SetRoyaltyBps>, royalty_bps: u16) -> Result<()> {
+        treasury::execute_set_royalty_bps(ctx, royalty_bps)
+    }
+
+    pub fn set_revenue_share_bps(
+        ctx: Context<SetRevenueShareBps>,
+        shares: Vec<u16>,
+    ) -> Result<()> {
+        treasury::execute_set_revenue_share_bps(ctx, shares)
+    }
+
+    /// Purchase `locker`'s affiliate slot for `value + l1_value` GRAI.
+    pub fn poach<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Poach<'info>>,
+    ) -> Result<()> {
+        treasury::execute_poach(ctx)
+    }
+
+    /// Quote the current referral-slot purchase price and seller.
+    pub fn preview_poach(ctx: Context<PreviewPoach>) -> Result<PoachQuote> {
+        treasury::execute_preview_poach(ctx)
     }
 
     pub fn set_grinders(ctx: Context<SetGrinders>, grinders: Pubkey) -> Result<()> {
         config::execute_set_grinders(ctx, grinders)
     }
 
-    pub fn set_bribe_asset(ctx: Context<SetBribeAsset>) -> Result<()> {
-        assets::execute_set_bribe_asset(ctx)
+    pub fn set_settlement_asset(ctx: Context<SetSettlementAsset>) -> Result<()> {
+        assets::execute_set_settlement_asset(ctx)
     }
 
-    pub fn set_protocol_config(ctx: Context<SetConfig>, cfg: Config) -> Result<()> {
-        config::execute_set_protocol_config(ctx, cfg)
+    pub fn set_config(ctx: Context<SetConfig>, cfg: Config) -> Result<()> {
+        config::execute_set_config(ctx, cfg)
     }
 
-    /// List, update, or delist an asset via its price feed (EVM `setFeed`).
-    /// Non-none feed lists (or updates `price_feed`); System Program / default delists
-    /// (`FEED_NONE` — requires pause + zero vault + no open auction).
+    /// EVM `setFeed` waterfall: list / pause-only / replace-while-paused / delist (`FEED_NONE`).
+    /// `paused` mirrors `Feed.paused`. Pass System Program as `price_feed` for delist (must be paused).
     pub fn set_price_feed<'info>(
         ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>,
+        paused: bool,
     ) -> Result<()> {
-        assets::execute_set_price_feed(ctx)
-    }
-
-    pub fn set_asset_config(ctx: Context<SetAssetConfig>, paused: bool) -> Result<()> {
-        assets::execute_set_asset_config(ctx, paused)
+        assets::execute_set_price_feed(ctx, paused)
     }
 
     pub fn deposit<'info>(
         ctx: Context<'_, '_, 'info, 'info, Deposit<'info>>,
         amount: u64,
         lock: bool,
+        referrer: Pubkey,
     ) -> Result<()> {
-        deposit::execute_deposit(ctx, amount, lock)
+        deposit::execute_deposit(ctx, amount, lock, referrer)
     }
 
     pub fn deposit_sol<'info>(
         ctx: Context<'_, '_, 'info, 'info, DepositSol<'info>>,
         amount: u64,
         lock: bool,
+        referrer: Pubkey,
     ) -> Result<()> {
-        deposit::execute_deposit_sol(ctx, amount, lock)
+        deposit::execute_deposit_sol(ctx, amount, lock, referrer)
     }
 
     pub fn distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result<()> {
@@ -1435,22 +1644,13 @@ pub mod grai {
         unlock::execute_unlock(ctx, grai_amount)
     }
 
-    /// Fill a Dutch lot: buyer pays the GRAI ask, receives the asset, and the paid GRAI is
-    /// Fill a Dutch lot: buyer pays GRAI, receives the asset; ask is locked + voted on the buyer.
-    /// Orphan vault GRAI is credited to the buyer then lock+voted with the ask (EVM `buyback`).
-    /// Remaining: `[asset_config, position]` × N for the buyer.
-    pub fn buyback<'info>(
-        ctx: Context<'_, '_, 'info, 'info, Buyback<'info>>,
-        amount: u64,
-        payment_max: u64,
-    ) -> Result<()> {
-        buyback::execute_buyback(ctx, amount, payment_max)
-    }
-    
     /// Claim yield dividends for one listed asset.
     /// `amount == u64::MAX` claims the full accrued balance; otherwise `min(amount, claimable)`.
     /// Tip (`claim_tip_bps`) is paid to `payer`; remainder to `holder`.
-    pub fn claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
+    pub fn claim<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Claim<'info>>,
+        amount: u64,
+    ) -> Result<()> {
         claim::execute_claim(ctx, amount)
     }
 
@@ -1481,10 +1681,10 @@ pub mod grai {
         redeem::execute_liquidate_open(ctx)
     }
 
-    pub fn resettle<'info>(
-        ctx: Context<'_, '_, 'info, 'info, Resettle<'info>>,
+    pub fn revive<'info>(
+        ctx: Context<'_, '_, 'info, 'info, Revive<'info>>,
     ) -> Result<()> {
-        resettle::execute_resettle(ctx)
+        revive::execute_revive(ctx)
     }
 
     pub fn redeem<'info>(
@@ -1494,11 +1694,10 @@ pub mod grai {
         redeem::execute_redeem(ctx, grai_amount)
     }
 
-    /// EVM `getAssets` — Dutch auction snapshot per listed asset.
-    /// Remaining: `asset_config` × N in registry order.
+    /// EVM `getAssets`.
     pub fn get_assets<'info>(
         ctx: Context<'_, '_, 'info, 'info, GetAssets<'info>>,
-    ) -> Result<Vec<DutchAuctionView>> {
+    ) -> Result<Vec<Pubkey>> {
         views::execute_get_assets(ctx)
     }
 
@@ -1520,6 +1719,15 @@ pub mod grai {
         views::execute_get_voters(ctx, from_id, to_id)
     }
 
+    /// EVM `getReferralsData(fromId, toId)`. Remaining: `Referrer` PDA per bound locker in mint order.
+    pub fn get_referrals<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetReferrals<'info>>,
+        from_id: u32,
+        to_id: u32,
+    ) -> Result<Vec<LockerDataView>> {
+        views::execute_get_referrals(ctx, from_id, to_id)
+    }
+
     /// EVM `getRedeemables` — redeemable basket while liquidation is open.
     /// Remaining: `[asset_config, vault_ata]` × N.
     pub fn get_redeemables<'info>(
@@ -1537,7 +1745,7 @@ pub mod grai {
     }
 
     /// Dynamic bribe ask for `grai_amount` of `voter`'s vote: `(bribe_amount, premium, discount)`
-    /// in `bribe_asset` units. Exactly one of `premium` / `discount` is non-zero.
+    /// in `settlement_asset` units. Exactly one of `premium` / `discount` is non-zero.
     pub fn preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Result<BribeQuote> {
         bribe::execute_preview_bribe(ctx, grai_amount)
     }
@@ -1545,15 +1753,6 @@ pub mod grai {
     /// EVM `previewDeposit` → `(value, grai_out)`.
     pub fn preview_deposit(ctx: Context<PreviewDeposit>, amount: u64) -> Result<DepositQuote> {
         preview::execute_preview_deposit(ctx, amount)
-    }
-
-    /// EVM `previewBuyback`. Pass `timestamp == 0` to use the cluster clock.
-    pub fn preview_buyback(
-        ctx: Context<PreviewBuyback>,
-        amount: u64,
-        timestamp: i64,
-    ) -> Result<BuybackQuote> {
-        preview::execute_preview_buyback(ctx, amount, timestamp)
     }
 
     /// EVM `previewUnlock`. Pass `timestamp == 0` to use the cluster clock.
@@ -1594,18 +1793,18 @@ pub struct BribeQuote {
     pub discount: u64,
 }
 
+/// Return shape of `preview_poach`.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct PoachQuote {
+    pub price: u64,
+    pub referrer: Pubkey,
+}
+
 /// Return shape of `preview_deposit`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
 pub struct DepositQuote {
     pub value: u128,
     pub grai_out: u64,
-}
-
-/// Return shape of `preview_buyback`.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
-pub struct BuybackQuote {
-    pub grai_in: u64,
-    pub amount_out: u64,
 }
 
 /// Return shape of `preview_unlock`.
@@ -1629,21 +1828,6 @@ pub struct RedeemQuote {
     pub amounts: Vec<u64>,
 }
 
-/// EVM `DutchAuction` view row (zeros when no open auction; `asset` always set).
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
-pub struct DutchAuctionView {
-    pub asset: Pubkey,
-    pub start_time: i64,
-    /// Snapshot of `config.buyback_period` at last `put_auction`.
-    pub period: u32,
-    pub remaining: u64,
-    pub initial: u64,
-    /// Full-lot Dutch start: GRAI ask at listing (mint price).
-    pub max_payment: u64,
-    /// Full-lot Dutch end: GRAI ask after `period` (floor at `BPS - bribe_premium_bps`).
-    pub min_payment: u64,
-}
-
 /// EVM `Escrow` view row for `getLockers` / `getVoters`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
 pub struct EscrowView {
@@ -1654,4 +1838,24 @@ pub struct EscrowView {
     pub locked_at: i64,
     pub voted_at: i64,
     pub voter_id: u32,
+}
+
+/// EVM `ITreasury.ReferralBook`.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
+pub struct ReferralBookView {
+    pub value: u128,
+    pub l1_value: u128,
+    pub l2_value: u128,
+    pub referrer: Pubkey,
+}
+
+/// EVM `ITreasury.ReferralData` (+ `nft_mint` for Metaplex cashflow NFT).
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
+pub struct LockerDataView {
+    pub locker: Pubkey,
+    pub referrer: Pubkey,
+    /// Current NFT holder when known; default if not passed / not minted.
+    pub owner_of: Pubkey,
+    pub nft_mint: Pubkey,
+    pub book: ReferralBookView,
 }

@@ -55,8 +55,6 @@ export const EXPLICIT_SWAP_CUSTODIAN_KIND = Buffer.from(
 export type MintedCustodian = {
   custodianId: number;
   custodianState: PublicKey;
-  custodianIndex: PublicKey;
-  custodianRecord: PublicKey;
   custodianMint: PublicKey;
   grinder: PublicKey;
 };
@@ -64,18 +62,6 @@ export type MintedCustodian = {
 export function grindersStatePda(programId = GRINDERS_PROGRAM_ID): PublicKey {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("grinders")],
-    programId,
-  )[0];
-}
-
-export function custodianRecordPda(
-  custodianId: number,
-  programId = GRINDERS_PROGRAM_ID,
-): PublicKey {
-  const id = Buffer.alloc(8);
-  id.writeBigUInt64LE(BigInt(custodianId));
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("custodian"), id],
     programId,
   )[0];
 }
@@ -93,30 +79,13 @@ export function custodianStatePda(
   )[0];
 }
 
-export function custodianIndexPda(
-  custodianWallet: PublicKey,
-  programId = GRINDERS_PROGRAM_ID,
-): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("custodian_index"), custodianWallet.toBuffer()],
-    programId,
-  )[0];
-}
-
-/** Grinders Allocation PDA: seeds = ["allocation", custodian_state, asset_mint]. */
+/** Grinders Allocation PDA — removed; issuance is event-only (EVM parity). */
 export function allocationPda(
-  custodianState: PublicKey,
-  assetMint: PublicKey,
-  programId = GRINDERS_PROGRAM_ID,
+  _custodianState: PublicKey,
+  _assetMint: PublicKey,
+  _programId = GRINDERS_PROGRAM_ID,
 ): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("allocation"),
-      custodianState.toBuffer(),
-      assetMint.toBuffer(),
-    ],
-    programId,
-  )[0];
+  throw new Error("allocation PDA removed; track Allocate/Deallocate off-chain");
 }
 
 function custodianMintPda(
@@ -206,17 +175,9 @@ export async function mintExplicitSwapCustodian(
   );
   const custodianId = grinders.nextCustodianId.toNumber();
 
-  const custodianRecord = custodianRecordPda(
-    custodianId,
-    grindersProgram.programId,
-  );
   const custodianState = custodianStatePda(
     grindersState,
     custodianId,
-    grindersProgram.programId,
-  );
-  const custodianIndex = custodianIndexPda(
-    custodianState,
     grindersProgram.programId,
   );
   const custodianMint = custodianMintPda(
@@ -258,12 +219,10 @@ export async function mintExplicitSwapCustodian(
       graiProgram: params.graiProgramId,
       baseMint: params.baseMint,
       quoteMint: params.quoteMint,
-      custodianRecord,
       custodianState,
       collectionMint,
       collectionMetadata: collectionMetadataPda(collectionMint),
       collectionMasterEdition: collectionMasterEditionPda(collectionMint),
-      custodianIndex,
       custodianMint,
       custodianNftAta,
       custodianMetadata,
@@ -283,8 +242,6 @@ export async function mintExplicitSwapCustodian(
   return {
     custodianId,
     custodianState,
-    custodianIndex,
-    custodianRecord,
     custodianMint,
     grinder: params.grinder,
   };

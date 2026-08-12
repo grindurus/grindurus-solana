@@ -1,17 +1,27 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_option::COption;
 
-use crate::auction::transfer_from_vault;
-use crate::dividend::settle;
-use crate::tokenomics::{bps_of, preview_claim};
+use crate::price_feed::fetch_asset_price;
+use crate::vault::transfer_from_vault;
+use crate::dividend::{self, settle};
+use crate::tokenomics::{bps_of, preview_claim, usd_value};
+use crate::treasury;
 use crate::{AssetConfig, Claim, ClaimAll, ErrorCode, Position};
 
 /// Claim yield dividends accrued to the unvoted part of `holder`'s lock for one asset.
 ///
 /// `amount == u64::MAX` claims the full accrued balance (EVM `type(uint256).max`); otherwise
 /// claims `min(amount, claimable)`. Tip (`claim_tip_bps`) goes to `payer`; remainder to `holder`.
-/// Allowed during liquidation: the claim reserve is carved out of the redeem basket.
-pub fn execute_claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
+/// Credits referral books with `usd_value(asset, claimed)` before treasury payouts (EVM
+/// `treasury.distribute` / `claimedValue`). Allowed during liquidation: the claim reserve is
+/// carved out of the redeem basket.
+///
+/// Remaining: triples `[referrer_pda, nft_ata, affiliate_ata]` × `affiliate_levels` for the
+/// locker walk (first PDA is the locker book; must be writable for book credit).
+pub fn execute_claim<'info>(
+    ctx: Context<'_, '_, 'info, 'info, Claim<'info>>,
+    amount: u64,
+) -> Result<()> {
     require!(
         ctx.accounts.asset_mint.mint_authority != COption::Some(ctx.accounts.grai_state.key()),
         ErrorCode::AssetUnknown
@@ -40,6 +50,15 @@ pub fn execute_claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
         return Ok(());
     }
 
+    let clock = Clock::get()?;
+    let price = fetch_asset_price(
+        &ctx.accounts.asset_config,
+        &ctx.accounts.asset_mint.key(),
+        &ctx.accounts.price_feed.to_account_info(),
+        &clock,
+    )?;
+    let claimed_value = usd_value(claimed, ctx.accounts.asset_mint.decimals, &price)?;
+
     pay_claim(
         claimed,
         tip_bps,
@@ -49,6 +68,27 @@ pub fn execute_claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
         &ctx.accounts.holder_asset_ata.to_account_info(),
         &ctx.accounts.tip_asset_ata.to_account_info(),
         &ctx.accounts.grai_state.to_account_info(),
+    )?;
+    let (gross_profit_share, revenue_share) = treasury::claim_treasury_shares(
+        claimed,
+        ctx.accounts.grai_state.config.treasury_cut_bps,
+        ctx.accounts.grai_state.config.dividend_cut_bps,
+        ctx.accounts.grai_state.config.revenue_share_bps,
+    )?;
+    treasury::distribute_claim_treasury(
+        &ctx.accounts.grai_state,
+        &ctx.accounts.holder.key(),
+        &ctx.accounts.holder_referrer.to_account_info(),
+        claimed_value,
+        gross_profit_share,
+        revenue_share,
+        bump,
+        &ctx.accounts.token_program.to_account_info(),
+        &ctx.accounts.treasury_vault.to_account_info(),
+        &ctx.accounts.beneficiar_ata.to_account_info(),
+        &ctx.accounts.grai_state.to_account_info(),
+        ctx.remaining_accounts,
+        ctx.program_id,
     )?;
 
     position.claimable = claimable
@@ -61,9 +101,10 @@ pub fn execute_claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
         .saturating_sub(claimed);
 
     msg!(
-        "claim asset={} claimed={} tip_bps={}",
+        "claim asset={} claimed={} claimed_value={} tip_bps={}",
         ctx.accounts.asset_mint.key(),
         claimed,
+        claimed_value,
         tip_bps
     );
     Ok(())
@@ -71,9 +112,10 @@ pub fn execute_claim(ctx: Context<Claim>, amount: u64) -> Result<()> {
 
 /// EVM `claimAll(locker)` — pays every listed-asset dividend for `holder`.
 ///
-/// Remaining accounts per listed mint in registry order (6×N):
-/// `[asset_mint, asset_config, position, vault_ata, holder_ata, tip_ata]`.
-/// Position accounts must already exist (created by prior lock/claim).
+/// Remaining accounts per listed mint in registry order (`(9 + 3 * affiliate_levels) × N`):
+/// `[asset_mint, asset_config, price_feed, position, vault_ata, holder_ata, tip_ata,
+/// treasury_vault, beneficiar_ata, referrer_pda, nft_ata, affiliate_ata, ...]`.
+/// Position accounts must exist or are created by the payer (EVM storage mappings).
 pub fn execute_claim_all<'info>(
     ctx: Context<'_, '_, 'info, 'info, ClaimAll<'info>>,
 ) -> Result<()> {
@@ -84,22 +126,31 @@ pub fn execute_claim_all<'info>(
     let holder = ctx.accounts.holder.key();
     let mints = ctx.accounts.grai_state.asset_mints.clone();
     let remaining = ctx.remaining_accounts;
+    let affiliate_levels = ctx.accounts.grai_state.affiliate_levels as usize;
+    let stride = 9 + affiliate_levels * 3;
     require!(
-        remaining.len() == mints.len() * 6,
+        remaining.len() == mints.len() * stride,
         ErrorCode::InvalidRemainingAccounts
     );
 
     let token_program = ctx.accounts.token_program.to_account_info();
     let grai_state_info = ctx.accounts.grai_state.to_account_info();
+    let payer = ctx.accounts.payer.to_account_info();
+    let system_program = ctx.accounts.system_program.to_account_info();
+    let clock = Clock::get()?;
 
     for (i, mint) in mints.iter().enumerate() {
-        let base = i * 6;
+        let base = i * stride;
         let mint_info = &remaining[base];
         let asset_info = &remaining[base + 1];
-        let position_info = &remaining[base + 2];
-        let vault_info = &remaining[base + 3];
-        let holder_ata_info = &remaining[base + 4];
-        let tip_ata_info = &remaining[base + 5];
+        let price_feed_info = &remaining[base + 2];
+        let position_info = &remaining[base + 3];
+        let vault_info = &remaining[base + 4];
+        let holder_ata_info = &remaining[base + 5];
+        let tip_ata_info = &remaining[base + 6];
+        let treasury_vault_info = &remaining[base + 7];
+        let beneficiar_ata_info = &remaining[base + 8];
+        let affiliate_remaining = &remaining[base + 9..base + stride];
 
         require_keys_eq!(mint_info.key(), *mint, ErrorCode::InvalidRemainingAccounts);
         let (asset_pda, _) =
@@ -116,33 +167,57 @@ pub fn execute_claim_all<'info>(
             position_pda,
             ErrorCode::InvalidRemainingAccounts
         );
-        if position_info.data_is_empty() || position_info.owner != &program_id {
-            continue;
-        }
 
-        let (acc, claimable, claimed) = {
+        let (decimals, claimed_value, claimable, claimed) = {
+            let mint_acc: Account<anchor_spl::token::Mint> = Account::try_from(mint_info)?;
+            let decimals = mint_acc.decimals;
+
             let asset_data = asset_info.try_borrow_data()?;
             let asset: AssetConfig = AccountDeserialize::try_deserialize(&mut &asset_data[..])
                 .map_err(|_| error!(ErrorCode::InvalidRemainingAccounts))?;
             require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
             let acc = asset.acc_share;
+            let expected_feed = asset.price_feed;
 
-            let mut pos_data = position_info.try_borrow_mut_data()?;
-            let mut position: Position = AccountDeserialize::try_deserialize(&mut &pos_data[..])
-                .map_err(|_| error!(ErrorCode::InvalidRemainingAccounts))?;
-            settle(acc, unvoted, unvoted, &mut position)?;
+            let (mut position, is_new) = dividend::load_or_init_position(
+                position_info,
+                &holder,
+                mint,
+                &payer,
+                &system_program,
+                &program_id,
+            )?;
+            if is_new {
+                settle(acc, 0, unvoted, &mut position)?;
+            } else {
+                settle(acc, unvoted, unvoted, &mut position)?;
+            }
             let claimable = position.claimable;
             let claimed = if claimable == 0 {
                 0
             } else {
                 preview_claim(u64::MAX, claimable)
             };
-            // Persist settle debt/claimable before CPI.
-            let mut out: &mut [u8] = &mut pos_data;
-            position.try_serialize(&mut out)?;
-            (acc, claimable, claimed)
+            {
+                let mut pos_data = position_info.try_borrow_mut_data()?;
+                let mut out: &mut [u8] = &mut pos_data;
+                position.try_serialize(&mut out)?;
+            }
+
+            let claimed_value = if claimed > 0 {
+                let price = crate::price_feed::fetch_price_from_feed(
+                    price_feed_info,
+                    expected_feed,
+                    mint,
+                    &clock,
+                )?;
+                usd_value(claimed, decimals, &price)?
+            } else {
+                0
+            };
+            (decimals, claimed_value, claimable, claimed)
         };
-        let _ = acc;
+        let _ = decimals;
         if claimed == 0 {
             continue;
         }
@@ -156,6 +231,43 @@ pub fn execute_claim_all<'info>(
             holder_ata_info,
             tip_ata_info,
             &grai_state_info,
+        )?;
+        let (gross_profit_share, revenue_share) = treasury::claim_treasury_shares(
+            claimed,
+            ctx.accounts.grai_state.config.treasury_cut_bps,
+            ctx.accounts.grai_state.config.dividend_cut_bps,
+            ctx.accounts.grai_state.config.revenue_share_bps,
+        )?;
+        let (treasury_pda, _) = Pubkey::find_program_address(
+            &[treasury::TREASURY_VAULT_SEED, mint.as_ref()],
+            &program_id,
+        );
+        require_keys_eq!(
+            treasury_vault_info.key(),
+            treasury_pda,
+            ErrorCode::InvalidRemainingAccounts
+        );
+
+        // First affiliate remaining entry is the locker referrer PDA (writable for book credit).
+        require!(
+            !affiliate_remaining.is_empty(),
+            ErrorCode::InvalidRemainingAccounts
+        );
+        let holder_referrer = &affiliate_remaining[0];
+        treasury::distribute_claim_treasury(
+            &ctx.accounts.grai_state,
+            &holder,
+            holder_referrer,
+            claimed_value,
+            gross_profit_share,
+            revenue_share,
+            bump,
+            &token_program,
+            treasury_vault_info,
+            beneficiar_ata_info,
+            &grai_state_info,
+            affiliate_remaining,
+            &program_id,
         )?;
 
         {
@@ -177,7 +289,12 @@ pub fn execute_claim_all<'info>(
             position.try_serialize(&mut pos_out)?;
         }
 
-        msg!("claim_all asset={} claimed={}", mint, claimed);
+        msg!(
+            "claim_all asset={} claimed={} claimed_value={}",
+            mint,
+            claimed,
+            claimed_value
+        );
     }
 
     Ok(())

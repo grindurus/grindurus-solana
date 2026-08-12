@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, TokenAccount};
 
-use crate::auction::{clear_auction, redeemable_balance, transfer_from_vault};
+use crate::arise::dead_grai;
+use crate::vault::{redeemable_balance, transfer_from_vault};
 use crate::dividend::settle_all_quads;
 use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
@@ -13,10 +14,8 @@ use crate::{AssetConfig, ErrorCode, LiquidateOpen, Redeem};
 /// - Authority + quorum → open (owner consent).
 /// - Anyone else → open only when `confirmed && hasQuorum()`.
 ///
-/// Cancels open yield auctions so inventory falls into the redeem basket and starts the claim
-/// clock. Per-asset `paused` flags are left unchanged.
-///
-/// Remaining accounts (when opening): one `AssetConfig` per listed asset in registry order.
+/// On open: scoop orphan/dead GRAI (`grai_vault − total_locked`) to the opener, then start the
+/// claim clock. Per-asset `paused` flags are left unchanged.
 pub fn execute_liquidate_open<'info>(
     ctx: Context<'_, '_, 'info, 'info, LiquidateOpen<'info>>,
 ) -> Result<()> {
@@ -28,9 +27,9 @@ pub fn execute_liquidate_open<'info>(
         supply,
         ctx.accounts.grai_state.config.quorum_bps,
     );
-    let is_authority = ctx.accounts.caller.key() == ctx.accounts.grai_state.authority;
+    let is_owner = ctx.accounts.caller.key() == ctx.accounts.grai_state.owner;
 
-    if is_authority {
+    if is_owner {
         if !quorum {
             ctx.accounts.grai_state.confirmed = !ctx.accounts.grai_state.confirmed;
             msg!(
@@ -48,22 +47,20 @@ pub fn execute_liquidate_open<'info>(
     }
 
     let clock = Clock::get()?;
-    let program_id = ctx.program_id;
-    let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
-    let remaining = ctx.remaining_accounts;
-    require!(
-        remaining.len() == asset_mints.len(),
-        ErrorCode::InvalidRemainingAccounts
+    let bump = ctx.accounts.grai_state.bump;
+    let dead = dead_grai(
+        ctx.accounts.grai_vault_ata.amount,
+        ctx.accounts.grai_state.total_locked,
     );
-
-    for (i, mint) in asset_mints.iter().enumerate() {
-        let asset_info = &remaining[i];
-        let mut asset: Account<'info, AssetConfig> = Account::try_from(asset_info)?;
-        require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
-        if asset.auction_start_time != 0 {
-            clear_auction(&mut asset);
-            asset.exit(program_id)?;
-        }
+    if dead > 0 {
+        transfer_from_vault(
+            &ctx.accounts.token_program.to_account_info(),
+            &ctx.accounts.grai_vault_ata.to_account_info(),
+            &ctx.accounts.caller_grai_ata.to_account_info(),
+            &ctx.accounts.grai_state.to_account_info(),
+            bump,
+            dead,
+        )?;
     }
 
     let grai_state = &mut ctx.accounts.grai_state;
@@ -71,9 +68,10 @@ pub fn execute_liquidate_open<'info>(
     grai_state.liquidation_at = clock.unix_timestamp;
 
     msg!(
-        "liquidate open total_voted={} supply={}",
+        "liquidate open total_voted={} supply={} dead={}",
         grai_state.total_voted,
-        supply
+        supply,
+        dead
     );
     Ok(())
 }
@@ -82,7 +80,8 @@ pub fn execute_liquidate_open<'info>(
 ///
 /// The dividend claim reserve is excluded from every vault balance, so redeemers cannot take
 /// inventory that lockers already earned. Remaining accounts: quads
-/// `[asset_config, position, vault_ata, holder_ata]` per listed asset in registry order.
+/// `[asset_config, position, vault_ata, holder_ata]` per listed asset, then optional L1/L2
+/// referral books for `treasury.burn`.
 pub fn execute_redeem<'info>(
     ctx: Context<'_, '_, 'info, 'info, Redeem<'info>>,
     grai_amount: u64,
@@ -121,7 +120,13 @@ pub fn execute_redeem<'info>(
 
     // Accrue listed-asset dividends against the post-burn dividend base (no payout here — the
     // holder claims separately, which is allowed during liquidation).
+    // Referral books from deposit/claim are sticky (EVM redeem does not burn them).
     let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
+    let remaining = ctx.remaining_accounts;
+    require!(
+        remaining.len() == asset_mints.len() * 4,
+        ErrorCode::InvalidRemainingAccounts
+    );
     {
         let voted_after = ctx.accounts.escrow.voted.min(new_locked);
         let old_unvoted = ctx.accounts.escrow.unvoted();
@@ -131,7 +136,7 @@ pub fn execute_redeem<'info>(
         let payer = ctx.accounts.holder.to_account_info();
         let system_program = ctx.accounts.system_program.to_account_info();
         settle_all_quads(
-            ctx.remaining_accounts,
+            remaining,
             &asset_mints,
             &holder_key,
             old_unvoted,
@@ -201,7 +206,6 @@ pub fn execute_redeem<'info>(
         .ok_or(ErrorCode::MathOverflow)?;
 
     // Pay the pro-rata basket out of redeemable (non-reserved) vault inventory.
-    let remaining = ctx.remaining_accounts;
     let grai_state_info = ctx.accounts.grai_state.to_account_info();
     let token_program_info = ctx.accounts.token_program.to_account_info();
 

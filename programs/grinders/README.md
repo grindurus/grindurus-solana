@@ -6,11 +6,10 @@ On-chain Grinders for Solana — mirrors [`Grinders.sol`](../../../grindurus-evm
 
 ## What it does
 
-- Owns the grinders state PDA (custodian NFT registry)
+- Maintains per-custodian wallet PDAs (`CustodianState` = custodian + registry)
 - Creates a Metaplex **collection parent** NFT (`"Grinders Custodians"`, symbol `GRINDERS`) — mirrors EVM `ERC721` contract metadata
-- Mints custodian NFTs into that collection (Metaplex metadata + GrinderArt on-chain URI) and inits custodian wallet PDAs (`SwapCustodian`-style custody)
+- Mints custodian NFTs into that collection (Metaplex metadata URI → `https://grindurus.xyz/solana/custodian/{id}`) and inits custodian wallet PDAs (`SwapCustodian`-style custodian wallet)
 - Per-kind swap logic under `src/custodians/` (shared custodian hooks in `src/custodian.rs`)
-- Maintains `custodian` / `custodian_index` registries
 - Lets the owner withdraw SOL (`withdraw`) or SPL tokens (`withdraw_token`) from the grinders PDA
 
 ## Custodian kinds
@@ -20,22 +19,24 @@ On-chain Grinders for Solana — mirrors [`Grinders.sol`](../../../grindurus-evm
 | `EXPLICIT_SWAP_CUSTODIAN_KIND` | `grindurus.custodian.explicit_swap` | `custodian_swap` | grinder (off-chain fee payer) |
 | `JUPITER_GASLESS_CUSTODIAN_KIND` | `grindurus.custodian.jupiter_gasless` | `custodian_jupiter_gasless_swap` | `fee_payer` signer ≠ grinder (stub) |
 
-Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote ATAs. Kind is stored in `CustodianRecord.custodian_kind`.
+Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote ATAs. Kind / NFT owner live on `CustodianState`.
 
 ## Instructions
 
 | Instruction | Who signs | Description |
 |-------------|-----------|-------------|
 | `initialize` | owner | Create grinders state PDA, Metaplex collection parent NFT, GRAI program id |
-| `mint` | owner | Init custodian wallet PDA + ATAs, mint NFT into collection, register custodian |
-| `allocate` | owner | Move reserve from grinders ATA to custodian custody ATA |
+| `set_grai` | owner | Retarget linked GRAI program (EVM `setGrai`) |
+| `mint` | owner | Init custodian wallet PDA, mint NFT into collection, register custodian |
+| `set_assets` | protocol owner | Retarget base/quote when custodian balances are zero (EVM `setAssets`) |
+| `allocate` | owner | Move reserve from grinders ATA to custodian (event-only; no on-chain ledger) |
 | `custodian_swap` | NFT owner | Swap kind only: router CPI + on-chain `limit_price` |
 | `custodian_jupiter_gasless_swap` | NFT owner + `fee_payer` | Jupiter gasless kind only (logic stub) |
-| `custodian_deallocate` | NFT owner | Return principal to GRAI senior vault |
-| `custodian_distribute` | NFT owner | Route yield via GRAI (`graiMint` + vault/treasury; no settlement accounts) |
+| `custodian_deallocate` | protocol owner | Return inventory to grinders (blocked while liquidation open) |
+| `custodian_distribute` | protocol owner | Route yield via GRAI `distribute` (blocked while liquidation open) |
 | `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while liquidation is open |
-| `liquidate_custodian` | anyone | Return custodian base/quote custody to GRAI vaults while liquidation is open |
-| `transfer_custodian_nft` | current NFT owner | Transfer NFT and sync `custodian_record.nft_owner` |
+| `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults (EVM liquidate hop) while liquidation open |
+| `transfer_custodian_nft` | current NFT owner | Transfer NFT and sync `custodian_state.nft_owner` |
 | `withdraw` | owner | Withdraw SOL from grinders PDA |
 | `withdraw_token` | owner | Withdraw SPL from grinders ATA |
 
@@ -45,10 +46,7 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 grinders           = ["grinders"]
 collection         = ["collection"]                    # Metaplex collection parent mint
 custodian_wallet   = ["custodian_wallet", grinders_pubkey, custodian_id (u64 LE)]
-custodian          = ["custodian", custodian_id (u64 LE)]
-custodian_index    = ["custodian_index", custodian_wallet_pubkey]
 custodian_mint     = ["custodian_mint", custodian_id (u64 LE)]
-allocation         = ["allocation", custodian_wallet_pubkey, asset_mint]
 ```
 
 ## Module layout
@@ -66,8 +64,8 @@ Add a new kind: constant in `state.rs`, whitelist in `is_known_custodian_kind`, 
 
 1. Deploy `grinders` and GRAI on the same cluster
 2. `initialize` with owner + GRAI program id (creates collection parent NFT held by grinders PDA)
-3. `grai.set_treasury(wallet)` — point yield skim to the protocol treasury wallet
-4. `grai.set_bribe_asset` — choose the bribe settlement mint (listed asset + feed)
+3. `grai.set_beneficiar(wallet)` — set the claim-time treasury payout recipient
+4. `grai.set_settlement_asset` — choose the bribe settlement mint (listed asset + feed)
 5. `mint(custodian_kind, grinder, base_mint, quote_mint)` — kind selects swap module; custodian wallet is a PDA
 
 ## Build

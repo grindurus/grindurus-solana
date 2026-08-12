@@ -1,13 +1,13 @@
 use anchor_lang::prelude::*;
 
-use crate::auction::transfer_from_vault;
+use crate::vault::transfer_from_vault;
 use crate::dividend::settle_all_quads;
 use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::preview_unlock;
 use crate::{ErrorCode, Unlock};
 
-/// Return `grai_amount` of the active lock to the wallet, minus the decaying unlock penalty.
-/// The penalty stays on the GRAI vault as orphan inventory for the next `buyback` scavenger
+/// Return `grai_amount` of the active lock to the wallet, minus the flat unlock penalty.
+/// The penalty stays on the GRAI vault as orphan/dead inventory, scooped to the liquidate opener
 /// (EVM `unlock` — not sent to treasury).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset in
@@ -23,8 +23,6 @@ pub fn execute_unlock<'info>(
         ErrorCode::InvalidAmount
     );
 
-    let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
     let bump = ctx.accounts.grai_state.bump;
     let account_key = ctx.accounts.account.key();
     let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
@@ -38,10 +36,7 @@ pub fn execute_unlock<'info>(
     let (unlock_amount, penalty) = preview_unlock(
         grai_amount,
         old_amount,
-        ctx.accounts.escrow.locked_at,
-        ctx.accounts.grai_state.config.unlock_fee_bps,
-        ctx.accounts.grai_state.config.unlock_penalty_period,
-        now,
+        ctx.accounts.grai_state.config.unlock_penalty_bps,
     )?;
 
     // Unlocking shrinks the dividend base only for the unvoted part; a vote clamp below may

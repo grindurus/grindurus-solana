@@ -4,6 +4,7 @@ use custom_price_feed::CustomPriceFeed;
 use pyth_sdk_solana::state::SolanaPriceAccount;
 
 use crate::ErrorCode;
+use crate::AssetConfig;
 
 pub const MAX_PRICE_STALENESS_SECS: i64 = 3_600; // 1 hour
 
@@ -269,4 +270,14 @@ pub fn fetch_chainlink_price_from_feed(
         updated_at: timestamp,
         updated_slot: round.slot,
     })
+}
+
+/// Read the configured oracle for `asset` (custom / Chainlink / Pyth).
+pub fn fetch_asset_price<'info>(
+    asset: &AssetConfig,
+    asset_mint: &Pubkey,
+    price_feed: &AccountInfo<'info>,
+    clock: &Clock,
+) -> Result<PriceData> {
+    fetch_price_from_feed(price_feed, asset.price_feed, asset_mint, clock)
 }

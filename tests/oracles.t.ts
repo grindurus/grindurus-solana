@@ -1,8 +1,9 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { createHash } from "crypto";
-import { AccountInfo, PublicKey } from "@solana/web3.js";
+import { AccountInfo, ComputeBudgetProgram, PublicKey } from "@solana/web3.js";
 import { Grai } from "../target/types/grai";
+import { ensureGrindersInitialized } from "./grinders_setup";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
@@ -195,6 +196,53 @@ function graiMetadataPda(mint: PublicKey): PublicKey {
   )[0];
 }
 
+function treasuryNftMintPda(locker: PublicKey, programId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("treasury-nft"), locker.toBuffer()],
+    programId,
+  );
+}
+
+function metaplexMetadataPda(mint: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+    ],
+    TOKEN_METADATA_PROGRAM_ID,
+  )[0];
+}
+
+function metaplexEditionPda(mint: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+      Buffer.from("edition"),
+    ],
+    TOKEN_METADATA_PROGRAM_ID,
+  )[0];
+}
+
+function treasuryNftDepositAccounts(locker: PublicKey, programId: PublicKey) {
+  const [treasuryNftMint] = treasuryNftMintPda(locker, programId);
+  return {
+    treasuryNftMint,
+    treasuryNftMetadata: metaplexMetadataPda(treasuryNftMint),
+    treasuryNftEdition: metaplexEditionPda(treasuryNftMint),
+    treasuryNftAta: getAssociatedTokenAddressSync(
+      treasuryNftMint,
+      locker,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    ),
+    tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+  };
+}
+
 function assetConfigPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("asset"), mint.toBuffer()],
@@ -205,6 +253,20 @@ function assetConfigPda(mint: PublicKey, programId: PublicKey) {
 function vaultAtaPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("vault"), mint.toBuffer()],
+    programId,
+  );
+}
+
+function treasuryVaultPda(mint: PublicKey, programId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("treasury"), mint.toBuffer()],
+    programId,
+  );
+}
+
+function referrerPda(locker: PublicKey, programId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("referrer"), locker.toBuffer()],
     programId,
   );
 }
@@ -306,10 +368,15 @@ describe("external oracles", () => {
 
   const [solAssetConfig] = assetConfigPda(NATIVE_MINT, program.programId);
   const [solVaultAta] = vaultAtaPda(NATIVE_MINT, program.programId);
+  const [solTreasuryVault] = treasuryVaultPda(NATIVE_MINT, program.programId);
 
   const usdcDecimals = 6;
   const [usdcAssetConfig] = assetConfigPda(usdcMint.publicKey, program.programId);
   const [usdcVaultAta] = vaultAtaPda(usdcMint.publicKey, program.programId);
+  const [usdcTreasuryVault] = treasuryVaultPda(
+    usdcMint.publicKey,
+    program.programId,
+  );
 
   function grindersAta(mint: PublicKey): PublicKey {
     return getAssociatedTokenAddressSync(
@@ -330,8 +397,7 @@ describe("external oracles", () => {
     const metadata = graiMetadataPda(graiMint.publicKey);
     await program.methods
       .initialize()
-      .accountsPartial({
-        authority,
+      .accountsPartial({ owner: authority,
         graiState,
         graiMint: graiMint.publicKey,
         metadata,
@@ -343,9 +409,16 @@ describe("external oracles", () => {
       .signers([graiMint])
       .rpc();
 
+    const grindersProgram = anchor.workspace.Grinders as Program<any>;
+    await ensureGrindersInitialized(
+      grindersProgram,
+      authority,
+      program.programId,
+    );
+
     await program.methods
       .setGrinders(grindersState)
-      .accountsPartial({ authority, graiState })
+      .accountsPartial({ owner: authority, graiState, grindersState })
       .rpc();
   }
 
@@ -372,18 +445,19 @@ describe("external oracles", () => {
     );
 
     const graiBeforeInit = await program.account.graiState.fetch(graiState);
-    expect(graiBeforeInit.authority.toBase58()).to.equal(authority.toBase58());
+    expect(graiBeforeInit.owner.toBase58()).to.equal(authority.toBase58());
 
     const solConfigInfo = await connection.getAccountInfo(solAssetConfig);
     if (!solConfigInfo) {
       await program.methods
-        .setPriceFeed()
+        .setPriceFeed(false)
         .accountsPartial({
-          authority,
+          owner: authority,
           assetMint: NATIVE_MINT,
           graiState,
           assetConfig: solAssetConfig,
           vaultAta: solVaultAta,
+          treasuryVault: solTreasuryVault,
           priceFeed: CHAINLINK_SOL_USD_DEVNET,
           movedAssetConfig: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
@@ -411,7 +485,7 @@ describe("external oracles", () => {
     const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
 
     await program.methods
-      .depositSol(new anchor.BN(depositLamports), false)
+      .depositSol(new anchor.BN(depositLamports), false, PublicKey.default)
       .accountsPartial({
         depositor: authority,
         graiState,
@@ -420,6 +494,8 @@ describe("external oracles", () => {
         assetConfig: solAssetConfig,
         priceFeed: CHAINLINK_SOL_USD_DEVNET,
         grindersState,
+        referrer: referrerPda(authority, program.programId)[0],
+        ...treasuryNftDepositAccounts(authority, program.programId),
         depositorWsolAta,
         grindersAta: grindersAta(NATIVE_MINT),
         depositorGraiAta,
@@ -430,6 +506,9 @@ describe("external oracles", () => {
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
       })
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+      ])
       .rpc();
 
     const graiAfter = BigInt(
@@ -469,13 +548,14 @@ describe("external oracles", () => {
     const usdcConfigInfo = await connection.getAccountInfo(usdcAssetConfig);
     if (!usdcConfigInfo) {
       await program.methods
-        .setPriceFeed()
+        .setPriceFeed(false)
         .accountsPartial({
-          authority,
+          owner: authority,
           assetMint: usdcMint.publicKey,
           graiState,
           assetConfig: usdcAssetConfig,
           vaultAta: usdcVaultAta,
+          treasuryVault: usdcTreasuryVault,
           priceFeed: PYTH_USDC_USD_PUSH,
           movedAssetConfig: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
@@ -547,7 +627,7 @@ describe("external oracles", () => {
     const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
 
     await program.methods
-      .deposit(new anchor.BN(depositAmount), false)
+      .deposit(new anchor.BN(depositAmount), false, PublicKey.default)
       .accountsPartial({
         depositor: authority,
         graiState,
@@ -556,6 +636,8 @@ describe("external oracles", () => {
         assetConfig: usdcAssetConfig,
         priceFeed: PYTH_USDC_USD_PUSH,
         grindersState,
+        referrer: referrerPda(authority, program.programId)[0],
+        ...treasuryNftDepositAccounts(authority, program.programId),
         depositorAta: depositorUsdcAta,
         grindersAta: grindersAta(usdcMint.publicKey),
         depositorGraiAta,
@@ -566,6 +648,9 @@ describe("external oracles", () => {
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
       })
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+      ])
       .rpc();
 
     const graiAfter = BigInt(

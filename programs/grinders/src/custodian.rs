@@ -12,7 +12,7 @@ use crate::state::{CustodianState, GrindersState};
 const GRAI_DISTRIBUTE_DISCRIMINATOR: [u8; 8] = [191, 44, 223, 207, 164, 236, 126, 61];
 
 /// Offset of `liquidation: bool` in `GraiState` after 8-byte Anchor discriminator.
-/// Layout: authority(32) treasury(32) grinders(32) bribe(32) total_value(16)
+/// Layout: authority(32) beneficiar(32) grinders(32) settlement(32) total_value(16)
 ///         total_locked(8) total_voted(8) liquidation(1) …
 const GRAI_STATE_LIQUIDATION_OFFSET: usize = 8 + 32 + 32 + 32 + 32 + 16 + 8 + 8;
 
@@ -197,7 +197,7 @@ pub fn execute_custodian_distribute<'info>(
             AccountMeta::new_readonly(grai_mint.key(), false),
             AccountMeta::new(custodian_ata.key(), false),
             AccountMeta::new(vault_ata.key(), false),
-            AccountMeta::new(treasury_ata.key(), false),
+            AccountMeta::new(treasury_ata.key(), false), // grai treasury_vault PDA
             AccountMeta::new(position.key(), false),
             AccountMeta::new_readonly(token_program.key(), false),
             AccountMeta::new_readonly(system_program.key(), false),

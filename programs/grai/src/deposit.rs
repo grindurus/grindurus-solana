@@ -1,16 +1,18 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, MintTo};
 
-use crate::auction::{fetch_asset_price, transfer_from_signer};
+use crate::price_feed::fetch_asset_price;
+use crate::vault::transfer_from_signer;
 use crate::price_feed::fetch_price_from_feed;
 use crate::state::perform_lock;
 use crate::tokenomics::{preview_deposit, usd_value};
-use crate::{Deposit, DepositSol, ErrorCode};
+use crate::{treasury, Deposit, DepositSol, ErrorCode};
 
 pub fn execute_deposit<'info>(
     ctx: Context<'_, '_, 'info, 'info, Deposit<'info>>,
     amount: u64,
     lock: bool,
+    referrer: Pubkey,
 ) -> Result<()> {
     require!(amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
@@ -54,6 +56,49 @@ pub fn execute_deposit<'info>(
         grai_out,
     )?;
 
+    // When locking, dividend settlement pairs come first; referral L1/L2 books follow them.
+    let lock_account_count = if lock {
+        ctx.accounts.grai_state.asset_mints.len() * 2
+    } else {
+        0
+    };
+    require!(
+        ctx.remaining_accounts.len() >= lock_account_count,
+        ErrorCode::InvalidRemainingAccounts
+    );
+    let grai_state_info = ctx.accounts.grai_state.to_account_info();
+    let grai_state_key = ctx.accounts.grai_state.key();
+    let affiliate_levels = ctx.accounts.grai_state.affiliate_levels;
+    let depositor_ai = ctx.accounts.depositor.to_account_info();
+    let nft = treasury::TreasuryNftAccounts {
+        mint: ctx.accounts.treasury_nft_mint.to_account_info(),
+        metadata: ctx.accounts.treasury_nft_metadata.to_account_info(),
+        master_edition: ctx.accounts.treasury_nft_edition.to_account_info(),
+        nft_ata: ctx.accounts.treasury_nft_ata.to_account_info(),
+        token_program: ctx.accounts.token_program.to_account_info(),
+        associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
+        token_metadata_program: ctx.accounts.token_metadata_program.to_account_info(),
+        rent: ctx.accounts.rent.to_account_info(),
+        mint_bump: ctx.bumps.treasury_nft_mint,
+    };
+    treasury::mint_referrer(
+        ctx.accounts.grai_state.as_mut(),
+        &grai_state_info,
+        &ctx.accounts.referrer.to_account_info(),
+        &ctx.accounts.depositor.key(),
+        &depositor_ai,
+        referrer,
+        value,
+        affiliate_levels,
+        &grai_state_key,
+        &depositor_ai,
+        &ctx.accounts.system_program.to_account_info(),
+        ctx.program_id,
+        ctx.bumps.referrer,
+        &ctx.remaining_accounts[lock_account_count..],
+        &nft,
+    )?;
+
     ctx.accounts.grai_state.total_value = ctx
         .accounts
         .grai_state
@@ -79,7 +124,7 @@ pub fn execute_deposit<'info>(
             &owner,
             &token_program,
             &system_program,
-            ctx.remaining_accounts,
+            &ctx.remaining_accounts[..lock_account_count],
             program_id,
             clock.unix_timestamp,
         )?;
@@ -99,6 +144,7 @@ pub fn execute_deposit_sol<'info>(
     ctx: Context<'_, '_, 'info, 'info, DepositSol<'info>>,
     amount: u64,
     lock: bool,
+    referrer: Pubkey,
 ) -> Result<()> {
     require!(amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
@@ -158,6 +204,49 @@ pub fn execute_deposit_sol<'info>(
         grai_out,
     )?;
 
+    // When locking, dividend settlement pairs come first; referral L1/L2 books follow them.
+    let lock_account_count = if lock {
+        ctx.accounts.grai_state.asset_mints.len() * 2
+    } else {
+        0
+    };
+    require!(
+        ctx.remaining_accounts.len() >= lock_account_count,
+        ErrorCode::InvalidRemainingAccounts
+    );
+    let grai_state_info = ctx.accounts.grai_state.to_account_info();
+    let grai_state_key = ctx.accounts.grai_state.key();
+    let affiliate_levels = ctx.accounts.grai_state.affiliate_levels;
+    let depositor_ai = ctx.accounts.depositor.to_account_info();
+    let nft = treasury::TreasuryNftAccounts {
+        mint: ctx.accounts.treasury_nft_mint.to_account_info(),
+        metadata: ctx.accounts.treasury_nft_metadata.to_account_info(),
+        master_edition: ctx.accounts.treasury_nft_edition.to_account_info(),
+        nft_ata: ctx.accounts.treasury_nft_ata.to_account_info(),
+        token_program: ctx.accounts.token_program.to_account_info(),
+        associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
+        token_metadata_program: ctx.accounts.token_metadata_program.to_account_info(),
+        rent: ctx.accounts.rent.to_account_info(),
+        mint_bump: ctx.bumps.treasury_nft_mint,
+    };
+    treasury::mint_referrer(
+        ctx.accounts.grai_state.as_mut(),
+        &grai_state_info,
+        &ctx.accounts.referrer.to_account_info(),
+        &ctx.accounts.depositor.key(),
+        &depositor_ai,
+        referrer,
+        value,
+        affiliate_levels,
+        &grai_state_key,
+        &depositor_ai,
+        &ctx.accounts.system_program.to_account_info(),
+        ctx.program_id,
+        ctx.bumps.referrer,
+        &ctx.remaining_accounts[lock_account_count..],
+        &nft,
+    )?;
+
     ctx.accounts.grai_state.total_value = ctx
         .accounts
         .grai_state
@@ -183,7 +272,7 @@ pub fn execute_deposit_sol<'info>(
             &owner,
             &token_program,
             &system_program,
-            ctx.remaining_accounts,
+            &ctx.remaining_accounts[..lock_account_count],
             program_id,
             clock.unix_timestamp,
         )?;

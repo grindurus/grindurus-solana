@@ -1,13 +1,14 @@
 use anchor_lang::prelude::*;
 
-use crate::auction::{distribute_dividend, put_auction, transfer_from_signer, transfer_from_vault};
+use crate::dividend::distribute_dividend;
 use crate::tokenomics::split_cuts;
+use crate::vault::{transfer_from_signer, transfer_from_vault};
 use crate::{Distribute, ErrorCode};
 
 /// Pull custodian yield into the asset vault and split it per the configured cuts.
 ///
-/// The dividend cut only reaches unvoted locked GRAI (`total_locked - total_voted`); with no
-/// eligible base it merges into the Dutch lot instead.
+/// Dividend cut accrues to unvoted locked GRAI (`total_locked - total_voted`); index dust and
+/// cuts with no eligible base go to the in-program treasury vault (EVM `_distribute`).
 pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result<()> {
     require!(yield_amount > 0, ErrorCode::AmountZero);
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
@@ -25,52 +26,32 @@ pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result
         yield_amount,
     )?;
 
-    let (treasury_cut, dividend_cut, buyback_cut) =
+    let (treasury_cut, dividend_cut) =
         split_cuts(yield_amount, &ctx.accounts.grai_state.config)?;
 
-    let clock = Clock::get()?;
-    let supply = ctx.accounts.grai_mint.supply;
     let eligible = ctx
         .accounts
         .grai_state
         .total_locked
         .saturating_sub(ctx.accounts.grai_state.total_voted);
-    let decimals = ctx.accounts.asset_mint.decimals;
-    let price_feed = ctx.accounts.price_feed.to_account_info();
 
-    if dividend_cut > 0 {
-        distribute_dividend(
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.asset_config,
-            dividend_cut,
-            decimals,
-            &price_feed,
-            eligible,
-            supply,
-            &clock,
-        )?;
-    }
+    let dust = if dividend_cut > 0 {
+        distribute_dividend(&mut ctx.accounts.asset_config, dividend_cut, eligible)?
+    } else {
+        0
+    };
 
-    if buyback_cut > 0 {
-        put_auction(
-            &ctx.accounts.grai_state,
-            &mut ctx.accounts.asset_config,
-            buyback_cut,
-            decimals,
-            &price_feed,
-            supply,
-            &clock,
-        )?;
-    }
-
-    if treasury_cut > 0 {
+    let to_treasury = treasury_cut
+        .checked_add(dust)
+        .ok_or(ErrorCode::MathOverflow)?;
+    if to_treasury > 0 {
         transfer_from_vault(
             &ctx.accounts.token_program.to_account_info(),
             &ctx.accounts.vault_ata.to_account_info(),
-            &ctx.accounts.treasury_ata.to_account_info(),
+            &ctx.accounts.treasury_vault.to_account_info(),
             &ctx.accounts.grai_state.to_account_info(),
             ctx.accounts.grai_state.bump,
-            treasury_cut,
+            to_treasury,
         )?;
     }
 
@@ -82,11 +63,11 @@ pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result
     position.bump = ctx.bumps.position;
 
     msg!(
-        "distribute yield={} treasury={} dividend={} buyback={}",
+        "distribute yield={} treasury={} dividend={} dust={}",
         yield_amount,
         treasury_cut,
         dividend_cut,
-        buyback_cut
+        dust
     );
     Ok(())
 }

@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Only the configured authority can perform this action")]
+    #[msg("Only the configured owner can perform this action")]
     Unauthorized,
     #[msg("Amount must be greater than zero")]
     AmountZero,
@@ -12,8 +12,6 @@ pub enum ErrorCode {
     MathOverflow,
     #[msg("BPS value exceeds 10_000")]
     BpsTooHigh,
-    #[msg("Auction duration must be at least 7 days")]
-    BuybackPeriodTooShort,
     #[msg("Liquidation and redeem periods must be non-zero")]
     PeriodZero,
     #[msg("GRAI mint authority does not match program config")]
@@ -26,8 +24,14 @@ pub enum ErrorCode {
     InvalidGrinders,
     #[msg("Grinders.grai_program does not match this GRAI program")]
     GrindersGraiMismatch,
-    #[msg("Treasury must be a valid pubkey")]
-    InvalidTreasury,
+    #[msg("Address must be non-default")]
+    ZeroAddress,
+    #[msg("Referral slot is already bound to this affiliate")]
+    AlreadyBound,
+    #[msg("Referral rebind would create a cycle")]
+    ReferralLoop,
+    #[msg("Affiliate share weights invalid (empty or sum != 10_000)")]
+    InvalidShares,
     #[msg("Asset is unknown / not listed")]
     AssetUnknown,
     #[msg("Asset is already registered")]
@@ -44,8 +48,6 @@ pub enum ErrorCode {
     SettlementAssetUnset,
     #[msg("Yield cuts must sum to 10_000")]
     InvalidCuts,
-    #[msg("Cannot change asset while auctions are open")]
-    AuctionsOpen,
     #[msg("Cannot change asset while votes are open")]
     VotesOpen,
     #[msg("Liquidation is open")]
@@ -58,10 +60,6 @@ pub enum ErrorCode {
     LiquidationDelay,
     #[msg("Redeem period is still active")]
     RedeemPeriodActive,
-    #[msg("Auction not found for asset")]
-    AuctionNotFound,
-    #[msg("Payment exceeds paymentMax slippage")]
-    Slippage,
     #[msg("Failed to read Chainlink feed account")]
     ChainlinkReadError,
     #[msg("Chainlink feed has no latest round data")]
@@ -87,13 +85,17 @@ pub enum ErrorCode {
     #[msg("Insufficient GRAI balance")]
     InsufficientGraiBalance,
     #[msg("Leftover NAV would dilute remaining shares")]
-    InsolventResettle,
+    InsolventRevive,
     #[msg("Deposit book is zero while shares remain")]
     InsolventBook,
-    #[msg("Liquidation has not been confirmed by the authority")]
+    #[msg("Liquidation has not been confirmed by the owner")]
     LiquidationNotConfirmed,
     #[msg("Invalid get_lockers range")]
     InvalidLockerRange,
     #[msg("Invalid get_voters range")]
     InvalidVoterRange,
+    #[msg("Sticky referrer / poach target is a protocol sink (GRAI, treasury, WSOL)")]
+    InvalidReferrer,
+    #[msg("Invalid get_referrals range")]
+    InvalidReferralRange,
 }
