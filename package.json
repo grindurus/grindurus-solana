@@ -6,6 +6,7 @@
     "test": "anchor test",
     "ts-node": "tsx",
     "deployGrai": "tsx migrations/1_deployGRAI.ts",
+    "deployGrinders": "tsx migrations/2_deployGrinders.ts",
     "verify": "tsx migrations/verify.ts",
     "depositSol": "tsx migrations/depositSol.ts",
     "deposit": "tsx migrations/deposit.ts",
