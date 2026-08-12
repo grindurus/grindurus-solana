@@ -11,7 +11,7 @@ pub const TOKEN_NAME: &str = "Grinders Artificial Index";
 pub const TOKEN_SYMBOL: &str = "GRAI";
 pub const TOKEN_URI: &str = "https://grindurus.xyz/grai.json";
 
-pub const TREASURY_NFT_NAME: &str = "GrindURUS Treasury";
+pub const TREASURY_NFT_NAME: &str = "Grinders Artificial Index Treasury";
 pub const TREASURY_NFT_SYMBOL: &str = "GRAI-TREASURY";
 pub const TREASURY_NFT_URI: &str = "https://grindurus.xyz/treasury.json";
 pub const TREASURY_NFT_SEED: &[u8] = b"treasury-nft";
