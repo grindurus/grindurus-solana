@@ -2,7 +2,7 @@
 
 Onchain part of Grindurus (Anchor / Solana). Mirrors the EVM model in
 [`grindurus-evm`](../grindurus-evm/) — fund-share GRAI, junior yield via Grinders custodians,
-Dutch auctions, lock/vote/claim, liquidation, and auction buybacks paid in GRAI.
+lock/vote/claim, bribes, and liquidation redeem.
 
 Tokenomics reference: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/overview/tokenomics)
 
@@ -11,83 +11,85 @@ Tokenomics reference: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ov
 GRAI is a **USD-denominated fund-share SPL token** (6 decimals). Users deposit supported assets;
 capital lands in **Grinders custody**; GRAI is minted at **book value** (`totalValue`). Normal
 redemption is off — holders exit via **liquidation** after a vote quorum, or by having their
-vote bought out (`bribe`).
+vote bought out (`bribe`). Deposits are open (no allowlist).
 
 ```
 deposit(asset, lock?)  →  asset to Grinders ATA  →  mint GRAI (totalValue ↑)
                               ↓
                       custodians swap / earn yield
                               ↓
-custodian_distribute / distribute  (~1/3 auction / ~1/3 dividend / ~1/3 treasury)
-   ├─ treasuryCut     → treasury ATA
-   ├─ dividendCut     → unvoted-locker index (merges into auction if nothing is unvoted)
-   └─ buybackCut      → Dutch auction on AssetConfig (buyback pays GRAI)
-                              ↓
-buyback(amount, paymentMax)  →  buyer pays GRAI, receives yield asset, and the paid
-                                GRAI is locked + voted on the buyer
+custodian_distribute / distribute  (50/50 dividend / treasury)
+   ├─ treasuryCut     → in-program treasury vault
+   └─ dividendCut     → unvoted-locker index (→ treasury if nothing unvoted / dust)
                               ↓
 lock / unlock / claim        →  GRAI escrow; dividend claims per listed asset
 vote / bribe                 →  quorum toward liquidation; dynamic bribe ask
                               ↓
-liquidate → redeem → resettle  →  open window, burn GRAI for pro-rata basket, close
+liquidate → redeem → revive  →  scoop dead GRAI, open window, burn for pro-rata basket, close
 ```
 
 ### Programs
 
 | Program | Role | Devnet / localnet ID |
 |---------|------|----------------------|
-| `grai` | GRAI mint, oracles, deposits, auctions, lock/vote/bribe/liquidation, buyback | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` |
+| `grai` | GRAI mint, oracles, deposits, lock/vote/bribe/liquidation | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` |
 | `grinders` | Metaplex custodian NFT collection, allocate/deallocate, swap CPI, liquidateIdle/Custodian | `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa` |
 | `custom_price_feed` | Test/dev SPL price feed account (Chainlink/Pyth also supported on `add_asset`) | `BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1` |
 
 ### GRAI (`programs/grai`)
 
-**Admin (authority signer):** `initialize`, `set_treasury`, `set_grinders`, `set_protocol_config`,
-`set_bribe_asset`, `set_price_feed` (list / update / delist), `set_asset_config`, `liquidate`.
+**Admin (owner signer):** `initialize`, `set_beneficiar`, `set_grinders` (requires Grinders→GRAI back-link), `set_config`,
+`set_settlement_asset`, `set_price_feed` (list / pause / replace-while-paused / delist), `liquidate`.
 
-**Permissionless:** `deposit` / `deposit_sol` (optional `lock`), `distribute`, `buyback`,
-`lock` / `unlock` / `claim`, `vote`, `bribe`, `redeem`, `resettle`.
+**Permissionless:** `deposit` / `deposit_sol` (optional `lock`), `distribute`,
+`lock` / `unlock` / `claim` / `claim_all`, `vote`, `bribe`, `redeem`, `revive`.
 
 **Key state (PDAs):**
 
 ```
 protocol          = ["protocol"]                         # GraiState
-asset             = ["asset", mint]                        # AssetConfig + Dutch auction + dividend index
+asset             = ["asset", mint]                        # AssetConfig + dividend index
 vault             = ["vault", mint]                        # GRAI vault ATA authority
+treasury          = ["treasury", mint]                     # in-program treasury vault
 escrow            = ["escrow", user]                       # lock + vote escrow
+referrer          = ["referrer", user]                     # sticky referrer + books; cashflow via treasury-nft
+treasury-nft      = ["treasury-nft", user]                 # Metaplex 1/1 cashflow NFT mint
 position          = ["position", account, mint]               # ledger: dividends + custodian yield
 ```
+
+Referral slots use three independent layers: the locker-keyed `referrer` tree is sticky (first
+mint and poach only), `nft_mint` is the Metaplex cashflow NFT (transferable claim payee), and
+`value`/`l1_value`/
+`l2_value` are volume books. Deposits that discover a missing or cyclic referrer self-root;
+poaches reject those same incomplete/cyclic paths. Liquidation `redeem` does not reverse
+referral books. OTC cashflow transfer is an ordinary NFT transfer.
 
 **Tokenomics (EVM parity):**
 
 - Deposit mint: `graiOut = depositValue * supply / totalValue` (1:1 on first deposit). A zero book
   with live shares is rejected (`InsolventBook`)
-- Distribute: three-way cut split; the dividend leg indexes only **unvoted** locked GRAI
+- Distribute: 50/50 cut split; the dividend leg indexes only **unvoted** locked GRAI
   (`totalLocked - totalVoted`) and is reserved on `AssetConfig.total_claimable`. With no unvoted
-  base — or an index increment that rounds to zero — it merges into the auction lot instead
-- Buyback: Dutch auction fill — buyer pays **GRAI**, receives the yield asset, and the paid GRAI is
-  locked **and** voted on the buyer (exit via `bribe` or `unlock`). The ask decays from the full-lot
-  mint price to `(BPS - bribePremiumBps)` of it over `buybackPeriod`; zero-GRAI fills are rejected
-- Dead GRAI: `buyback` credits `grai_vault.amount - total_locked` to the **buyer**, then
-  `lock`+`vote`s it with the Dutch payment (EVM parity)
-- Unlock: decaying penalty (`unlockFeeBps` → 0 over `unlockPenaltyPeriod`); net GRAI returns to
-  the wallet, penalty stays on the vault as orphan inventory for the next `buyback` scavenger;
+  base — or an index increment that rounds to zero — it goes to the treasury vault instead
+- Dead GRAI: unlock penalty stays on the vault as orphan inventory; `liquidate` (open) scoops
+  `grai_vault.amount - total_locked` to the **caller**
+- Unlock: flat penalty (`unlockPenaltyBps`); net GRAI returns to
+  the wallet, penalty stays on the vault as dead inventory for the liquidate opener;
   partial unlocks below `ceil(BPS / penaltyBps)` are rejected, full exits always allowed
 - Bribe: dynamic ask around book value, linear in vote share vs half quorum with slope
   `bribePremiumBps` (`|adj| = bribePremiumBps` at 0 votes and at quorum; above quorum discount
   `adj` may exceed it). Scarce votes carry a premium (voter keeps book + half of it, rest to cuts);
   excess votes carry a discount (ask is book − half the gap, other half to cuts); at par the voter
   takes the whole ask. `preview_bribe` quotes `(bribeAmount, premium, discount)`
-- Liquidation: 2-of-2 (`confirmed` + vote quorum) → `liquidate` cancels open auctions (assets are
+- Liquidation: 2-of-2 (`confirmed` + vote quorum) → `liquidate` scoops dead GRAI (assets are
   **not** force-paused) → `redeem` burns GRAI for a pro-rata share of redeemable inventory →
-  `resettle` sweeps the rest back to Grinders.
+  `revive` sweeps the rest back to Grinders.
   The dividend reserve is excluded from both, so `claim` still works during and after liquidation.
-  With leftover shares, `resettle` sets `total_value = total_nav` only when that does not lower the
-  mint price; otherwise the book is left unchanged.
+  `revive` does **not** raise `total_value` from leftover NAV; with zero supply it zeros the book.
 
-**Default `Config`:** buyback/dividend/treasury `3333/3334/3333`, bribe premium `200`,
-quorum `6667`, unlock fee `1000`, buyback period 7d (min 7d), liquidation 1d, redeem 7d, unlock
-penalty 1d. `set_protocol_config` requires the cuts to sum to `10000`, `2 * bribePremiumBps <=
+**Default `Config`:** dividend/treasury `5000/5000` (immutable after init), revenue share `500`, claim tip `100` (1% to caller), bribe premium `200`,
+quorum `6667`, unlock penalty `100`, liquidation 1d, redeem 7d.
+`set_config` cannot change yield cuts; requires `2 * bribePremiumBps <=
 10000`, non-zero liquidation/redeem periods, and is blocked while liquidation is open.
 
 **Oracles:** per-asset `price_feed` on `AssetConfig` — on-chain custom feed program, cloned
@@ -99,7 +101,7 @@ ERC-721-style **Grinders Custodians** Metaplex collection; each `mint` creates:
 
 - custodian **NFT** (collection-verified metadata + on-chain GrinderArt URI)
 - **custodian wallet PDA** (`SwapCustodian`-style) with base/quote ATAs
-- `CustodianRecord` / `CustodianIndex` registry entries
+- `CustodianState` wallet PDAs (custody + NFT registry)
 
 | Kind | Label | Instruction |
 |------|-------|-------------|
@@ -108,8 +110,10 @@ ERC-721-style **Grinders Custodians** Metaplex collection; each `mint` creates:
 
 **Owner:** `initialize`, `mint`, `allocate`, `withdraw` / `withdraw_token`.
 
-**NFT holder:** `custodian_swap`, `custodian_deallocate`, `custodian_distribute` (CPI to GRAI
-`distribute`), `transfer_custodian_nft`.
+**NFT holder:** `custodian_swap`, `transfer_custodian_nft`.
+
+**Protocol owner:** `allocate`, `custodian_deallocate`, `custodian_distribute` (CPI to GRAI
+`distribute`), `set_assets`, `set_grai`.
 
 **Liquidation helpers:** `liquidate_idle` (sweep idle Grinders ATAs), `liquidate_custodian`
 (return custodian base/quote to GRAI vaults while liquidation is open).
@@ -119,7 +123,6 @@ grinders           = ["grinders"]
 collection         = ["collection"]
 custodian_wallet   = ["custodian_wallet", grinders, custodian_id]
 custodian_mint     = ["custodian_mint", custodian_id]
-allocation         = ["allocation", custodian_wallet, asset_mint]
 ```
 
 Details: [`programs/grinders/README.md`](programs/grinders/README.md).
@@ -129,20 +132,13 @@ Details: [`programs/grinders/README.md`](programs/grinders/README.md).
 1. Deploy `grai`, `grinders`, `custom_price_feed` (if needed).
 2. `grinders.initialize` — owner, GRAI program id, Metaplex collection parent NFT.
 3. `grai.initialize(grinders_state_pda)` — authority, GRAI mint, Metaplex metadata.
-4. `grai.set_price_feed` per mint + price feed (lists the asset); `grai.set_bribe_asset`.
-5. `grai.set_treasury`, `grai.set_protocol_config` (cuts, bribe premium, quorum, timing).
+4. `grai.set_price_feed(paused, feed)` per mint (lists the asset); `grai.set_settlement_asset`.
+5. `grai.set_beneficiar`, `grai.set_config` (tip, revenue share, bribe premium, quorum, timing — not cuts).
 6. `grinders.mint(custodian_kind, grinder, base, quote)` — deploy custodian NFT + PDA wallet.
 7. Users `deposit` / `deposit_sol`; owner `allocate`s working capital to custodians.
 
 Migrations: [`migrations/deploy.ts`](migrations/deploy.ts) / [`deployProtocol.ts`](migrations/deployProtocol.ts)
 (idempotent `grinders` + `grai` init, SOL asset; optional `ADD_USDC=1`).
-
-### Buyback (EVM parity)
-
-Auction fill lives only on GRAI: `buyback(amount, payment_max)` — the buyer pays GRAI, receives the
-yield asset from the vault, and the paid GRAI is escrowed and voted toward liquidation on the buyer.
-`payment_max` is a Solana-side slippage bound on the decaying Dutch ask. Grinders has no buyback
-(same as EVM).
 
 ### Solana vs EVM differences
 
@@ -152,11 +148,10 @@ yield asset from the vault, and the paid GRAI is escrowed and voted toward liqui
 | Deposits | `Grinders` contract balance | Grinders state PDA **ATA** |
 | Custodian wallet | ERC-1967 proxy address | **PDA** per `custodian_id` |
 | Custodian auth | ERC-721 owner | Metaplex NFT holder |
-| Auction payment | GRAI | GRAI (`buyback`) |
-| Dead-GRAI sweep | inlined in `buyback` (orphan → buyer, then lock+vote with ask) | inlined in `buyback` (`grai_vault - total_locked` → buyer, then lock+vote) |
+| Dead-GRAI sweep | on `liquidate` open → caller | on `liquidate` open (`grai_vault - total_locked` → caller) |
 | Bribe ask | atomic on-chain | atomic on-chain (no slippage arg) |
 | Upgrades | UUPS proxy | BPF upgrade authority |
-| Access control | `AccessControl` roles | `grai_state.authority`, `grinders_state.owner` |
+| Access control | `AccessControl` roles | `grai_state.owner`, `grinders_state.owner` |
 
 ### Tests
 
@@ -164,10 +159,10 @@ yield asset from the vault, and the paid GRAI is escrowed and voted toward liqui
 anchor test   # oracles + GRAI tokenomics
 ```
 
-Coverage includes deposit, distribute (cut split + dividend→auction merge), Dutch auction start and
-full fill (with buyer lock+vote), unvoted-locker dividends, `claim` reserve release, unlock penalty
-to treasury, config validation, allocate/deallocate, vote quorum, and price-feed validation. The
-bribe / redeem / resettle paths are on-chain; TypeScript coverage is expanding.
+Coverage includes deposit, distribute (50/50 + dividend→treasury when no eligible), unvoted-locker
+dividends, `claim` reserve release, unlock penalty as dead GRAI, config validation (immutable cuts),
+allocate/deallocate, vote quorum, and price-feed validation. The bribe / redeem / revive paths are
+on-chain; TypeScript coverage is expanding.
 
 ## Stack
 
