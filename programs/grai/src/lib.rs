@@ -68,6 +68,8 @@ impl Config {
 pub struct GraiState {
     /// Protocol admin (EVM `Ownable.owner`).
     pub owner: Pubkey,
+    /// Two-step handoff target (EVM `Ownable2Step.pendingOwner`). Default = none.
+    pub pending_owner: Pubkey,
     /// Protocol fee recipient for the non-affiliate slice of claim-time treasury income
     /// (EVM `Treasury.beneficiar`).
     pub beneficiar: Pubkey,
@@ -106,6 +108,7 @@ impl GraiState {
 
     /// Fixed fields excluding vec payloads.
     pub const FIXED_LEN: usize = 32
+        + 32
         + 32
         + 32
         + 32
@@ -267,6 +270,35 @@ pub struct Initialize<'info> {
 
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+/// EVM `transferOwnership` — current owner is the signer.
+#[derive(Accounts)]
+pub struct TransferOwnership<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+        has_one = owner @ ErrorCode::Unauthorized,
+    )]
+    pub grai_state: Account<'info, GraiState>,
+}
+
+/// EVM `acceptOwnership` — pending owner is the signer.
+#[derive(Accounts)]
+pub struct AcceptOwnership<'info> {
+    pub pending_owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GraiState::SEED],
+        bump = grai_state.bump,
+        constraint = grai_state.pending_owner != Pubkey::default() @ ErrorCode::Unauthorized,
+        has_one = pending_owner @ ErrorCode::Unauthorized,
+    )]
+    pub grai_state: Account<'info, GraiState>,
 }
 
 #[derive(Accounts)]
@@ -1559,6 +1591,17 @@ pub mod grai {
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         config::execute_initialize(ctx)
+    }
+
+    /// Propose a new owner (EVM `Ownable2Step.transferOwnership`).
+    /// Pass `Pubkey::default()` to cancel a pending handoff; `owner` is unchanged until accept.
+    pub fn transfer_ownership(ctx: Context<TransferOwnership>, new_owner: Pubkey) -> Result<()> {
+        config::execute_transfer_ownership(ctx, new_owner)
+    }
+
+    /// Pending owner takes over; clears `confirmed` so prior liquidation consent dies with the old owner.
+    pub fn accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
+        config::execute_accept_ownership(ctx)
     }
 
     pub fn set_beneficiar(ctx: Context<SetBeneficiar>, beneficiar: Pubkey) -> Result<()> {

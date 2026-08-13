@@ -4,7 +4,9 @@ use crate::tokenomics::{default_protocol_config, validate_protocol_config};
 use crate::treasury::{
     DEFAULT_AFFILIATE_LEVELS, DEFAULT_AFFILIATE_SHARE_BPS, DEFAULT_ROYALTY_BPS,
 };
-use crate::{Config, ErrorCode, Initialize, SetConfig, SetGrinders};
+use crate::{
+    AcceptOwnership, Config, ErrorCode, Initialize, SetConfig, SetGrinders, TransferOwnership,
+};
 
 /// Sibling grinders program (`programs/grinders` `declare_id!`).
 pub const GRINDERS_PROGRAM_ID: Pubkey = pubkey!("7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v");
@@ -20,6 +22,7 @@ pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
     {
         let grai_state = &mut ctx.accounts.grai_state;
         grai_state.owner = owner;
+        grai_state.pending_owner = Pubkey::default();
         grai_state.beneficiar = owner;
         grai_state.grinders = owner;
         grai_state.settlement_asset = Pubkey::default();
@@ -105,5 +108,31 @@ pub fn execute_set_config(ctx: Context<SetConfig>, cfg: Config) -> Result<()> {
     );
     validate_protocol_config(&cfg)?;
     ctx.accounts.grai_state.config = cfg;
+    Ok(())
+}
+
+/// EVM `Ownable2Step.transferOwnership`. Does not change `owner` until `accept_ownership`.
+pub fn execute_transfer_ownership(
+    ctx: Context<TransferOwnership>,
+    new_owner: Pubkey,
+) -> Result<()> {
+    require_keys_neq!(new_owner, ctx.accounts.owner.key(), ErrorCode::InvalidPendingOwner);
+    ctx.accounts.grai_state.pending_owner = new_owner;
+    msg!(
+        "OwnershipTransferStarted owner={} pending={}",
+        ctx.accounts.grai_state.owner,
+        new_owner
+    );
+    Ok(())
+}
+
+/// EVM `GRAI.acceptOwnership`: pending becomes owner, `confirmed` is cleared.
+pub fn execute_accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
+    let grai_state = &mut ctx.accounts.grai_state;
+    let new_owner = ctx.accounts.pending_owner.key();
+    grai_state.owner = new_owner;
+    grai_state.pending_owner = Pubkey::default();
+    grai_state.confirmed = false;
+    msg!("OwnershipTransferred owner={} confirmed=false", new_owner);
     Ok(())
 }

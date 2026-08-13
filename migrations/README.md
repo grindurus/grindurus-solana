@@ -35,14 +35,13 @@ For **mainnet**, set `ANCHOR_PROVIDER_URL=https://api.mainnet-beta.solana.com` a
 | `npm run deployProtocol`  | `deployProtocol.ts`   | Idempotent `grinders` + `grai` initialize (+ SOL, optional USDC) |
 | `npm run verify`          | `verify.ts`           | Publish/upgrade Anchor IDL for `grai` and `grinders`             |
 | `npm run status`          | `status.ts`           | Print protocol, grinders, vaults, oracles, balances              |
-| `npm run addAsset`        | `addAsset.ts`         | Register USDC (Pyth USDC/USD by default)                         |
 | `npm run setSettlementAsset` | `setSettlementAsset.ts` | Select the listed USDC settlement asset                        |
 | `npm run setPriceFeed`    | `setPriceFeed.ts`     | List USDC via `set_price_feed(paused, feed)`                     |
-| `npm run deposit`         | `deposit.ts`          | Deposit USDC → mint GRAI (`LOCK=1` locks into escrow)            |
-| `npm run depositSol`      | `depositSol.ts`       | Deposit SOL → mint GRAI                                          |
+| `npm run deposit`         | `grai/deposit.ts`     | Deposit USDC → mint GRAI (`LOCK=1` locks into escrow)            |
+| `npm run depositSol`      | `grai/depositSol.ts`  | Deposit SOL → mint GRAI                                          |
 | `npm run mint` / `mintSol`| aliases               | Same as `deposit` / `depositSol`                                 |
 | `npm run allocate`        | `allocate.ts`         | Move asset from Grinders ATA → custodian wallet                  |
-| `npm run distribute`      | `distribute.ts`       | Custodian yield → `grai.distribute` (50/50 dividend/treasury)    |
+| `npm run distribute`      | `grai/distribute.ts`  | Custodian yield → `grai.distribute` (50/50 dividend/treasury)    |
 | `npm run unwrapSol`       | `unwrapSol.ts`        | Close wallet wSOL ATA → native SOL                               |
 
 ### Deploy grai + grinders
@@ -86,7 +85,7 @@ npm run ts-node migrations/status.ts
 anchor build
 anchor deploy --provider.cluster devnet
 npm run verify
-ADD_USDC=1 npm run addAsset   # or ADD_USDC=1 during deployProtocol
+npm run setPriceFeed
 npm run deposit               # USDC → GRAI
 npm run depositSol            # SOL → GRAI
 npm run status
@@ -179,7 +178,7 @@ Sponsored push feeds use the **same account addresses on mainnet and devnet** ([
 
 | Pair         | Account                                        | Price feed ID                                                      | Repo default                     | Notes                                         |
 | ------------ | ---------------------------------------------- | ------------------------------------------------------------------ | -------------------------------- | --------------------------------------------- |
-| **USDC/USD** | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` | `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` | `addAsset.ts`, `setPriceFeed.ts` | Verified on devnet 2026-06-26                 |
+| **USDC/USD** | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` | `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` | `setPriceFeed.ts` | Verified on devnet 2026-06-26                 |
 | **SOL/USD**  | `7UVimffxr9ow1uXYxsr4LH8oT1Zg73AFY6SGUt7jLiE`  | `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d` | `0_common.ts`                     | Prefer Chainlink on devnet if account missing |
 | BTC/USD      | `4cSM2e6rvbGQUFiJbqytoVMi5GgghSMr8LwVrT9VPSPo` | `e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` | —                                |                                               |
 | ETH/USD      | `42amVS4KgzR9rA28tkVYqVXjq9Qa8dcZQMbH5EYFX6XC` | `ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` | —                                |                                               |
@@ -261,8 +260,7 @@ SOL_USD_PRICE_FEED=99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR npm run depositS
 SOL_USD_PRICE_FEED=CH31Xns5z3M1cTAbKW34jcxPPciazARpijcHj9rxtemt npm run depositSol   # mainnet
 
 # USDC — default: Pyth push (mainnet + devnet)
-USDC_USD_PRICE_FEED=Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX npm run addAsset
-npm run setPriceFeed
+USDC_USD_PRICE_FEED=Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX npm run setPriceFeed
 
 # USDC — Chainlink alternative (devnet only)
 USDC_USD_PRICE_FEED=2EmfL3MqL3YHABudGNmajjCpR13NNEn9Y4LWxbDm6SwR npm run setPriceFeed

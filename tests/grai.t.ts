@@ -467,6 +467,29 @@ describe("GRAI tokenomics", () => {
     return ata;
   }
 
+  async function fundWallet(kp: Keypair, lamports = 2_000_000_000) {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: authority,
+        toPubkey: kp.publicKey,
+        lamports,
+      }),
+    );
+    await provider.sendAndConfirm!(tx);
+  }
+
+  async function restoreOwner(currentOwner: Keypair) {
+    await program.methods
+      .transferOwnership(authority)
+      .accountsPartial({ owner: currentOwner.publicKey, graiState })
+      .signers([currentOwner])
+      .rpc();
+    await program.methods
+      .acceptOwnership()
+      .accountsPartial({ pendingOwner: authority, graiState })
+      .rpc();
+  }
+
   async function mintUsdcTo(owner: PublicKey, amount: bigint): Promise<PublicKey> {
     const ata = await ensureAta(usdcMint.publicKey, owner);
     await provider.sendAndConfirm!(
@@ -583,6 +606,7 @@ describe("GRAI tokenomics", () => {
 
     const grai = await program.account.graiState.fetch(graiState);
     expect(grai.owner.toBase58()).to.equal(authority.toBase58());
+    expect(grai.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
     expect(grai.grinders.toBase58()).to.equal(grindersState.toBase58());
 
     if (!existing) {
@@ -617,6 +641,73 @@ describe("GRAI tokenomics", () => {
     expect(name).to.equal(GRAI_TOKEN_NAME);
     expect(symbol).to.equal(GRAI_TOKEN_SYMBOL);
     expect(uri).to.equal(GRAI_TOKEN_URI);
+  });
+
+  it("Ownable2Step: transfer sets pending, accept hands off, cancel and stranger fail", async () => {
+    const next = Keypair.generate();
+    const stranger = Keypair.generate();
+    await fundWallet(next);
+    await fundWallet(stranger);
+
+    await expectTransactionError(
+      program.methods
+        .transferOwnership(authority)
+        .accountsPartial({ owner: authority, graiState })
+        .rpc(),
+      "InvalidPendingOwner",
+    );
+
+    await program.methods
+      .transferOwnership(next.publicKey)
+      .accountsPartial({ owner: authority, graiState })
+      .rpc();
+
+    let state = await program.account.graiState.fetch(graiState);
+    expect(state.owner.toBase58()).to.equal(authority.toBase58());
+    expect(state.pendingOwner.toBase58()).to.equal(next.publicKey.toBase58());
+
+    await expectTransactionError(
+      program.methods
+        .acceptOwnership()
+        .accountsPartial({ pendingOwner: stranger.publicKey, graiState })
+        .signers([stranger])
+        .rpc(),
+      "Unauthorized",
+    );
+
+    await program.methods
+      .transferOwnership(PublicKey.default)
+      .accountsPartial({ owner: authority, graiState })
+      .rpc();
+    state = await program.account.graiState.fetch(graiState);
+    expect(state.owner.toBase58()).to.equal(authority.toBase58());
+    expect(state.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
+
+    await program.methods
+      .transferOwnership(next.publicKey)
+      .accountsPartial({ owner: authority, graiState })
+      .rpc();
+    await program.methods
+      .acceptOwnership()
+      .accountsPartial({ pendingOwner: next.publicKey, graiState })
+      .signers([next])
+      .rpc();
+
+    state = await program.account.graiState.fetch(graiState);
+    expect(state.owner.toBase58()).to.equal(next.publicKey.toBase58());
+    expect(state.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
+
+    await expectTransactionError(
+      program.methods
+        .setBeneficiar(treasury.publicKey)
+        .accountsPartial({ owner: authority, graiState })
+        .rpc(),
+      "Unauthorized",
+    );
+
+    await restoreOwner(next);
+    state = await program.account.graiState.fetch(graiState);
+    expect(state.owner.toBase58()).to.equal(authority.toBase58());
   });
 
   it("set_beneficiar stores beneficiar on graiState", async () => {
@@ -1578,6 +1669,47 @@ describe("GRAI tokenomics", () => {
       })
       .view();
     expect(quorum).to.be.false;
+  });
+
+  it("accept_ownership clears confirmed so prior owner consent does not survive", async () => {
+    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
+    const callerGraiAta = await ensureAta(graiMint.publicKey, authority);
+
+    await program.methods
+      .liquidate()
+      .accountsPartial({
+        caller: authority,
+        graiState,
+        graiMint: graiMint.publicKey,
+        graiVaultAta,
+        callerGraiAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    let state = await program.account.graiState.fetch(graiState);
+    expect(state.confirmed).to.be.true;
+    expect(state.liquidation).to.be.false;
+
+    const next = Keypair.generate();
+    await fundWallet(next);
+    await program.methods
+      .transferOwnership(next.publicKey)
+      .accountsPartial({ owner: authority, graiState })
+      .rpc();
+    await program.methods
+      .acceptOwnership()
+      .accountsPartial({ pendingOwner: next.publicKey, graiState })
+      .signers([next])
+      .rpc();
+
+    state = await program.account.graiState.fetch(graiState);
+    expect(state.owner.toBase58()).to.equal(next.publicKey.toBase58());
+    expect(state.confirmed).to.be.false;
+
+    await restoreOwner(next);
   });
 
   it("lock adds unvoted escrow, which is the dividend base", async () => {

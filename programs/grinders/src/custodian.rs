@@ -12,9 +12,9 @@ use crate::state::{CustodianState, GrindersState};
 const GRAI_DISTRIBUTE_DISCRIMINATOR: [u8; 8] = [191, 44, 223, 207, 164, 236, 126, 61];
 
 /// Offset of `liquidation: bool` in `GraiState` after 8-byte Anchor discriminator.
-/// Layout: authority(32) beneficiar(32) grinders(32) settlement(32) total_value(16)
-///         total_locked(8) total_voted(8) liquidation(1) …
-const GRAI_STATE_LIQUIDATION_OFFSET: usize = 8 + 32 + 32 + 32 + 32 + 16 + 8 + 8;
+/// Layout: owner(32) pending_owner(32) beneficiar(32) grinders(32) settlement(32)
+///         total_value(16) total_locked(8) total_voted(8) liquidation(1) …
+const GRAI_STATE_LIQUIDATION_OFFSET: usize = 8 + 32 + 32 + 32 + 32 + 32 + 16 + 8 + 8;
 
 pub fn assert_custodian_owner(
     owner: &Signer,

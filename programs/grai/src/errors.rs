@@ -4,6 +4,8 @@ use anchor_lang::prelude::*;
 pub enum ErrorCode {
     #[msg("Only the configured owner can perform this action")]
     Unauthorized,
+    #[msg("New owner must differ from the current owner")]
+    InvalidPendingOwner,
     #[msg("Amount must be greater than zero")]
     AmountZero,
     #[msg("Amount or limit is out of range")]
