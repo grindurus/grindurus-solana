@@ -1,24 +1,23 @@
 # Migrations
 
-TypeScript ops scripts for `grai` on Solana: deploy hooks, mint, custody, and oracle configuration. Shared helpers: `migrations/_common.ts`.
+TypeScript ops scripts for `grai` + `grinders`: deploy/bootstrap, deposits, custody allocate/distribute, oracles. Shared helpers: `migrations/0_common.ts`. Bootstrap logic: `migrations/_bootstrap.ts`.
 
 ---
 
 ## Running scripts
 
-Run from the `**grindurus-solana**` repo root (after `npm install` and `anchor build`).
+Run from the **grindurus-solana** repo root (after `npm install` and `anchor build`).
 
 ### Cluster and wallet
 
-Scripts use `loadProvider()` from `_common.ts`:
+Scripts use `loadProvider()` from `0_common.ts`:
 
-
-| Variable              | Default                                        | Purpose                                |
-| --------------------- | ---------------------------------------------- | -------------------------------------- |
-| `ANCHOR_PROVIDER_URL` | `https://api.devnet.solana.com`                | RPC endpoint                           |
-| `ANCHOR_WALLET`       | `~/.config/solana/id.json`                     | Signer (must match on-chain authority) |
-| `GRAI_PROGRAM_ID`     | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` | Checked against `target/idl/grai.json` |
-
+| Variable               | Default                                        | Purpose                                     |
+| ---------------------- | ---------------------------------------------- | ------------------------------------------- |
+| `ANCHOR_PROVIDER_URL`  | `https://api.devnet.solana.com`                | RPC endpoint                                |
+| `ANCHOR_WALLET`        | `~/.config/solana/id.json`                     | Signer (must match on-chain authority/owner) |
+| `GRAI_PROGRAM_ID`      | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` | Checked against `target/idl/grai.json`      |
+| `GRINDERS_PROGRAM_ID`  | `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa` | Checked against `target/idl/grinders.json`  |
 
 Example — devnet:
 
@@ -31,25 +30,47 @@ For **mainnet**, set `ANCHOR_PROVIDER_URL=https://api.mainnet-beta.solana.com` a
 
 ### npm commands
 
+| Command                   | Script                | What it does                                                      |
+| ------------------------- | --------------------- | ----------------------------------------------------------------- |
+| `npm run deployProtocol`  | `deployProtocol.ts`   | Idempotent `grinders` + `grai` initialize (+ SOL, optional USDC) |
+| `npm run verify`          | `verify.ts`           | Publish/upgrade Anchor IDL for `grai` and `grinders`             |
+| `npm run status`          | `status.ts`           | Print protocol, grinders, vaults, oracles, balances              |
+| `npm run addAsset`        | `addAsset.ts`         | Register USDC (Pyth USDC/USD by default)                         |
+| `npm run setSettlementAsset` | `setSettlementAsset.ts` | Select the listed USDC settlement asset                        |
+| `npm run setPriceFeed`    | `setPriceFeed.ts`     | List USDC via `set_price_feed(paused, feed)`                     |
+| `npm run deposit`         | `deposit.ts`          | Deposit USDC → mint GRAI (`LOCK=1` locks into escrow)            |
+| `npm run depositSol`      | `depositSol.ts`       | Deposit SOL → mint GRAI                                          |
+| `npm run mint` / `mintSol`| aliases               | Same as `deposit` / `depositSol`                                 |
+| `npm run allocate`        | `allocate.ts`         | Move asset from Grinders ATA → custodian wallet                  |
+| `npm run distribute`      | `distribute.ts`       | Custodian yield → `grai.distribute` (50/50 dividend/treasury)    |
+| `npm run unwrapSol`       | `unwrapSol.ts`        | Close wallet wSOL ATA → native SOL                               |
 
-| Command                | Script            | What it does                                         |
-| ---------------------- | ----------------- | ---------------------------------------------------- |
-| `npm run verify`       | `verify.ts`       | Publish or upgrade Anchor IDL on cluster             |
-| `npm run status`       | `status.ts`       | Print protocol, vaults, oracles, balances            |
-| `npm run addAsset`     | `addAsset.ts`     | Register USDC senior/junior vaults + Pyth price feed |
-| `npm run setPriceFeed` | `setPriceFeed.ts` | Update `senior_vault.price_feed` for USDC            |
-| `npm run mint`         | `mint.ts`         | Mint GRAI against USDC collateral                    |
-| `npm run mintSol`      | `mintSol.ts`      | Mint GRAI against wrapped SOL (Chainlink SOL/USD)    |
-| `npm run allocate`     | `allocate.ts`     | Move wSOL from junior vault to custody wallet        |
-| `npm run distribute`   | `distribute.ts`   | Distribute SOL yield from custody to senior holders  |
-| `npm run unwrapSol`    | `unwrapSol.ts`    | Close wallet wSOL ATA → native SOL                   |
+### Deploy grai + grinders
 
-
-Initial deploy (`initialize`, SOL `add_asset`, metadata) runs via `**anchor deploy`**, not npm — it executes `migrations/deploy.ts` after program upload:
+**Full upload + bootstrap** (`anchor deploy` runs `migrations/deploy.ts` after BPF upload):
 
 ```bash
+anchor build
 anchor deploy --provider.cluster devnet
+# optional: also register USDC + settlement asset during bootstrap
+ADD_USDC=1 TREASURY_WALLET=<pubkey> anchor deploy --provider.cluster devnet
 ```
+
+**Bootstrap only** (programs already on-chain, no re-upload):
+
+```bash
+npm run deployProtocol
+ADD_USDC=1 TREASURY_WALLET=<pubkey> npm run deployProtocol
+SKIP_SOL_ASSET=1 npm run deployProtocol   # skip native SOL add_asset
+```
+
+Bootstrap order (idempotent):
+
+1. `grinders.initialize` — owner, GRAI program id, Metaplex collection
+2. `grai.initialize(grinders_state)` — authority, GRAI mint, metadata
+3. optional `set_beneficiar`
+4. `add_asset(SOL)` unless `SKIP_SOL_ASSET=1`
+5. optional `add_asset(USDC)` + `set_settlement_asset` when `ADD_USDC=1`
 
 Run a script directly:
 
@@ -65,18 +86,19 @@ npm run ts-node migrations/status.ts
 anchor build
 anchor deploy --provider.cluster devnet
 npm run verify
-npm run addAsset          # skip if deploy.ts already added USDC
-npm run mint              # USDC → GRAI
-npm run mintSol           # SOL → GRAI
+ADD_USDC=1 npm run addAsset   # or ADD_USDC=1 during deployProtocol
+npm run deposit               # USDC → GRAI
+npm run depositSol            # SOL → GRAI
 npm run status
 ```
 
 ### Env overrides (oracles & amounts)
 
 ```bash
-SOL_USD_PRICE_FEED=99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR npm run mintSol
-USDC_USD_PRICE_FEED=Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX npm run mint
-MINT_AMOUNT=1000000 npm run mint          # 1 USDC (6 decimals)
+SOL_USD_PRICE_FEED=99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR npm run depositSol
+USDC_USD_PRICE_FEED=Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX npm run deposit
+DEPOSIT_AMOUNT=1000000 npm run deposit    # 1 USDC (6 decimals)
+LOCK=1 npm run deposit                    # lock minted GRAI into escrow
 ALLOCATE_AMOUNT=500000 npm run allocate   # 0.0005 wSOL
 CUSTODY_WALLET=<pubkey> npm run allocate
 ```
@@ -85,16 +107,15 @@ CUSTODY_WALLET=<pubkey> npm run allocate
 
 ## Oracle price feeds for `grai`
 
-Reference for **Chainlink** and **Pyth** accounts used in `add_asset`, `set_price_feed`, `mint`, `mint_sol`, and `distribute`.
+Reference for **Chainlink** and **Pyth** accounts used in `add_asset`, `set_price_feed`, `deposit`, `deposit_sol`, and `distribute`.
 
-Code: `programs/grai/src/price_feed.rs` · migration constants: `migrations/_common.ts`.
+Code: `programs/grai/src/price_feed.rs` · migration constants: `migrations/0_common.ts`.
 
 ---
 
 ## How `grai` picks an oracle
 
-Oracle type is detected from the `**owner`** of the `price_feed` account passed in the transaction:
-
+Oracle type is detected from the **owner** of the `price_feed` account passed in the transaction:
 
 | Owner                                          | Program                  | Account format                | Reader                              |
 | ---------------------------------------------- | ------------------------ | ----------------------------- | ----------------------------------- |
@@ -106,8 +127,7 @@ Oracle type is detected from the `**owner`** of the `price_feed` account passed 
 | `HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny` | Chainlink v1 Store       | transmissions (~248 B)        | `read_feed_v2`                      |
 | anything else                                  | —                        | —                             | `ChainlinkReadError`                |
 
-
-The vault stores which pubkey to use in `senior_vault.price_feed`. At runtime the passed account must match (`has_one = price_feed`).
+`AssetConfig.price_feed` stores which pubkey to use. At runtime the passed account must match (`has_one = price_feed`).
 
 **Custom feeds:** on-chain check `custom.asset_mint == asset_mint`.  
 **Chainlink / Pyth:** no on-chain pair binding — ops must assign the correct pubkey.
@@ -142,8 +162,8 @@ Valid Chainlink transmissions: owner `HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWH
 
 | Pair         | Account                                        | Repo default              | Notes                        |
 | ------------ | ---------------------------------------------- | ------------------------- | ---------------------------- |
-| **SOL/USD**  | `99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR` | `_common.ts`, `deploy.ts` | Verified on-chain 2026-06-26 |
-| **USDC/USD** | `2EmfL3MqL3YHABudGNmajjCpR13NNEn9Y4LWxbDm6SwR` | `_common.ts`              | Alternative to Pyth          |
+| **SOL/USD**  | `99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR` | `0_common.ts`, `deploy.ts` | Verified on-chain 2026-06-26 |
+| **USDC/USD** | `2EmfL3MqL3YHABudGNmajjCpR13NNEn9Y4LWxbDm6SwR` | `0_common.ts`              | Alternative to Pyth          |
 | ETH/USD      | `669U43LNHx7LsVj95uYksnhXUfWKDsdzVqev3V4Jpw3P` | —                         |                              |
 | BTC/USD      | `6PxBx93S8x3tno1TsFZwT5VqP8drrRCbCXygEXYNkFJe` | —                         |                              |
 | USDT/USD     | `8QQSUPtdRTboa4bKyMftVNRfGFsB4Vp9d7r39hGKi53e` | —                         |                              |
@@ -160,7 +180,7 @@ Sponsored push feeds use the **same account addresses on mainnet and devnet** ([
 | Pair         | Account                                        | Price feed ID                                                      | Repo default                     | Notes                                         |
 | ------------ | ---------------------------------------------- | ------------------------------------------------------------------ | -------------------------------- | --------------------------------------------- |
 | **USDC/USD** | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` | `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` | `addAsset.ts`, `setPriceFeed.ts` | Verified on devnet 2026-06-26                 |
-| **SOL/USD**  | `7UVimffxr9ow1uXYxsr4LH8oT1Zg73AFY6SGUt7jLiE`  | `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d` | `_common.ts`                     | Prefer Chainlink on devnet if account missing |
+| **SOL/USD**  | `7UVimffxr9ow1uXYxsr4LH8oT1Zg73AFY6SGUt7jLiE`  | `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d` | `0_common.ts`                     | Prefer Chainlink on devnet if account missing |
 | BTC/USD      | `4cSM2e6rvbGQUFiJbqytoVMi5GgghSMr8LwVrT9VPSPo` | `e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` | —                                |                                               |
 | ETH/USD      | `42amVS4KgzR9rA28tkVYqVXjq9Qa8dcZQMbH5EYFX6XC` | `ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` | —                                |                                               |
 
@@ -197,8 +217,8 @@ Same sponsored addresses as devnet ([source](https://docs.pyth.network/price-fee
 
 | Pair         | Account                                        | Price feed ID                                                      | Repo default | Notes          |
 | ------------ | ---------------------------------------------- | ------------------------------------------------------------------ | ------------ | -------------- |
-| **SOL/USD**  | `7UVimffxr9ow1uXYxsr4LH8oT1Zg73AFY6SGUt7jLiE`  | `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d` | `_common.ts` | Pro-compatible |
-| **USDC/USD** | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` | `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` | `_common.ts` | Pro-compatible |
+| **SOL/USD**  | `7UVimffxr9ow1uXYxsr4LH8oT1Zg73AFY6SGUt7jLiE`  | `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d` | `0_common.ts` | Pro-compatible |
+| **USDC/USD** | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` | `eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a` | `0_common.ts` | Pro-compatible |
 | BTC/USD      | `4cSM2e6rvbGQUFiJbqytoVMi5GgghSMr8LwVrT9VPSPo` | `e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43` | —            |                |
 | ETH/USD      | `42amVS4KgzR9rA28tkVYqVXjq9Qa8dcZQMbH5EYFX6XC` | `ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace` | —            |                |
 | USDT/USD     | `HT2PLQBcG5EiCcNSaMHAjSgd9F98ecpATbk4Sk5oYuM`  | `2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b` | —            |                |
@@ -237,8 +257,8 @@ See [Env overrides](#env-overrides-oracles--amounts) in **Running scripts**. Pri
 
 ```bash
 # SOL — default devnet: Chainlink transmissions
-SOL_USD_PRICE_FEED=99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR npm run mintSol
-SOL_USD_PRICE_FEED=CH31Xns5z3M1cTAbKW34jcxPPciazARpijcHj9rxtemt npm run mintSol   # mainnet
+SOL_USD_PRICE_FEED=99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR npm run depositSol
+SOL_USD_PRICE_FEED=CH31Xns5z3M1cTAbKW34jcxPPciazARpijcHj9rxtemt npm run depositSol   # mainnet
 
 # USDC — default: Pyth push (mainnet + devnet)
 USDC_USD_PRICE_FEED=Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX npm run addAsset
