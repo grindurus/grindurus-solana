@@ -7,16 +7,16 @@ skip-lint = false
 
 [programs.devnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
-grai = "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z"
+grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
 
 [programs.localnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
-grai = "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z"
+grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
 
 [programs.mainnet]
-grai = "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z"
+grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
 
 [registry]

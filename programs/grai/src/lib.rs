@@ -31,7 +31,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::metadata::Metadata;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
-declare_id!("CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z");
+declare_id!("3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh");
 
 /// Yield split, bribe premium, liquidation quorum, unlock penalty, and timing.
 ///
