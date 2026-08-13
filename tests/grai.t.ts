@@ -46,7 +46,7 @@ const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
 
 const GRAI_TOKEN_NAME = "Grinders Artificial Index";
 const GRAI_TOKEN_SYMBOL = "GRAI";
-const GRAI_TOKEN_URI = "https://grindurus.xyz/metadata.json";
+const GRAI_TOKEN_URI = "https://grindurus.xyz/grai.json";
 
 /** Cloned Pyth USDC/USD push feed (`Anchor.toml` test.validator.clone). */
 const PYTH_USDC_USD_PUSH = new PublicKey(
