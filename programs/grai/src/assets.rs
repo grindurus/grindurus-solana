@@ -202,31 +202,38 @@ fn delist<'info>(ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>) -> Res
         u64::from_le_bytes(data[64..72].try_into().unwrap())
     };
     require!(vault_amount == 0, ErrorCode::AssetBalanceNonZero);
+
+    let grai_bump = ctx.accounts.grai_state.bump;
+    {
+        let mints = &mut ctx.accounts.grai_state.asset_mints;
+        let Some(index) = mints.iter().position(|m| *m == mint) else {
+            return err!(ErrorCode::AssetUnknown);
+        };
+        let last = mints.len() - 1;
+        if index != last {
+            let moved = mints[last];
+            mints[index] = moved;
+            if ctx.accounts.moved_asset_config.key() != ctx.accounts.asset_config.key()
+                && ctx.accounts.moved_asset_config.owner == &program_id
+            {
+                let mut data = ctx.accounts.moved_asset_config.try_borrow_mut_data()?;
+                let mut moved_asset = AssetConfig::try_deserialize(&mut &data[..])?;
+                require_keys_eq!(moved_asset.asset_mint, moved, ErrorCode::AssetUnknown);
+                moved_asset.id = index as u32;
+                let mut out: &mut [u8] = &mut data[..];
+                moved_asset.try_serialize(&mut out)?;
+            }
+        }
+        mints.pop();
+    }
+
     treasury::close_treasury_vault_if_empty(
         &ctx.accounts.treasury_vault.to_account_info(),
         &ctx.accounts.owner.to_account_info(),
+        &ctx.accounts.grai_state.to_account_info(),
+        grai_bump,
+        &ctx.accounts.token_program.to_account_info(),
     )?;
-
-    let mints = &mut ctx.accounts.grai_state.asset_mints;
-    let Some(index) = mints.iter().position(|m| *m == mint) else {
-        return err!(ErrorCode::AssetUnknown);
-    };
-    let last = mints.len() - 1;
-    if index != last {
-        let moved = mints[last];
-        mints[index] = moved;
-        if ctx.accounts.moved_asset_config.key() != ctx.accounts.asset_config.key()
-            && ctx.accounts.moved_asset_config.owner == &program_id
-        {
-            let mut data = ctx.accounts.moved_asset_config.try_borrow_mut_data()?;
-            let mut moved_asset = AssetConfig::try_deserialize(&mut &data[..])?;
-            require_keys_eq!(moved_asset.asset_mint, moved, ErrorCode::AssetUnknown);
-            moved_asset.id = index as u32;
-            let mut out: &mut [u8] = &mut data[..];
-            moved_asset.try_serialize(&mut out)?;
-        }
-    }
-    mints.pop();
 
     let new_space = GraiState::space(
         ctx.accounts.grai_state.asset_mints.len(),

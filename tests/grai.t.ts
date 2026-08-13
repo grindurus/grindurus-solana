@@ -48,6 +48,11 @@ const GRAI_TOKEN_NAME = "Grinders Artificial Index";
 const GRAI_TOKEN_SYMBOL = "GRAI";
 const GRAI_TOKEN_URI = "https://grindurus.xyz/metadata.json";
 
+/** Cloned Pyth USDC/USD push feed (`Anchor.toml` test.validator.clone). */
+const PYTH_USDC_USD_PUSH = new PublicKey(
+  "Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX",
+);
+
 /** Matches on-chain `DEFAULT_*_CUT_BPS` / `Config` defaults. */
 const DEFAULT_DIVIDEND_CUT_BPS = 5_000; // 50%
 const DEFAULT_TREASURY_CUT_BPS = 5_000; // 50%
@@ -399,6 +404,39 @@ describe("GRAI tokenomics", () => {
     );
   }
 
+  function setPriceFeedAccounts(
+    mint: PublicKey,
+    priceFeed: PublicKey,
+    movedAssetConfig?: PublicKey,
+  ) {
+    const assetConfig = assetConfigPda(mint, program.programId)[0];
+    return {
+      owner: authority,
+      assetMint: mint,
+      graiState,
+      assetConfig,
+      vaultAta: vaultAtaPda(mint, program.programId)[0],
+      treasuryVault: treasuryVaultPda(mint, program.programId)[0],
+      priceFeed,
+      movedAssetConfig: movedAssetConfig ?? assetConfig,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      rent: SYSVAR_RENT_PUBKEY,
+    };
+  }
+
+  async function setPriceFeed(
+    paused: boolean,
+    mint: PublicKey,
+    priceFeed: PublicKey,
+    movedAssetConfig?: PublicKey,
+  ): Promise<string> {
+    return program.methods
+      .setPriceFeed(paused)
+      .accountsPartial(setPriceFeedAccounts(mint, priceFeed, movedAssetConfig))
+      .rpc();
+  }
+
   async function ensureAta(
     mint: PublicKey,
     owner: PublicKey,
@@ -617,7 +655,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: usdcVaultAta,
         treasuryVault: usdcTreasuryVault,
         priceFeed: usdcUsdFeed,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: usdcAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -638,7 +676,7 @@ describe("GRAI tokenomics", () => {
           vaultAta: usdcVaultAta,
           treasuryVault: usdcTreasuryVault,
           priceFeed: asset.priceFeed,
-          movedAssetConfig: SystemProgram.programId,
+          movedAssetConfig: usdcAssetConfig,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -654,7 +692,7 @@ describe("GRAI tokenomics", () => {
           vaultAta: usdcVaultAta,
           treasuryVault: usdcTreasuryVault,
           priceFeed: usdcUsdFeed,
-          movedAssetConfig: SystemProgram.programId,
+          movedAssetConfig: usdcAssetConfig,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -691,7 +729,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: usdcVaultAta,
         treasuryVault: usdcTreasuryVault,
         priceFeed: altFeed,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: usdcAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -730,7 +768,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: usdcVaultAta,
         treasuryVault: usdcTreasuryVault,
         priceFeed: usdcUsdFeed,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: usdcAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -741,14 +779,8 @@ describe("GRAI tokenomics", () => {
     expect(asset.paused).to.be.true;
     expect(asset.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
 
-    const replacement = await initTestPriceFeed(
-      feedProgram,
-      authority,
-      usdcMint.publicKey,
-      USDC_USD_PRICE,
-      USD_PRICE_DECIMALS,
-      "USDC REPL / USD",
-    );
+    const replacement = PYTH_USDC_USD_PUSH;
+    expect(replacement.toBase58()).to.not.equal(usdcUsdFeed.toBase58());
     await program.methods
       .setPriceFeed(false)
       .accountsPartial({
@@ -759,7 +791,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: usdcVaultAta,
         treasuryVault: usdcTreasuryVault,
         priceFeed: replacement,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: usdcAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -781,7 +813,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: usdcVaultAta,
         treasuryVault: usdcTreasuryVault,
         priceFeed: replacement,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: usdcAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -797,7 +829,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: usdcVaultAta,
         treasuryVault: usdcTreasuryVault,
         priceFeed: usdcUsdFeed,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: usdcAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -807,6 +839,126 @@ describe("GRAI tokenomics", () => {
     asset = await program.account.assetConfig.fetch(usdcAssetConfig);
     expect(asset.priceFeed.toBase58()).to.equal(usdcUsdFeed.toBase58());
     expect(asset.paused).to.be.false;
+  });
+
+  it("set_price_feed lists, ignores unpaused oracle, replaces while paused, and delists", async () => {
+    const mint = Keypair.generate();
+    await createTestSplMint(provider, authority, mint, usdcDecimals);
+    const customFeed = await initTestPriceFeed(
+      feedProgram,
+      authority,
+      mint.publicKey,
+      USDC_USD_PRICE,
+      USD_PRICE_DECIMALS,
+      "LIST / USD",
+    );
+    const [config] = assetConfigPda(mint.publicKey, program.programId);
+    const [treasuryVault] = treasuryVaultPda(mint.publicKey, program.programId);
+
+    await setPriceFeed(false, mint.publicKey, customFeed);
+
+    let asset = await program.account.assetConfig.fetch(config);
+    expect(asset.assetMint.toBase58()).to.equal(mint.publicKey.toBase58());
+    expect(asset.priceFeed.toBase58()).to.equal(customFeed.toBase58());
+    expect(asset.paused).to.be.false;
+    expect(
+      (await program.account.graiState.fetch(graiState)).assetMints.some((m) =>
+        m.equals(mint.publicKey),
+      ),
+    ).to.be.true;
+    expect(
+      (await provider.connection.getAccountInfo(treasuryVault))?.owner.toBase58(),
+    ).to.equal(TOKEN_PROGRAM_ID.toBase58());
+
+    // Listed + unpaused: oracle pubkey is ignored.
+    await setPriceFeed(false, mint.publicKey, PYTH_USDC_USD_PUSH);
+    asset = await program.account.assetConfig.fetch(config);
+    expect(asset.priceFeed.toBase58()).to.equal(customFeed.toBase58());
+    expect(asset.paused).to.be.false;
+
+    await setPriceFeed(true, mint.publicKey, PYTH_USDC_USD_PUSH);
+    asset = await program.account.assetConfig.fetch(config);
+    expect(asset.paused).to.be.true;
+    expect(asset.priceFeed.toBase58()).to.equal(customFeed.toBase58());
+
+    // Listed + paused + non-NONE → replace oracle and apply `paused`.
+    await setPriceFeed(false, mint.publicKey, PYTH_USDC_USD_PUSH);
+    asset = await program.account.assetConfig.fetch(config);
+    expect(asset.priceFeed.toBase58()).to.equal(PYTH_USDC_USD_PUSH.toBase58());
+    expect(asset.paused).to.be.false;
+
+    await setPriceFeed(true, mint.publicKey, PYTH_USDC_USD_PUSH);
+    await setPriceFeed(false, mint.publicKey, SystemProgram.programId);
+
+    expect(await provider.connection.getAccountInfo(config)).to.equal(null);
+    const treasuryAfter = await provider.connection.getAccountInfo(treasuryVault);
+    expect(
+      treasuryAfter === null || treasuryAfter.lamports === 0,
+    ).to.equal(true);
+    expect(
+      (await program.account.graiState.fetch(graiState)).assetMints.some((m) =>
+        m.equals(mint.publicKey),
+      ),
+    ).to.be.false;
+  });
+
+  it("set_price_feed delist swap-removes a mid-list asset and reindexes the tail", async () => {
+    const firstMint = Keypair.generate();
+    const lastMint = Keypair.generate();
+    await createTestSplMint(provider, authority, firstMint, usdcDecimals);
+    await createTestSplMint(provider, authority, lastMint, usdcDecimals);
+    const firstFeed = await initTestPriceFeed(
+      feedProgram,
+      authority,
+      firstMint.publicKey,
+      USDC_USD_PRICE,
+      USD_PRICE_DECIMALS,
+      "MID1 / USD",
+    );
+    const lastFeed = await initTestPriceFeed(
+      feedProgram,
+      authority,
+      lastMint.publicKey,
+      USDC_USD_PRICE,
+      USD_PRICE_DECIMALS,
+      "MID2 / USD",
+    );
+    const [firstConfig] = assetConfigPda(firstMint.publicKey, program.programId);
+    const [lastConfig] = assetConfigPda(lastMint.publicKey, program.programId);
+
+    await setPriceFeed(false, firstMint.publicKey, firstFeed);
+    await setPriceFeed(false, lastMint.publicKey, lastFeed);
+
+    const firstId = (await program.account.assetConfig.fetch(firstConfig)).id;
+    expect((await program.account.assetConfig.fetch(lastConfig)).id).to.equal(
+      firstId + 1,
+    );
+
+    await setPriceFeed(true, firstMint.publicKey, firstFeed);
+    await setPriceFeed(
+      false,
+      firstMint.publicKey,
+      SystemProgram.programId,
+      lastConfig,
+    );
+
+    expect(await provider.connection.getAccountInfo(firstConfig)).to.equal(null);
+    const moved = await program.account.assetConfig.fetch(lastConfig);
+    expect(moved.assetMint.toBase58()).to.equal(lastMint.publicKey.toBase58());
+    expect(moved.id).to.equal(firstId);
+    const registry = await program.account.graiState.fetch(graiState);
+    expect(registry.assetMints.some((m) => m.equals(firstMint.publicKey))).to.be
+      .false;
+    expect(registry.assetMints.some((m) => m.equals(lastMint.publicKey))).to.be
+      .true;
+
+    await setPriceFeed(true, lastMint.publicKey, lastFeed);
+    await setPriceFeed(false, lastMint.publicKey, SystemProgram.programId);
+    expect(
+      (await program.account.graiState.fetch(graiState)).assetMints.some((m) =>
+        m.equals(lastMint.publicKey),
+      ),
+    ).to.be.false;
   });
 
   it("deposit moves USDC to grinders ATA and mints GRAI at book value", async () => {
@@ -925,7 +1077,7 @@ describe("GRAI tokenomics", () => {
         vaultAta: solVaultAta,
         treasuryVault: solTreasuryVault,
         priceFeed: solUsdFeed,
-        movedAssetConfig: SystemProgram.programId,
+        movedAssetConfig: solAssetConfig,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         rent: SYSVAR_RENT_PUBKEY,
@@ -944,7 +1096,7 @@ describe("GRAI tokenomics", () => {
           vaultAta: solVaultAta,
           treasuryVault: solTreasuryVault,
           priceFeed: asset.priceFeed,
-          movedAssetConfig: SystemProgram.programId,
+          movedAssetConfig: solAssetConfig,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -960,7 +1112,7 @@ describe("GRAI tokenomics", () => {
           vaultAta: solVaultAta,
           treasuryVault: solTreasuryVault,
           priceFeed: solUsdFeed,
-          movedAssetConfig: SystemProgram.programId,
+          movedAssetConfig: solAssetConfig,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -1757,7 +1909,7 @@ describe("GRAI tokenomics", () => {
             vaultAta: rogueVault,
             treasuryVault: treasuryVaultPda(rogueMint.publicKey, program.programId)[0],
             priceFeed: solUsdFeed,
-            movedAssetConfig: SystemProgram.programId,
+            movedAssetConfig: rogueConfig,
             tokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
             rent: SYSVAR_RENT_PUBKEY,
@@ -1825,7 +1977,7 @@ describe("GRAI tokenomics", () => {
           vaultAta: rogueVault,
           treasuryVault: treasuryVaultPda(rogueMint.publicKey, program.programId)[0],
           priceFeed: rogueFeed,
-          movedAssetConfig: SystemProgram.programId,
+          movedAssetConfig: rogueConfig,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -1843,7 +1995,7 @@ describe("GRAI tokenomics", () => {
           vaultAta: rogueVault,
           treasuryVault: treasuryVaultPda(rogueMint.publicKey, program.programId)[0],
           priceFeed: SystemProgram.programId,
-          movedAssetConfig: SystemProgram.programId,
+          movedAssetConfig: rogueConfig,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -1859,10 +2011,15 @@ describe("GRAI tokenomics", () => {
         ),
       ).to.be.true;
 
-      // Second FEED_NONE while paused should delist. Closing the empty treasury
-      // vault currently trips "spent from the balance of an account it does not
-      // own" when the vault ATA was never initialized — assert pause path above
-      // and leave delist coverage to a dedicated vault-lifecycle test.
+      await setPriceFeed(false, rogueMint.publicKey, SystemProgram.programId);
+      expect(await provider.connection.getAccountInfo(rogueConfig)).to.equal(
+        null,
+      );
+      expect(
+        (await program.account.graiState.fetch(graiState)).assetMints.some((m) =>
+          m.equals(rogueMint.publicKey),
+        ),
+      ).to.be.false;
     });
   });
 });

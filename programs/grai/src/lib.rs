@@ -477,7 +477,8 @@ pub struct SetPriceFeed<'info> {
     pub price_feed: UncheckedAccount<'info>,
 
     /// CHECK: Moved asset config when swap-removing mid-list on delist.
-    /// Pass `system_program` when unused (list / update / last asset).
+    /// Pass `asset_config` when unused (list / update / last asset).
+    #[account(mut)]
     pub moved_asset_config: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
@@ -1601,6 +1602,7 @@ pub mod grai {
 
     /// EVM `setFeed` waterfall: list / pause-only / replace-while-paused / delist (`FEED_NONE`).
     /// `paused` mirrors `Feed.paused`. Pass System Program as `price_feed` for delist (must be paused).
+    /// `moved_asset_config` is the swapped tail config on mid-list delist; pass `asset_config` otherwise.
     pub fn set_price_feed<'info>(
         ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>,
         paused: bool,

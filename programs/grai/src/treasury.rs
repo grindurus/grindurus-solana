@@ -12,7 +12,8 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::associated_token;
 use anchor_spl::token::{
-    self, spl_token::native_mint, InitializeAccount3, InitializeMint2, Mint, TokenAccount, Transfer,
+    self, spl_token::native_mint, CloseAccount, InitializeAccount3, InitializeMint2, Mint,
+    TokenAccount, Transfer,
 };
 
 use crate::vault::transfer_from_vault;
@@ -1008,19 +1009,27 @@ pub fn claim_treasury_shares(
 pub fn close_treasury_vault_if_empty<'info>(
     vault_info: &AccountInfo<'info>,
     destination: &AccountInfo<'info>,
+    grai_state: &AccountInfo<'info>,
+    grai_bump: u8,
+    token_program: &AccountInfo<'info>,
 ) -> Result<()> {
     if vault_info.data_is_empty() || *vault_info.owner != token::ID {
         return Ok(());
     }
     let amount = token_amount(vault_info)?;
     require!(amount == 0, ErrorCode::AssetBalanceNonZero);
-    let dest_lamports = destination.lamports();
-    **destination.try_borrow_mut_lamports()? = dest_lamports
-        .checked_add(vault_info.lamports())
-        .ok_or(ErrorCode::MathOverflow)?;
-    **vault_info.try_borrow_mut_lamports()? = 0;
-    vault_info.assign(&system_program::ID);
-    vault_info.realloc(0, false)?;
+    let seeds: &[&[u8]] = &[GraiState::SEED, &[grai_bump]];
+    token::close_account(
+        CpiContext::new_with_signer(
+            token_program.clone(),
+            CloseAccount {
+                account: vault_info.clone(),
+                destination: destination.clone(),
+                authority: grai_state.clone(),
+            },
+            &[seeds],
+        ),
+    )?;
     Ok(())
 }
 
