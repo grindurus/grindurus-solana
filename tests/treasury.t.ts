@@ -113,6 +113,38 @@ function metaplexEditionPda(mint: PublicKey): PublicKey {
     TOKEN_METADATA_PROGRAM_ID,
   )[0];
 }
+
+function parseMetaplexRoyalty(data: Buffer): {
+  sellerFeeBasisPoints: number;
+  creators: { address: PublicKey; verified: boolean; share: number }[];
+} {
+  let offset = 1 + 32 + 32;
+  for (let i = 0; i < 3; i++) {
+    const len = data.readUInt32LE(offset);
+    offset += 4 + len;
+  }
+  const sellerFeeBasisPoints = data.readUInt16LE(offset);
+  offset += 2;
+  const hasCreators = data.readUInt8(offset);
+  offset += 1;
+  const creators: { address: PublicKey; verified: boolean; share: number }[] =
+    [];
+  if (hasCreators === 1) {
+    const n = data.readUInt32LE(offset);
+    offset += 4;
+    for (let i = 0; i < n; i++) {
+      const address = new PublicKey(data.subarray(offset, offset + 32));
+      offset += 32;
+      const verified = data.readUInt8(offset) === 1;
+      offset += 1;
+      const share = data.readUInt8(offset);
+      offset += 1;
+      creators.push({ address, verified, share });
+    }
+  }
+  return { sellerFeeBasisPoints, creators };
+}
+
 function treasuryNftDepositAccounts(locker: PublicKey, programId: PublicKey) {
   const [treasuryNftMint] = treasuryNftMintPda(locker, programId);
   return {
@@ -320,8 +352,8 @@ describe("Treasury referrals / poach / NFT", () => {
   }
 
   /**
-   * Claim remaining: `[locker_book, L1_nft_ata, L1_yield_ata, L1_book, L2_nft_ata, L2_yield_ata]`
-   * plus optional L2 book PDA so `referrer_info` can resolve the L2 cashflow NFT.
+   * Claim remaining: `[locker_book, L1_nft, L1_ata, L1_book, L2_nft, L2_ata, L2_book]`.
+   * N levels need N+1 books (H-04). Pad the last ancestor with SystemProgram when unused.
    */
   function claimAffiliateRemaining(opts: {
     locker: PublicKey;
@@ -344,11 +376,11 @@ describe("Treasury referrals / poach / NFT", () => {
       ),
       meta(opts.l2NftAta ?? SystemProgram.programId, true),
       meta(opts.l2YieldAta ?? SystemProgram.programId, true),
+      meta(
+        l2 ? referrerPda(l2, program.programId)[0] : SystemProgram.programId,
+        true,
+      ),
     ];
-    // Pay walk loads L2 book via `referrer_info` — must be present in the pool.
-    if (l2) {
-      accounts.push(meta(referrerPda(l2, program.programId)[0], true));
-    }
     return accounts;
   }
 
@@ -590,9 +622,13 @@ describe("Treasury referrals / poach / NFT", () => {
     const oldL2Book = opts.oldL2
       ? referrerPda(opts.oldL2, program.programId)[0]
       : buyerBook;
+    // Self-poach: EVM `newL2 = referrerOf(locker)` before rebind == seller.
+    const selfPoach = poacher.publicKey.equals(locker);
     const newL2Book = opts.newL2
       ? referrerPda(opts.newL2, program.programId)[0]
-      : buyerBook;
+      : selfPoach && !seller.equals(locker)
+        ? sellerBook
+        : buyerBook;
 
     await program.methods
       .poach()
@@ -660,7 +696,7 @@ describe("Treasury referrals / poach / NFT", () => {
     usdcUsdFeed = asset.priceFeed;
     if (asset.paused) {
       await program.methods
-        .setPriceFeed(false)
+        .setFeed(false)
         .accountsPartial({
           owner: authority,
           assetMint: usdcMint.publicKey,
@@ -820,6 +856,63 @@ describe("Treasury referrals / poach / NFT", () => {
       metaplexMetadataPda(nftMint),
     );
     expect(metaAcc).to.not.be.null;
+    const royalty = parseMetaplexRoyalty(Buffer.from(metaAcc!.data));
+    expect(royalty.sellerFeeBasisPoints).to.equal(500);
+    expect(royalty.creators).to.have.length(1);
+    expect(royalty.creators[0].address.toBase58()).to.equal(
+      beneficiar.publicKey.toBase58(),
+    );
+    expect(royalty.creators[0].share).to.equal(100);
+    expect(royalty.creators[0].verified).to.equal(false);
+  });
+
+  it("deposit rejects non-locker treasury NFT ATA (M-06)", async () => {
+    const locker = Keypair.generate();
+    const attacker = Keypair.generate();
+    await airdrop(locker);
+    await airdrop(attacker);
+    const amount = 1_000_000n;
+    const depositorAta = await mintUsdc(locker.publicKey, amount);
+    const nftAccounts = treasuryNftDepositAccounts(
+      locker.publicKey,
+      program.programId,
+    );
+    nftAccounts.treasuryNftAta = getAssociatedTokenAddressSync(
+      nftAccounts.treasuryNftMint,
+      attacker.publicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+    await expectTransactionError(
+      program.methods
+        .deposit(new anchor.BN(amount.toString()), false, PublicKey.default)
+        .accountsPartial({
+          depositor: locker.publicKey,
+          graiState,
+          assetMint: usdcMint.publicKey,
+          graiMint: graiMint.publicKey,
+          assetConfig: usdcAssetConfig,
+          priceFeed: usdcUsdFeed,
+          grindersState,
+          referrer: referrerPda(locker.publicKey, program.programId)[0],
+          ...nftAccounts,
+          depositorAta,
+          grindersAta: grindersUsdcAta(),
+          depositorGraiAta: await ensureAta(graiMint.publicKey, locker.publicKey),
+          ...depositEscrow(locker.publicKey),
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .preInstructions([
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+        ])
+        .signers([locker])
+        .rpc(),
+      "InvalidDestination",
+    );
   });
 
   it("deposit with sticky referrer credits L1/L2 books (Alice←Bob←Carol)", async () => {
@@ -857,6 +950,112 @@ describe("Treasury referrals / poach / NFT", () => {
     // L1/L2 unchanged by alice's own second deposit
     expect(BigInt(book.l1Value.toString())).to.equal(40_000_000n);
     expect(BigInt(book.l2Value.toString())).to.equal(25_000_000n);
+  });
+
+  it("M-04: later deposit without L1/L2 remaining reverts; books unchanged", async () => {
+    const root = Keypair.generate();
+    const mid = Keypair.generate();
+    const leaf = Keypair.generate();
+    await airdrop(root);
+    await airdrop(mid);
+    await airdrop(leaf);
+
+    await depositUsdc(root, 5_000_000n);
+    await depositUsdc(mid, 4_000_000n, root.publicKey, root.publicKey);
+    await depositUsdc(
+      leaf,
+      3_000_000n,
+      mid.publicKey,
+      mid.publicKey,
+      root.publicKey,
+    );
+    await assertNode(root.publicKey, 5_000_000n, 4_000_000n, 3_000_000n);
+    await assertNode(mid.publicKey, 4_000_000n, 3_000_000n, 0n);
+    await assertNode(leaf.publicKey, 3_000_000n, 0n, 0n);
+
+    await expectTransactionError(
+      depositUsdc(leaf, 1_000_000n),
+      "InvalidRemainingAccounts",
+    );
+    await assertNode(root.publicKey, 5_000_000n, 4_000_000n, 3_000_000n);
+    await assertNode(mid.publicKey, 4_000_000n, 3_000_000n, 0n);
+    await assertNode(leaf.publicKey, 3_000_000n, 0n, 0n);
+  });
+
+  it("M-04: later deposit with L1/L2 remaining credits ancestors", async () => {
+    const root = Keypair.generate();
+    const mid = Keypair.generate();
+    const leaf = Keypair.generate();
+    await airdrop(root);
+    await airdrop(mid);
+    await airdrop(leaf);
+
+    await depositUsdc(root, 5_000_000n);
+    await depositUsdc(mid, 4_000_000n, root.publicKey, root.publicKey);
+    await depositUsdc(
+      leaf,
+      3_000_000n,
+      mid.publicKey,
+      mid.publicKey,
+      root.publicKey,
+    );
+
+    await depositUsdc(
+      leaf,
+      2_000_000n,
+      mid.publicKey,
+      mid.publicKey,
+      root.publicKey,
+    );
+    await assertNode(leaf.publicKey, 5_000_000n, 0n, 0n);
+    await assertNode(mid.publicKey, 4_000_000n, 5_000_000n, 0n);
+    await assertNode(root.publicKey, 5_000_000n, 4_000_000n, 5_000_000n);
+
+    const leafAsk = await previewPoach(leaf.publicKey, dias.publicKey);
+    expect(BigInt(leafAsk.price.toString())).to.equal(5_000_000n);
+    const midAsk = await previewPoach(mid.publicKey, dias.publicKey);
+    expect(BigInt(midAsk.price.toString())).to.equal(9_000_000n); // 4+5
+  });
+
+  it("M-04: omit L2 when two-hop upline exists reverts; L1-only ok when L1 is self-root", async () => {
+    const root = Keypair.generate();
+    const mid = Keypair.generate();
+    const leaf = Keypair.generate();
+    await airdrop(root);
+    await airdrop(mid);
+    await airdrop(leaf);
+
+    await depositUsdc(root, 1_000_000n);
+    await depositUsdc(mid, 1_000_000n, root.publicKey, root.publicKey);
+    await depositUsdc(
+      leaf,
+      1_000_000n,
+      mid.publicKey,
+      mid.publicKey,
+      root.publicKey,
+    );
+
+    // Two-hop: L1 without L2 must fail.
+    await expectTransactionError(
+      depositUsdc(leaf, 1_000_000n, mid.publicKey, mid.publicKey),
+      "InvalidRemainingAccounts",
+    );
+    await assertNode(leaf.publicKey, 1_000_000n, 0n, 0n);
+    await assertNode(mid.publicKey, 1_000_000n, 1_000_000n, 0n);
+    await assertNode(root.publicKey, 1_000_000n, 1_000_000n, 1_000_000n);
+
+    // One-hop under self-rooted L1: only L1 remaining is enough.
+    await depositUsdc(mid, 2_000_000n, root.publicKey, root.publicKey);
+    await assertNode(mid.publicKey, 3_000_000n, 1_000_000n, 0n);
+    await assertNode(root.publicKey, 1_000_000n, 3_000_000n, 1_000_000n);
+  });
+
+  it("M-04: self-rooted later deposit needs no remaining", async () => {
+    const solo = Keypair.generate();
+    await airdrop(solo);
+    await depositUsdc(solo, 1_000_000n);
+    await depositUsdc(solo, 2_000_000n);
+    await assertNode(solo.publicKey, 3_000_000n, 0n, 0n);
   });
 
   it("preview_poach ask = value + l1_value", async () => {
@@ -901,6 +1100,35 @@ describe("Treasury referrals / poach / NFT", () => {
       referrerPda(b.publicKey, program.programId)[0],
     );
     expect(book.referrer.toBase58()).to.equal(b.publicKey.toBase58());
+  });
+
+  it("deposit with missing L2 book does not self-root (H-07)", async () => {
+    const l2 = Keypair.generate();
+    const l1 = Keypair.generate();
+    const locker = Keypair.generate();
+    await airdrop(l2);
+    await airdrop(l1);
+    await airdrop(locker);
+
+    await depositUsdc(l2, 1_000_000n);
+    await depositUsdc(l1, 1_000_000n, l2.publicKey, l2.publicKey);
+
+    const lockerBook = referrerPda(locker.publicKey, program.programId)[0];
+    await expectTransactionError(
+      depositUsdc(locker, 1_000_000n, l1.publicKey, l1.publicKey),
+      "InvalidRemainingAccounts",
+    );
+    expect(await provider.connection.getAccountInfo(lockerBook)).to.equal(null);
+
+    await depositUsdc(
+      locker,
+      1_000_000n,
+      l1.publicKey,
+      l1.publicKey,
+      l2.publicKey,
+    );
+    const book = await program.account.referrer.fetch(lockerBook);
+    expect(book.referrer.toBase58()).to.equal(l1.publicKey.toBase58());
   });
 
   it("rejects protocol-sink sticky referrer", async () => {
@@ -1013,6 +1241,14 @@ describe("Treasury referrals / poach / NFT", () => {
       expect((await tokenBal(beneficiarAta)) - benBefore).to.equal(
         GROSS_PROFIT_SHARE - L1_FULL - L2_FULL,
       );
+      await assertNode(locker.publicKey, 100_000_000n + DIVIDEND, 0n, 0n);
+      await assertNode(l1.publicKey, 1_000_000n, 100_000_000n + DIVIDEND, 0n);
+      await assertNode(
+        l2.publicKey,
+        1_000_000n,
+        1_000_000n,
+        100_000_000n + DIVIDEND,
+      );
     } finally {
       await unlockUser(locker.publicKey, locker);
     }
@@ -1100,6 +1336,58 @@ describe("Treasury referrals / poach / NFT", () => {
     }
   });
 
+  it("claim with missing L1 NFT ATA retains share; L2 still paid (M-07)", async () => {
+    const locker = Keypair.generate();
+    const l1 = Keypair.generate();
+    const l2 = Keypair.generate();
+    await airdrop(locker);
+    await airdrop(l1);
+    await airdrop(l2);
+    await prepareSoleLockerClaim(locker);
+
+    try {
+      await depositUsdc(l2, 1_000_000n);
+      await depositUsdc(l1, 1_000_000n, l2.publicKey, l2.publicKey);
+      await depositUsdc(
+        locker,
+        100_000_000n,
+        l1.publicKey,
+        l1.publicKey,
+        l2.publicKey,
+      );
+      await lockAll(locker);
+      await distributeYield(YIELD);
+
+      const l1Usdc = await ensureAta(usdcMint.publicKey, l1.publicKey);
+      const l2Usdc = await ensureAta(usdcMint.publicKey, l2.publicKey);
+      const l1Before = await tokenBal(l1Usdc);
+      const l2Before = await tokenBal(l2Usdc);
+      const benBefore = await tokenBal(beneficiarAta);
+      const treasuryBefore = await tokenBal(usdcTreasuryVault);
+
+      // Omit L1 NFT ATA (SystemProgram default) — spoof/miss must not dump L1 into beneficiar
+      // or brick L2. L1 share stays in treasury; L2 still paid.
+      await claimMax(locker, {
+        l1: l1.publicKey,
+        l2: l2.publicKey,
+        l2NftAta: await nftAtaOf(l2.publicKey),
+        l1YieldAta: l1Usdc,
+        l2YieldAta: l2Usdc,
+      });
+
+      expect(await tokenBal(l1Usdc)).to.equal(l1Before);
+      expect((await tokenBal(l2Usdc)) - l2Before).to.equal(L2_FULL);
+      expect((await tokenBal(beneficiarAta)) - benBefore).to.equal(
+        GROSS_PROFIT_SHARE - L1_FULL - L2_FULL,
+      );
+      expect(await tokenBal(usdcTreasuryVault)).to.equal(
+        treasuryBefore - (GROSS_PROFIT_SHARE - L1_FULL),
+      );
+    } finally {
+      await unlockUser(locker.publicKey, locker);
+    }
+  });
+
   ////////////////////////////// poach //////////////////////////////
 
   it("poach self-slot pays locker and rewrites sticky referrer", async () => {
@@ -1124,6 +1412,65 @@ describe("Treasury referrals / poach / NFT", () => {
     expect(book.referrer.toBase58()).to.equal(poacher.publicKey.toBase58());
     // Cashflow NFT stays with locker
     expect(await tokenBal(await nftAtaOf(locker.publicKey))).to.equal(1n);
+  });
+
+  it("self-poach with upline keeps buyer l1 credit (M-05)", async () => {
+    const locker = Keypair.generate();
+    const upline = Keypair.generate();
+    await airdrop(locker);
+    await airdrop(upline);
+
+    await depositUsdc(upline, 10_000_000n);
+    await depositUsdc(locker, 90_000_000n, upline.publicKey, upline.publicKey);
+
+    await assertNode(upline.publicKey, 10_000_000n, 90_000_000n, 0n);
+    await assertNode(locker.publicKey, 90_000_000n, 0n, 0n);
+
+    const uplineGrai = await ensureAta(graiMint.publicKey, upline.publicKey);
+    const uplineBefore = await tokenBal(uplineGrai);
+
+    const quote = await poach(locker, locker.publicKey, upline.publicKey);
+    expect(BigInt(quote.price.toString())).to.equal(90_000_000n);
+    expect((await tokenBal(uplineGrai)) - uplineBefore).to.equal(90_000_000n);
+
+    const book = await program.account.referrer.fetch(
+      referrerPda(locker.publicKey, program.programId)[0],
+    );
+    expect(book.referrer.toBase58()).to.equal(locker.publicKey.toBase58());
+    // Buyer credits must survive Anchor exit (M-05): l1 += own (90M).
+    await assertNode(locker.publicKey, 90_000_000n, 90_000_000n, 0n);
+    // Seller: l1 -= own → 0; l2 -= 0 + own (newL2 credit) → 90M
+    await assertNode(upline.publicKey, 10_000_000n, 0n, 90_000_000n);
+  });
+
+  it("self-poach without upline reverts AlreadyBound", async () => {
+    const locker = Keypair.generate();
+    await airdrop(locker);
+    await depositUsdc(locker, 100_000_000n);
+
+    const lockerBook = referrerPda(locker.publicKey, program.programId)[0];
+    await expectTransactionError(
+      program.methods
+        .poach()
+        .accountsPartial({
+          poacher: locker.publicKey,
+          graiState,
+          locker: locker.publicKey,
+          lockerReferrer: lockerBook,
+          buyerBook: lockerBook,
+          sellerBook: lockerBook,
+          oldL2Book: lockerBook,
+          newL2Book: lockerBook,
+          graiMint: graiMint.publicKey,
+          poacherGraiAta: await ensureAta(graiMint.publicKey, locker.publicKey),
+          sellerGraiAta: await ensureAta(graiMint.publicKey, locker.publicKey),
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([locker])
+        .rpc(),
+      "AlreadyBound",
+    );
   });
 
   it("poach non-self pays seller and shifts L1/L2 books", async () => {
@@ -1206,12 +1553,29 @@ describe("Treasury referrals / poach / NFT", () => {
   it("poach reverts ReferralLoop when downline buys referrer seat", async () => {
     const root = Keypair.generate();
     const mid = Keypair.generate();
+    const funder = Keypair.generate();
     await airdrop(root);
     await airdrop(mid);
+    await airdrop(funder);
     await depositUsdc(root, 10_000_000n);
     await depositUsdc(mid, 10_000_000n, root.publicKey, root.publicKey);
-    // Fund ask (root value+l1) so the ix reaches the loop guard, not InvalidAmount.
-    await depositUsdc(mid, 50_000_000n);
+    // Fund mid's GRAI without touching root's ask (M-04 would credit L1 on mid's deposit).
+    await depositUsdc(funder, 50_000_000n);
+    const funderGrai = await ensureAta(graiMint.publicKey, funder.publicKey);
+    const midGrai = await ensureAta(graiMint.publicKey, mid.publicKey);
+    await provider.sendAndConfirm!(
+      new Transaction().add(
+        createTransferInstruction(
+          funderGrai,
+          midGrai,
+          funder.publicKey,
+          50_000_000n,
+          [],
+          TOKEN_PROGRAM_ID,
+        ),
+      ),
+      [funder],
+    );
     await expectTransactionError(
       poach(mid, root.publicKey, root.publicKey),
       "ReferralLoop",

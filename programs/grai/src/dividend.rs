@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
 use anchor_spl::associated_token::get_associated_token_address;
+use anchor_spl::token;
 
+use crate::state::create_account_absorb_prefund;
 use crate::tokenomics::DIVIDEND_PRECISION;
 use crate::vault::transfer_from_vault;
 use crate::{AssetConfig, ErrorCode, Position};
@@ -9,7 +10,7 @@ use crate::{AssetConfig, ErrorCode, Position};
 /// Accrue a dividend cut of `asset` to unvoted lockers via the MasterChef index (EVM `_distribute`).
 ///
 /// Returns the amount that must go to the treasury vault: the full cut when there is no eligible
-/// base / the index bump would be zero, or index dust (`amount - reserved`) otherwise.
+/// base / the index bump would reserve nothing, or index dust (`amount - reserved`) otherwise.
 ///
 /// `eligible` is `total_locked - total_voted`: voted GRAI earns no dividends.
 pub fn distribute_dividend(asset: &mut AssetConfig, amount: u64, eligible: u64) -> Result<u64> {
@@ -31,16 +32,22 @@ pub fn distribute_dividend(asset: &mut AssetConfig, amount: u64, eligible: u64) 
         return Ok(amount);
     }
 
-    asset.acc_share = asset
-        .acc_share
-        .checked_add(index_increase)
-        .ok_or(ErrorCode::MathOverflow)?;
+    // Max this index bump can ever pay (one holder of all `eligible`); if floor-division
+    // yields zero reserved, do not bump `acc_share` (EVM `_distribute` reserved==0 path).
     let reserved = index_increase
         .checked_mul(eligible as u128)
         .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
         .ok_or(ErrorCode::MathOverflow)?;
     require!(reserved <= u64::MAX as u128, ErrorCode::MathOverflow);
     let reserved = reserved as u64;
+    if reserved == 0 {
+        return Ok(amount);
+    }
+
+    asset.acc_share = asset
+        .acc_share
+        .checked_add(index_increase)
+        .ok_or(ErrorCode::MathOverflow)?;
     asset.total_claimable = asset
         .total_claimable
         .checked_add(reserved)
@@ -80,7 +87,7 @@ pub fn settle(
 
 /// Read a remaining `AssetConfig`, verifying it is the canonical PDA owned by this program
 /// (guards against a forged account supplying an inflated index).
-fn load_asset_config(
+pub(crate) fn load_asset_config(
     asset_info: &AccountInfo,
     mint: &Pubkey,
     program_id: &Pubkey,
@@ -106,15 +113,29 @@ fn store_asset_config(asset_info: &AccountInfo, asset: &AssetConfig) -> Result<(
 }
 
 /// Verify a remaining vault ATA is the canonical vault PDA for `mint`.
-fn require_vault_pda(vault_info: &AccountInfo, mint: &Pubkey, program_id: &Pubkey) -> Result<()> {
+pub(crate) fn require_vault_pda(
+    vault_info: &AccountInfo,
+    mint: &Pubkey,
+    program_id: &Pubkey,
+) -> Result<()> {
     let (pda, _) =
         Pubkey::find_program_address(&[AssetConfig::VAULT_SEED, mint.as_ref()], program_id);
     require_keys_eq!(vault_info.key(), pda, ErrorCode::InvalidDestination);
+    require_keys_eq!(*vault_info.owner, token::ID, ErrorCode::InvalidDestination);
+    let data = vault_info.try_borrow_data()?;
+    require!(data.len() >= 32, ErrorCode::InvalidDestination);
+    let vault_mint =
+        Pubkey::try_from(&data[0..32]).map_err(|_| error!(ErrorCode::InvalidDestination))?;
+    require_keys_eq!(vault_mint, *mint, ErrorCode::InvalidDestination);
     Ok(())
 }
 
-/// Verify a remaining holder ATA is `user`'s associated token account for `mint`.
-fn require_holder_ata(holder_info: &AccountInfo, user: &Pubkey, mint: &Pubkey) -> Result<()> {
+/// Verify a remaining token account is `user`'s associated token account for `mint`.
+pub(crate) fn require_holder_ata(
+    holder_info: &AccountInfo,
+    user: &Pubkey,
+    mint: &Pubkey,
+) -> Result<()> {
     require_keys_eq!(
         holder_info.key(),
         get_associated_token_address(user, mint),
@@ -148,21 +169,14 @@ pub fn load_or_init_position<'info>(
     }
 
     let space = 8 + Position::LEN;
-    let rent = Rent::get()?;
-    let lamports = rent.minimum_balance(space);
     let seeds: &[&[u8]] = &[Position::SEED, user.as_ref(), mint.as_ref(), &[bump]];
-    system_program::create_account(
-        CpiContext::new_with_signer(
-            system_program.clone(),
-            system_program::CreateAccount {
-                from: payer.clone(),
-                to: position_info.clone(),
-            },
-            &[seeds],
-        ),
-        lamports,
-        space as u64,
+    create_account_absorb_prefund(
+        position_info,
+        payer,
+        system_program,
         program_id,
+        space,
+        seeds,
     )?;
 
     Ok((

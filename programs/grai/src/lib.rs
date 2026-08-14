@@ -1,6 +1,5 @@
 #![allow(deprecated)]
 
-mod arise;
 mod assets;
 mod bribe;
 mod claim;
@@ -85,7 +84,8 @@ pub struct GraiState {
     pub confirmed: bool,
     pub liquidation_at: i64,
     pub config: Config,
-    /// Secondary-sale royalty in bps (EVM ERC-2981 `royaltyBps`); receiver = locker.
+    /// Secondary-sale royalty in bps written to Treasury NFT Metaplex metadata.
+    /// Receiver is `beneficiar` (or `owner` if unset), snapshotted at mint.
     pub royalty_bps: u16,
     /// Active affiliate referrer levels (`affiliate_share_bps[0..affiliate_levels]`).
     pub affiliate_levels: u8,
@@ -153,12 +153,14 @@ pub struct AssetConfig {
     /// Vault inventory reserved for locker claims (excluded from redeem / revive).
     pub total_claimable: u64,
     pub bump: u8,
+    /// Pyth push price id (EVM `Feed.data`). Zero for custom / Chainlink / legacy Pyth.
+    pub pyth_feed_id: [u8; 32],
 }
 
 impl AssetConfig {
     pub const SEED: &'static [u8] = b"asset";
     pub const VAULT_SEED: &'static [u8] = b"vault";
-    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 1;
+    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 1 + 32;
 }
 
 /// Per-user lock + liquidation vote escrow (GRAI held by the GRAI vault while locked).
@@ -473,7 +475,7 @@ pub struct SetSettlementAsset<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SetPriceFeed<'info> {
+pub struct SetFeed<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
 
@@ -847,7 +849,7 @@ pub struct Distribute<'info> {
     pub vault_ata: Box<Account<'info, TokenAccount>>,
 
     /// In-program treasury inventory vault (EVM `Treasury` balance for this asset).
-    /// Created on `set_price_feed` list alongside the asset vault.
+    /// Created on `set_feed` list alongside the asset vault.
     #[account(
         mut,
         seeds = [treasury::TREASURY_VAULT_SEED, asset_mint.key().as_ref()],
@@ -1062,7 +1064,9 @@ pub struct Claim<'info> {
 }
 
 /// EVM `claimAll(locker)`. Remaining: `[mint, asset_config, price_feed, position, vault,
-/// holder_ata, tip_ata, treasury_vault, beneficiar_ata, referrer_pda, affiliate_ata…]` × N.
+/// holder_ata, tip_ata, treasury_vault, beneficiar_ata, referrer_pda, nft_ata, affiliate_ata…]`
+/// × N. Affiliate tail is `3 * levels + 1` (locker + each ancestor book).
+/// `vault` must be `["vault", mint]`; `holder_ata` / `tip_ata` must be ATAs of `holder` / `payer`.
 #[derive(Accounts)]
 pub struct ClaimAll<'info> {
     #[account(mut)]
@@ -1419,7 +1423,7 @@ pub struct PreviewRedeem<'info> {
 /// Anyone else: open when `confirmed && hasQuorum()`.
 /// On open, orphan vault GRAI (`grai_vault − total_locked`) is sent to `caller`.
 #[derive(Accounts)]
-pub struct LiquidateOpen<'info> {
+pub struct Liquidate<'info> {
     #[account(mut)]
     pub caller: Signer<'info>,
 
@@ -1458,6 +1462,7 @@ pub struct LiquidateOpen<'info> {
 
 /// Close liquidation (permissionless). Remaining accounts: quints
 /// `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per listed asset in registry order.
+/// `vault_ata` must be `["vault", mint]`; `asset_config` must be the canonical PDA.
 #[derive(Accounts)]
 pub struct Revive<'info> {
     pub caller: Signer<'info>,
@@ -1646,11 +1651,11 @@ pub mod grai {
     /// EVM `setFeed` waterfall: list / pause-only / replace-while-paused / delist (`FEED_NONE`).
     /// `paused` mirrors `Feed.paused`. Pass System Program as `price_feed` for delist (must be paused).
     /// `moved_asset_config` is the swapped tail config on mid-list delist; pass `asset_config` otherwise.
-    pub fn set_price_feed<'info>(
-        ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>,
+    pub fn set_feed<'info>(
+        ctx: Context<'_, '_, 'info, 'info, SetFeed<'info>>,
         paused: bool,
     ) -> Result<()> {
-        assets::execute_set_price_feed(ctx, paused)
+        assets::execute_set_feed(ctx, paused)
     }
 
     pub fn deposit<'info>(
@@ -1699,7 +1704,8 @@ pub mod grai {
         claim::execute_claim(ctx, amount)
     }
 
-    /// EVM `claimAll(locker)`. Remaining: `[mint, asset_config, position, vault, holder_ata, tip_ata]` × N.
+    /// EVM `claimAll(locker)`. Remaining per listed mint: vault PDA + holder/payer ATAs are bound
+    /// on-chain (`["vault", mint]`, ATA(holder), ATA(payer)).
     pub fn claim_all<'info>(
         ctx: Context<'_, '_, 'info, 'info, ClaimAll<'info>>,
     ) -> Result<()> {
@@ -1721,9 +1727,9 @@ pub mod grai {
     }
 
     pub fn liquidate<'info>(
-        ctx: Context<'_, '_, 'info, 'info, LiquidateOpen<'info>>,
+        ctx: Context<'_, '_, 'info, 'info, Liquidate<'info>>,
     ) -> Result<()> {
-        redeem::execute_liquidate_open(ctx)
+        redeem::execute_liquidate(ctx)
     }
 
     pub fn revive<'info>(

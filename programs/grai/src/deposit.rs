@@ -170,8 +170,7 @@ pub fn execute_deposit_sol<'info>(
     let clock = Clock::get()?;
     let price = fetch_price_from_feed(
         &ctx.accounts.price_feed.to_account_info(),
-        ctx.accounts.asset_config.price_feed,
-        &ctx.accounts.asset_mint.key(),
+        &ctx.accounts.asset_config,
         &clock,
     )?;
     let value = usd_value(amount, ctx.accounts.asset_mint.decimals, &price)?;

@@ -16,6 +16,7 @@ const PRICE_DECIMALS: u128 = 1_000_000_000_000_000_000;
 pub fn execute_swap<'info>(
     owner: &Signer,
     custodian_state: &Account<'info, CustodianState>,
+    owner_nft_ata: &Account<'info, TokenAccount>,
     base_custodian_ata: &mut Account<'info, TokenAccount>,
     quote_custodian_ata: &mut Account<'info, TokenAccount>,
     base_mint: &Account<'info, Mint>,
@@ -25,7 +26,7 @@ pub fn execute_swap<'info>(
     ix_data: Vec<u8>,
 ) -> Result<()> {
     require_custodian_kind(custodian_state, &EXPLICIT_SWAP_CUSTODIAN_KIND)?;
-    assert_custodian_owner(owner, custodian_state)?;
+    assert_custodian_owner(owner, custodian_state, owner_nft_ata)?;
 
     require!(!ix_data.is_empty(), ErrorCode::DataEmpty);
     require!(!remaining_accounts.is_empty(), ErrorCode::TargetZero);

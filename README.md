@@ -41,7 +41,7 @@ liquidate → redeem → revive  →  scoop dead GRAI, open window, burn for pro
 ### GRAI (`programs/grai`)
 
 **Admin (owner signer):** `initialize`, `set_beneficiar`, `set_grinders` (requires Grinders→GRAI back-link), `set_config`,
-`set_settlement_asset`, `set_price_feed` (list / pause / replace-while-paused / delist), `liquidate`.
+`set_settlement_asset`, `set_feed` (list / pause / replace-while-paused / delist), `liquidate`.
 
 **Permissionless:** `deposit` / `deposit_sol` (optional `lock`), `distribute`,
 `lock` / `unlock` / `claim` / `claim_all`, `vote`, `bribe`, `redeem`, `revive`.
@@ -135,7 +135,7 @@ Details: `[programs/grinders/README.md](programs/grinders/README.md)`.
 1. Deploy `grai`, `grinders`, `custom_price_feed` (if needed).
 2. `grinders.initialize` — owner, GRAI program id, Metaplex collection parent NFT.
 3. `grai.initialize(grinders_state_pda)` — authority, GRAI mint, Metaplex metadata.
-4. `grai.set_price_feed(paused, feed)` per mint (lists the asset); `grai.set_settlement_asset`.
+4. `grai.set_feed(paused, feed)` per mint (lists the asset); `grai.set_settlement_asset`.
 5. `grai.set_beneficiar`, `grai.set_config` (tip, revenue share, bribe premium, quorum, timing — not cuts).
 6. `grinders.mint(custodian_kind, grinder, base, quote)` — deploy custodian NFT + PDA wallet.
 7. Users `deposit` / `deposit_sol`; owner `allocate`s working capital to custodians.

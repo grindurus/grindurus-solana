@@ -16,15 +16,24 @@ const GRAI_DISTRIBUTE_DISCRIMINATOR: [u8; 8] = [191, 44, 223, 207, 164, 236, 126
 ///         total_value(16) total_locked(8) total_voted(8) liquidation(1) …
 const GRAI_STATE_LIQUIDATION_OFFSET: usize = 8 + 32 + 32 + 32 + 32 + 32 + 16 + 8 + 8;
 
+/// EVM `ownerOf(custodianId)`: signer must hold the custodian's 1/1 NFT (`amount >= 1`).
+/// `CustodianState.nft_owner` is a cache only — marketplace SPL transfers are authoritative.
 pub fn assert_custodian_owner(
     owner: &Signer,
     custodian_state: &Account<CustodianState>,
+    owner_nft_ata: &Account<TokenAccount>,
 ) -> Result<()> {
     require_keys_eq!(
-        custodian_state.nft_owner,
+        owner_nft_ata.mint,
+        custodian_state.nft_mint,
+        ErrorCode::InvalidNftOwner
+    );
+    require_keys_eq!(
+        owner_nft_ata.owner,
         owner.key(),
         ErrorCode::NotCustodianOwner
     );
+    require!(owner_nft_ata.amount >= 1, ErrorCode::NotCustodianOwner);
     Ok(())
 }
 
@@ -253,5 +262,41 @@ pub fn execute_set_assets(
 
     custodian_state.base_mint = new_base_mint;
     custodian_state.quote_mint = new_quote_mint;
+    Ok(())
+}
+
+/// GRAI asset vault PDA `["vault", mint]` owned by `GraiState` (same bind as `LiquidateCustodian`).
+pub fn require_grai_vault_ata(
+    vault_info: &AccountInfo,
+    mint: &Pubkey,
+    grai_program: &Pubkey,
+    grai_state: &Pubkey,
+) -> Result<()> {
+    let (pda, _) = Pubkey::find_program_address(
+        &[grai::AssetConfig::VAULT_SEED, mint.as_ref()],
+        grai_program,
+    );
+    require_keys_eq!(
+        vault_info.key(),
+        pda,
+        ErrorCode::InvalidGrindersTokenAccount
+    );
+    require_keys_eq!(
+        *vault_info.owner,
+        token::ID,
+        ErrorCode::InvalidGrindersTokenAccount
+    );
+    let data = vault_info.try_borrow_data()?;
+    require!(data.len() >= 64, ErrorCode::InvalidGrindersTokenAccount);
+    let vault_mint = Pubkey::try_from(&data[0..32])
+        .map_err(|_| error!(ErrorCode::InvalidGrindersTokenAccount))?;
+    let vault_authority = Pubkey::try_from(&data[32..64])
+        .map_err(|_| error!(ErrorCode::InvalidGrindersTokenAccount))?;
+    require_keys_eq!(vault_mint, *mint, ErrorCode::InvalidGrindersTokenAccount);
+    require_keys_eq!(
+        vault_authority,
+        *grai_state,
+        ErrorCode::InvalidGrindersTokenAccount
+    );
     Ok(())
 }

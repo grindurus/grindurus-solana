@@ -156,6 +156,13 @@ function customPriceFeedPda(mint: PublicKey, programId: PublicKey) {
   );
 }
 
+function feedConfigPda(programId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("config")],
+    programId,
+  );
+}
+
 function assetConfigPda(mint: PublicKey, programId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("asset"), mint.toBuffer()],
@@ -242,6 +249,25 @@ async function createTestSplMint(
   await provider.sendAndConfirm!(createMintTx, [mint]);
 }
 
+async function ensureFeedConfig(
+  feedProgram: Program<CustomPriceFeed>,
+  owner: PublicKey,
+): Promise<PublicKey> {
+  const [config] = feedConfigPda(feedProgram.programId);
+  const existing = await feedProgram.provider.connection.getAccountInfo(config);
+  if (!existing) {
+    await feedProgram.methods
+      .initializeConfig()
+      .accountsPartial({
+        owner,
+        config,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+  }
+  return config;
+}
+
 async function initTestPriceFeed(
   feedProgram: Program<CustomPriceFeed>,
   authority: PublicKey,
@@ -250,14 +276,16 @@ async function initTestPriceFeed(
   decimals: number,
   label: string,
 ): Promise<PublicKey> {
+  const config = await ensureFeedConfig(feedProgram, authority);
   const [priceFeed] = customPriceFeedPda(mint, feedProgram.programId);
 
   const existing = await feedProgram.provider.connection.getAccountInfo(priceFeed);
   if (!existing) {
     await feedProgram.methods
-      .initialize(price, decimals, priceFeedDescription(label))
+      .initialize(price, decimals, priceFeedDescription(label), authority)
       .accountsPartial({
-        authority,
+        owner: authority,
+        config,
         assetMint: mint,
         customPriceFeed: priceFeed,
         systemProgram: SystemProgram.programId,
@@ -404,7 +432,7 @@ describe("GRAI tokenomics", () => {
     );
   }
 
-  function setPriceFeedAccounts(
+  function setFeedAccounts(
     mint: PublicKey,
     priceFeed: PublicKey,
     movedAssetConfig?: PublicKey,
@@ -425,15 +453,15 @@ describe("GRAI tokenomics", () => {
     };
   }
 
-  async function setPriceFeed(
+  async function setFeed(
     paused: boolean,
     mint: PublicKey,
     priceFeed: PublicKey,
     movedAssetConfig?: PublicKey,
   ): Promise<string> {
     return program.methods
-      .setPriceFeed(paused)
-      .accountsPartial(setPriceFeedAccounts(mint, priceFeed, movedAssetConfig))
+      .setFeed(paused)
+      .accountsPartial(setFeedAccounts(mint, priceFeed, movedAssetConfig))
       .rpc();
   }
 
@@ -557,6 +585,80 @@ describe("GRAI tokenomics", () => {
       accounts.push({ pubkey: position, isWritable: true, isSigner: false });
       accounts.push({ pubkey: vault, isWritable: true, isSigner: false });
       accounts.push({ pubkey: holderAta, isWritable: true, isSigner: false });
+    }
+    return accounts;
+  }
+
+  function meta(
+    pubkey: PublicKey,
+    isWritable = false,
+  ): { pubkey: PublicKey; isWritable: boolean; isSigner: boolean } {
+    return { pubkey, isWritable, isSigner: false };
+  }
+
+  /** Remaining for `claim_all`: `(9 + 3 * affiliate_levels + 1)` per listed mint (H-04). */
+  async function claimAllRemainingAccounts(opts: {
+    holder: PublicKey;
+    payer: PublicKey;
+    holderAtaFor?: (mint: PublicKey) => PublicKey;
+    tipAtaFor?: (mint: PublicKey) => PublicKey;
+  }): Promise<
+    Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }>
+  > {
+    const state = await program.account.graiState.fetch(graiState);
+    const accounts: Array<{
+      pubkey: PublicKey;
+      isWritable: boolean;
+      isSigner: boolean;
+    }> = [];
+    const levels = Number(state.affiliateLevels);
+    for (const mint of state.assetMints) {
+      const [config] = assetConfigPda(mint, program.programId);
+      const asset = await program.account.assetConfig.fetch(config);
+      const holderAta =
+        opts.holderAtaFor?.(mint) ??
+        getAssociatedTokenAddressSync(
+          mint,
+          opts.holder,
+          false,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID,
+        );
+      const tipAta =
+        opts.tipAtaFor?.(mint) ??
+        getAssociatedTokenAddressSync(
+          mint,
+          opts.payer,
+          false,
+          TOKEN_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID,
+        );
+      const beneficiarAta = getAssociatedTokenAddressSync(
+        mint,
+        treasury.publicKey,
+        false,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      );
+      const [position] = positionPda(opts.holder, mint, program.programId);
+      const [vault] = vaultAtaPda(mint, program.programId);
+      const [treasuryVault] = treasuryVaultPda(mint, program.programId);
+      const [holderReferrer] = referrerPda(opts.holder, program.programId);
+      accounts.push(
+        meta(mint),
+        meta(config, true),
+        meta(asset.priceFeed),
+        meta(position, true),
+        meta(vault, true),
+        meta(holderAta, true),
+        meta(tipAta, true),
+        meta(treasuryVault, true),
+        meta(beneficiarAta, true),
+        meta(holderReferrer, true),
+      );
+      for (let i = 1; i < levels * 3 + 1; i += 1) {
+        accounts.push(meta(SystemProgram.programId));
+      }
     }
     return accounts;
   }
@@ -722,7 +824,7 @@ describe("GRAI tokenomics", () => {
     expect(grai.beneficiar.toBase58()).to.equal(treasury.publicKey.toBase58());
   });
 
-  it("set_price_feed lists USDC and set_settlement_asset selects USDC", async () => {
+  it("set_feed lists USDC and set_settlement_asset selects USDC", async () => {
     const priceFeed = await setupUsdcWithPriceFeed(
       feedProgram,
       provider,
@@ -737,7 +839,7 @@ describe("GRAI tokenomics", () => {
     expect(feed.decimals).to.equal(USD_PRICE_DECIMALS);
 
     await program.methods
-      .setPriceFeed(false)
+      .setFeed(false)
       .accountsPartial({
         owner: authority,
         assetMint: usdcMint.publicKey,
@@ -758,7 +860,7 @@ describe("GRAI tokenomics", () => {
     // swap the oracle; pause then replace so the rest of the suite uses custom.
     if (!asset.priceFeed.equals(usdcUsdFeed)) {
       await program.methods
-        .setPriceFeed(true)
+        .setFeed(true)
         .accountsPartial({
           owner: authority,
           assetMint: usdcMint.publicKey,
@@ -774,7 +876,7 @@ describe("GRAI tokenomics", () => {
         })
         .rpc();
       await program.methods
-        .setPriceFeed(false)
+        .setFeed(false)
         .accountsPartial({
           owner: authority,
           assetMint: usdcMint.publicKey,
@@ -811,7 +913,7 @@ describe("GRAI tokenomics", () => {
       "USDC ALT / USD",
     );
     await program.methods
-      .setPriceFeed(false)
+      .setFeed(false)
       .accountsPartial({
         owner: authority,
         assetMint: usdcMint.publicKey,
@@ -848,9 +950,9 @@ describe("GRAI tokenomics", () => {
     );
   });
 
-  it("set_price_feed pauses / unpauses and replaces feed while paused", async () => {
+  it("set_feed pauses / unpauses and replaces feed while paused", async () => {
     await program.methods
-      .setPriceFeed(true)
+      .setFeed(true)
       .accountsPartial({
         owner: authority,
         assetMint: usdcMint.publicKey,
@@ -873,7 +975,7 @@ describe("GRAI tokenomics", () => {
     const replacement = PYTH_USDC_USD_PUSH;
     expect(replacement.toBase58()).to.not.equal(usdcUsdFeed.toBase58());
     await program.methods
-      .setPriceFeed(false)
+      .setFeed(false)
       .accountsPartial({
         owner: authority,
         assetMint: usdcMint.publicKey,
@@ -895,7 +997,7 @@ describe("GRAI tokenomics", () => {
 
     // Restore canonical feed for later tests (pause → replace back).
     await program.methods
-      .setPriceFeed(true)
+      .setFeed(true)
       .accountsPartial({
         owner: authority,
         assetMint: usdcMint.publicKey,
@@ -911,7 +1013,7 @@ describe("GRAI tokenomics", () => {
       })
       .rpc();
     await program.methods
-      .setPriceFeed(false)
+      .setFeed(false)
       .accountsPartial({
         owner: authority,
         assetMint: usdcMint.publicKey,
@@ -932,7 +1034,7 @@ describe("GRAI tokenomics", () => {
     expect(asset.paused).to.be.false;
   });
 
-  it("set_price_feed lists, ignores unpaused oracle, replaces while paused, and delists", async () => {
+  it("set_feed lists, ignores unpaused oracle, replaces while paused, and delists", async () => {
     const mint = Keypair.generate();
     await createTestSplMint(provider, authority, mint, usdcDecimals);
     const customFeed = await initTestPriceFeed(
@@ -946,7 +1048,7 @@ describe("GRAI tokenomics", () => {
     const [config] = assetConfigPda(mint.publicKey, program.programId);
     const [treasuryVault] = treasuryVaultPda(mint.publicKey, program.programId);
 
-    await setPriceFeed(false, mint.publicKey, customFeed);
+    await setFeed(false, mint.publicKey, customFeed);
 
     let asset = await program.account.assetConfig.fetch(config);
     expect(asset.assetMint.toBase58()).to.equal(mint.publicKey.toBase58());
@@ -962,24 +1064,24 @@ describe("GRAI tokenomics", () => {
     ).to.equal(TOKEN_PROGRAM_ID.toBase58());
 
     // Listed + unpaused: oracle pubkey is ignored.
-    await setPriceFeed(false, mint.publicKey, PYTH_USDC_USD_PUSH);
+    await setFeed(false, mint.publicKey, PYTH_USDC_USD_PUSH);
     asset = await program.account.assetConfig.fetch(config);
     expect(asset.priceFeed.toBase58()).to.equal(customFeed.toBase58());
     expect(asset.paused).to.be.false;
 
-    await setPriceFeed(true, mint.publicKey, PYTH_USDC_USD_PUSH);
+    await setFeed(true, mint.publicKey, PYTH_USDC_USD_PUSH);
     asset = await program.account.assetConfig.fetch(config);
     expect(asset.paused).to.be.true;
     expect(asset.priceFeed.toBase58()).to.equal(customFeed.toBase58());
 
     // Listed + paused + non-NONE → replace oracle and apply `paused`.
-    await setPriceFeed(false, mint.publicKey, PYTH_USDC_USD_PUSH);
+    await setFeed(false, mint.publicKey, PYTH_USDC_USD_PUSH);
     asset = await program.account.assetConfig.fetch(config);
     expect(asset.priceFeed.toBase58()).to.equal(PYTH_USDC_USD_PUSH.toBase58());
     expect(asset.paused).to.be.false;
 
-    await setPriceFeed(true, mint.publicKey, PYTH_USDC_USD_PUSH);
-    await setPriceFeed(false, mint.publicKey, SystemProgram.programId);
+    await setFeed(true, mint.publicKey, PYTH_USDC_USD_PUSH);
+    await setFeed(false, mint.publicKey, SystemProgram.programId);
 
     expect(await provider.connection.getAccountInfo(config)).to.equal(null);
     const treasuryAfter = await provider.connection.getAccountInfo(treasuryVault);
@@ -993,7 +1095,7 @@ describe("GRAI tokenomics", () => {
     ).to.be.false;
   });
 
-  it("set_price_feed delist swap-removes a mid-list asset and reindexes the tail", async () => {
+  it("set_feed delist swap-removes a mid-list asset and reindexes the tail", async () => {
     const firstMint = Keypair.generate();
     const lastMint = Keypair.generate();
     await createTestSplMint(provider, authority, firstMint, usdcDecimals);
@@ -1017,16 +1119,16 @@ describe("GRAI tokenomics", () => {
     const [firstConfig] = assetConfigPda(firstMint.publicKey, program.programId);
     const [lastConfig] = assetConfigPda(lastMint.publicKey, program.programId);
 
-    await setPriceFeed(false, firstMint.publicKey, firstFeed);
-    await setPriceFeed(false, lastMint.publicKey, lastFeed);
+    await setFeed(false, firstMint.publicKey, firstFeed);
+    await setFeed(false, lastMint.publicKey, lastFeed);
 
     const firstId = (await program.account.assetConfig.fetch(firstConfig)).id;
     expect((await program.account.assetConfig.fetch(lastConfig)).id).to.equal(
       firstId + 1,
     );
 
-    await setPriceFeed(true, firstMint.publicKey, firstFeed);
-    await setPriceFeed(
+    await setFeed(true, firstMint.publicKey, firstFeed);
+    await setFeed(
       false,
       firstMint.publicKey,
       SystemProgram.programId,
@@ -1043,13 +1145,76 @@ describe("GRAI tokenomics", () => {
     expect(registry.assetMints.some((m) => m.equals(lastMint.publicKey))).to.be
       .true;
 
-    await setPriceFeed(true, lastMint.publicKey, lastFeed);
-    await setPriceFeed(false, lastMint.publicKey, SystemProgram.programId);
+    await setFeed(true, lastMint.publicKey, lastFeed);
+    await setFeed(false, lastMint.publicKey, SystemProgram.programId);
     expect(
       (await program.account.graiState.fetch(graiState)).assetMints.some((m) =>
         m.equals(lastMint.publicKey),
       ),
     ).to.be.false;
+  });
+
+  it("M-03: prefunded asset/vault/treasury PDAs still list via set_feed", async () => {
+    const mint = Keypair.generate();
+    await createTestSplMint(provider, authority, mint, usdcDecimals);
+    const feed = await initTestPriceFeed(
+      feedProgram,
+      authority,
+      mint.publicKey,
+      USDC_USD_PRICE,
+      USD_PRICE_DECIMALS,
+      "PRE / USD",
+    );
+    const [config] = assetConfigPda(mint.publicKey, program.programId);
+    const [vault] = vaultAtaPda(mint.publicKey, program.programId);
+    const [treasuryVault] = treasuryVaultPda(mint.publicKey, program.programId);
+
+    const prefundTx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: authority,
+        toPubkey: config,
+        lamports: 1_000_000,
+      }),
+      SystemProgram.transfer({
+        fromPubkey: authority,
+        toPubkey: vault,
+        lamports: 1_000_000,
+      }),
+      SystemProgram.transfer({
+        fromPubkey: authority,
+        toPubkey: treasuryVault,
+        lamports: 1_000_000,
+      }),
+    );
+    await provider.sendAndConfirm!(prefundTx);
+
+    for (const pda of [config, vault, treasuryVault]) {
+      const info = await provider.connection.getAccountInfo(pda);
+      expect(info).to.not.be.null;
+      expect(info!.owner.equals(SystemProgram.programId)).to.be.true;
+      expect(info!.data.length).to.equal(0);
+      expect(info!.lamports).to.be.greaterThan(0);
+    }
+
+    await setFeed(false, mint.publicKey, feed);
+
+    const asset = await program.account.assetConfig.fetch(config);
+    expect(asset.assetMint.toBase58()).to.equal(mint.publicKey.toBase58());
+    expect(asset.priceFeed.toBase58()).to.equal(feed.toBase58());
+    expect(asset.paused).to.be.false;
+
+    const vaultInfo = await provider.connection.getAccountInfo(vault);
+    const treasuryInfo = await provider.connection.getAccountInfo(treasuryVault);
+    expect(vaultInfo!.owner.equals(TOKEN_PROGRAM_ID)).to.be.true;
+    expect(treasuryInfo!.owner.equals(TOKEN_PROGRAM_ID)).to.be.true;
+    expect(
+      (await program.account.graiState.fetch(graiState)).assetMints.some((m) =>
+        m.equals(mint.publicKey),
+      ),
+    ).to.be.true;
+
+    await setFeed(true, mint.publicKey, feed);
+    await setFeed(false, mint.publicKey, SystemProgram.programId);
   });
 
   it("deposit moves USDC to grinders ATA and mints GRAI at book value", async () => {
@@ -1155,11 +1320,11 @@ describe("GRAI tokenomics", () => {
     );
   });
 
-  it("set_price_feed lists SOL / WSOL price feed", async () => {
+  it("set_feed lists SOL / WSOL price feed", async () => {
     await setupSolWithPriceFeed(feedProgram, authority);
 
     await program.methods
-      .setPriceFeed(false)
+      .setFeed(false)
       .accountsPartial({
         owner: authority,
         assetMint: NATIVE_MINT,
@@ -1178,7 +1343,7 @@ describe("GRAI tokenomics", () => {
     let asset = await program.account.assetConfig.fetch(solAssetConfig);
     if (!asset.priceFeed.equals(solUsdFeed)) {
       await program.methods
-        .setPriceFeed(true)
+        .setFeed(true)
         .accountsPartial({
           owner: authority,
           assetMint: NATIVE_MINT,
@@ -1194,7 +1359,7 @@ describe("GRAI tokenomics", () => {
         })
         .rpc();
       await program.methods
-        .setPriceFeed(false)
+        .setFeed(false)
         .accountsPartial({
           owner: authority,
           assetMint: NATIVE_MINT,
@@ -1853,6 +2018,122 @@ describe("GRAI tokenomics", () => {
     ).to.be.true;
   });
 
+  it("claim_all rejects attacker holder/tip ATAs (C-01)", async () => {
+    const attacker = Keypair.generate();
+    await fundWallet(attacker);
+    const attackerUsdc = await ensureAta(usdcMint.publicKey, attacker.publicKey);
+    const holderUsdc = await ensureAta(usdcMint.publicKey, authority);
+    const holderBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(holderUsdc)).value
+        .amount,
+    );
+    const attackerBefore = BigInt(
+      (await provider.connection.getTokenAccountBalance(attackerUsdc)).value
+        .amount,
+    );
+    const [escrow] = escrowPda(authority, program.programId);
+
+    await expectTransactionError(
+      program.methods
+        .claimAll()
+        .accountsPartial({
+          payer: attacker.publicKey,
+          graiState,
+          holder: authority,
+          escrow,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts(
+          await claimAllRemainingAccounts({
+            holder: authority,
+            payer: attacker.publicKey,
+            holderAtaFor: (mint) =>
+              mint.equals(usdcMint.publicKey)
+                ? attackerUsdc
+                : getAssociatedTokenAddressSync(
+                    mint,
+                    authority,
+                    false,
+                    TOKEN_PROGRAM_ID,
+                    ASSOCIATED_TOKEN_PROGRAM_ID,
+                  ),
+            tipAtaFor: (mint) =>
+              mint.equals(usdcMint.publicKey)
+                ? attackerUsdc
+                : getAssociatedTokenAddressSync(
+                    mint,
+                    attacker.publicKey,
+                    false,
+                    TOKEN_PROGRAM_ID,
+                    ASSOCIATED_TOKEN_PROGRAM_ID,
+                  ),
+          }),
+        )
+        .signers([attacker])
+        .rpc(),
+      "InvalidDestination",
+    );
+
+    const holderAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(holderUsdc)).value
+        .amount,
+    );
+    const attackerAfter = BigInt(
+      (await provider.connection.getTokenAccountBalance(attackerUsdc)).value
+        .amount,
+    );
+    expect(holderAfter).to.equal(holderBefore);
+    expect(attackerAfter).to.equal(attackerBefore);
+  });
+
+  it("claim_all rejects attacker locker Referrer (M-11)", async () => {
+    const attacker = Keypair.generate();
+    await fundWallet(attacker);
+    const [escrow] = escrowPda(authority, program.programId);
+    const [holderReferrer] = referrerPda(authority, program.programId);
+    const [attackerReferrer] = referrerPda(attacker.publicKey, program.programId);
+    const before = await program.account.referrer.fetch(holderReferrer);
+
+    const state = await program.account.graiState.fetch(graiState);
+    for (const mint of state.assetMints) {
+      await ensureAta(mint, attacker.publicKey);
+    }
+
+    const remaining = await claimAllRemainingAccounts({
+      holder: authority,
+      payer: attacker.publicKey,
+    });
+    let replaced = 0;
+    for (let i = 0; i < remaining.length; i += 1) {
+      if (remaining[i].pubkey.equals(holderReferrer)) {
+        remaining[i] = meta(attackerReferrer, true);
+        replaced += 1;
+      }
+    }
+    expect(replaced).to.be.gte(1);
+
+    await expectTransactionError(
+      program.methods
+        .claimAll()
+        .accountsPartial({
+          payer: attacker.publicKey,
+          graiState,
+          holder: authority,
+          escrow,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts(remaining)
+        .signers([attacker])
+        .rpc(),
+      "InvalidRemainingAccounts",
+    );
+
+    const after = await program.account.referrer.fetch(holderReferrer);
+    expect(after.value.toString()).to.equal(before.value.toString());
+  });
+
   it("claim pays the locker dividend and releases the claim reserve", async () => {
     const [escrow] = escrowPda(authority, program.programId);
     const [position] = positionPda(
@@ -1896,6 +2177,7 @@ describe("GRAI tokenomics", () => {
       })
       .remainingAccounts([
         { pubkey: holderReferrer, isWritable: true, isSigner: false },
+        { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
         { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
         { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
         { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
@@ -2024,7 +2306,133 @@ describe("GRAI tokenomics", () => {
   });
 
   describe("remediation coverage", () => {
-    it("rejects set_price_feed when custom price feed asset mint mismatches", async () => {
+    it("liquidate_idle rejects attacker destination ATA (C-02)", async () => {
+      const attacker = Keypair.generate();
+      await fundWallet(attacker);
+      const attackerUsdc = await ensureAta(usdcMint.publicKey, attacker.publicKey);
+      const grindersUsdcBefore = BigInt(
+        (
+          await provider.connection
+            .getTokenAccountBalance(grindersAta(usdcMint.publicKey))
+            .catch(() => ({ value: { amount: "0" } }))
+        ).value.amount,
+      );
+      const attackerBefore = BigInt(
+        (await provider.connection.getTokenAccountBalance(attackerUsdc)).value
+          .amount,
+      );
+
+      const state = await program.account.graiState.fetch(graiState);
+      const remaining: Array<{
+        pubkey: PublicKey;
+        isWritable: boolean;
+        isSigner: boolean;
+      }> = [];
+      for (const mint of state.assetMints) {
+        remaining.push({
+          pubkey: grindersAta(mint),
+          isWritable: true,
+          isSigner: false,
+        });
+        remaining.push({
+          pubkey: mint.equals(usdcMint.publicKey)
+            ? attackerUsdc
+            : vaultAtaPda(mint, program.programId)[0],
+          isWritable: true,
+          isSigner: false,
+        });
+      }
+
+      await expectTransactionError(
+        grindersProgram.methods
+          .liquidateIdle()
+          .accountsPartial({
+            grindersState,
+            graiState,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .remainingAccounts(remaining)
+          .rpc(),
+        "InvalidGrindersTokenAccount",
+      );
+
+      const grindersUsdcAfter = BigInt(
+        (
+          await provider.connection
+            .getTokenAccountBalance(grindersAta(usdcMint.publicKey))
+            .catch(() => ({ value: { amount: "0" } }))
+        ).value.amount,
+      );
+      const attackerAfter = BigInt(
+        (await provider.connection.getTokenAccountBalance(attackerUsdc)).value
+          .amount,
+      );
+      expect(grindersUsdcAfter).to.equal(grindersUsdcBefore);
+      expect(attackerAfter).to.equal(attackerBefore);
+    });
+
+    it("revive rejects treasury vault as sweep source (H-05)", async () => {
+      const state = await program.account.graiState.fetch(graiState);
+      const remaining: Array<{
+        pubkey: PublicKey;
+        isWritable: boolean;
+        isSigner: boolean;
+      }> = [];
+      for (const mint of state.assetMints) {
+        const [config] = assetConfigPda(mint, program.programId);
+        const asset = await program.account.assetConfig.fetch(config);
+        remaining.push(
+          meta(config, true),
+          meta(mint),
+          meta(asset.priceFeed),
+          meta(
+            mint.equals(usdcMint.publicKey)
+              ? treasuryVaultPda(mint, program.programId)[0]
+              : vaultAtaPda(mint, program.programId)[0],
+            true,
+          ),
+          meta(grindersAta(mint), true),
+        );
+      }
+
+      const treasuryBefore = BigInt(
+        (await provider.connection.getTokenAccountBalance(usdcTreasuryVault))
+          .value.amount,
+      );
+      const vaultBefore = BigInt(
+        (await provider.connection.getTokenAccountBalance(usdcVaultAta)).value
+          .amount,
+      );
+
+      await expectTransactionError(
+        program.methods
+          .revive()
+          .accountsPartial({
+            caller: authority,
+            graiState,
+            graiMint: graiMint.publicKey,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .remainingAccounts(remaining)
+          .rpc(),
+        "InvalidDestination",
+      );
+
+      const treasuryAfter = BigInt(
+        (await provider.connection.getTokenAccountBalance(usdcTreasuryVault))
+          .value.amount,
+      );
+      const vaultAfter = BigInt(
+        (await provider.connection.getTokenAccountBalance(usdcVaultAta)).value
+          .amount,
+      );
+      const stateAfter = await program.account.graiState.fetch(graiState);
+      expect(treasuryAfter).to.equal(treasuryBefore);
+      expect(vaultAfter).to.equal(vaultBefore);
+      expect(stateAfter.liquidation).to.be.false;
+    });
+
+    it("rejects set_feed when custom price feed asset mint mismatches", async () => {
       const rogueMint = Keypair.generate();
       await createTestSplMint(provider, authority, rogueMint, usdcDecimals);
       const [rogueConfig] = assetConfigPda(rogueMint.publicKey, program.programId);
@@ -2032,7 +2440,7 @@ describe("GRAI tokenomics", () => {
 
       await expectTransactionError(
         program.methods
-          .setPriceFeed(false)
+          .setFeed(false)
           .accountsPartial({
             owner: authority,
             assetMint: rogueMint.publicKey,
@@ -2100,7 +2508,7 @@ describe("GRAI tokenomics", () => {
       const [rogueVault] = vaultAtaPda(rogueMint.publicKey, program.programId);
 
       await program.methods
-        .setPriceFeed(false)
+        .setFeed(false)
         .accountsPartial({
           owner: authority,
           assetMint: rogueMint.publicKey,
@@ -2118,7 +2526,7 @@ describe("GRAI tokenomics", () => {
 
       // Listed + unpaused: FEED_NONE is ignored; only `paused` applies.
       await program.methods
-        .setPriceFeed(true)
+        .setFeed(true)
         .accountsPartial({
           owner: authority,
           assetMint: rogueMint.publicKey,
@@ -2143,7 +2551,7 @@ describe("GRAI tokenomics", () => {
         ),
       ).to.be.true;
 
-      await setPriceFeed(false, rogueMint.publicKey, SystemProgram.programId);
+      await setFeed(false, rogueMint.publicKey, SystemProgram.programId);
       expect(await provider.connection.getAccountInfo(rogueConfig)).to.equal(
         null,
       );
@@ -2152,6 +2560,268 @@ describe("GRAI tokenomics", () => {
           m.equals(rogueMint.publicKey),
         ),
       ).to.be.false;
+    });
+
+    it("custom_price_feed initialize rejects stranger (M-01)", async () => {
+      const config = await ensureFeedConfig(feedProgram, authority);
+      const stranger = Keypair.generate();
+      await fundWallet(stranger);
+
+      const mint = Keypair.generate();
+      await createTestSplMint(provider, authority, mint, usdcDecimals);
+      const [priceFeed] = customPriceFeedPda(mint.publicKey, feedProgram.programId);
+
+      await expectTransactionError(
+        feedProgram.methods
+          .initialize(
+            USDC_USD_PRICE,
+            USD_PRICE_DECIMALS,
+            priceFeedDescription("STRANGER / USD"),
+            stranger.publicKey,
+          )
+          .accountsPartial({
+            owner: stranger.publicKey,
+            config,
+            assetMint: mint.publicKey,
+            customPriceFeed: priceFeed,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([stranger])
+          .rpc(),
+        "Unauthorized",
+      );
+
+      expect(await provider.connection.getAccountInfo(priceFeed)).to.equal(null);
+
+      await initTestPriceFeed(
+        feedProgram,
+        authority,
+        mint.publicKey,
+        USDC_USD_PRICE,
+        USD_PRICE_DECIMALS,
+        "OWNED / USD",
+      );
+      const feed = await feedProgram.account.customPriceFeed.fetch(priceFeed);
+      expect(feed.oracle.toBase58()).to.equal(authority.toBase58());
+      expect(feed.assetMint.toBase58()).to.equal(mint.publicKey.toBase58());
+    });
+
+    it("custom_price_feed Ownable2Step and set_oracle (M-01)", async () => {
+      const config = await ensureFeedConfig(feedProgram, authority);
+      const next = Keypair.generate();
+      const stranger = Keypair.generate();
+      const oracle = Keypair.generate();
+      await fundWallet(next);
+      await fundWallet(stranger);
+      await fundWallet(oracle);
+
+      const mint = Keypair.generate();
+      await createTestSplMint(provider, authority, mint, usdcDecimals);
+      const priceFeed = await initTestPriceFeed(
+        feedProgram,
+        authority,
+        mint.publicKey,
+        USDC_USD_PRICE,
+        USD_PRICE_DECIMALS,
+        "ORACLE / USD",
+      );
+
+      await expectTransactionError(
+        feedProgram.methods
+          .setOracle(oracle.publicKey)
+          .accountsPartial({
+            owner: stranger.publicKey,
+            config,
+            assetMint: mint.publicKey,
+            customPriceFeed: priceFeed,
+          })
+          .signers([stranger])
+          .rpc(),
+        "Unauthorized",
+      );
+
+      await feedProgram.methods
+        .setOracle(oracle.publicKey)
+        .accountsPartial({
+          owner: authority,
+          config,
+          assetMint: mint.publicKey,
+          customPriceFeed: priceFeed,
+        })
+        .rpc();
+
+      await expectTransactionError(
+        feedProgram.methods
+          .setPrice(new anchor.BN(200_000_000))
+          .accountsPartial({
+            oracle: authority,
+            assetMint: mint.publicKey,
+            customPriceFeed: priceFeed,
+          })
+          .rpc(),
+        "Unauthorized",
+      );
+
+      await feedProgram.methods
+        .setPrice(new anchor.BN(200_000_000))
+        .accountsPartial({
+          oracle: oracle.publicKey,
+          assetMint: mint.publicKey,
+          customPriceFeed: priceFeed,
+        })
+        .signers([oracle])
+        .rpc();
+      expect(
+        (await feedProgram.account.customPriceFeed.fetch(priceFeed)).price.toString(),
+      ).to.equal("200000000");
+
+      await expectTransactionError(
+        feedProgram.methods
+          .transferOwnership(authority)
+          .accountsPartial({ owner: authority, config })
+          .rpc(),
+        "InvalidPendingOwner",
+      );
+
+      await feedProgram.methods
+        .transferOwnership(next.publicKey)
+        .accountsPartial({ owner: authority, config })
+        .rpc();
+      let cfg = await feedProgram.account.feedConfig.fetch(config);
+      expect(cfg.owner.toBase58()).to.equal(authority.toBase58());
+      expect(cfg.pendingOwner.toBase58()).to.equal(next.publicKey.toBase58());
+
+      await expectTransactionError(
+        feedProgram.methods
+          .acceptOwnership()
+          .accountsPartial({ pendingOwner: stranger.publicKey, config })
+          .signers([stranger])
+          .rpc(),
+        "Unauthorized",
+      );
+
+      await feedProgram.methods
+        .transferOwnership(PublicKey.default)
+        .accountsPartial({ owner: authority, config })
+        .rpc();
+      cfg = await feedProgram.account.feedConfig.fetch(config);
+      expect(cfg.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
+
+      await feedProgram.methods
+        .transferOwnership(next.publicKey)
+        .accountsPartial({ owner: authority, config })
+        .rpc();
+      await feedProgram.methods
+        .acceptOwnership()
+        .accountsPartial({ pendingOwner: next.publicKey, config })
+        .signers([next])
+        .rpc();
+      cfg = await feedProgram.account.feedConfig.fetch(config);
+      expect(cfg.owner.toBase58()).to.equal(next.publicKey.toBase58());
+
+      await expectTransactionError(
+        feedProgram.methods
+          .setOracle(authority)
+          .accountsPartial({
+            owner: authority,
+            config,
+            assetMint: mint.publicKey,
+            customPriceFeed: priceFeed,
+          })
+          .rpc(),
+        "Unauthorized",
+      );
+
+      await feedProgram.methods
+        .transferOwnership(authority)
+        .accountsPartial({ owner: next.publicKey, config })
+        .signers([next])
+        .rpc();
+      await feedProgram.methods
+        .acceptOwnership()
+        .accountsPartial({ pendingOwner: authority, config })
+        .rpc();
+      cfg = await feedProgram.account.feedConfig.fetch(config);
+      expect(cfg.owner.toBase58()).to.equal(authority.toBase58());
+    });
+
+    it("custodian_swap gates on live NFT holder, not nft_owner cache (H-06)", async () => {
+      const custodian = await getUsdcCustodian();
+      const sellerAta = custodian.custodianNftAta;
+      const buyer = Keypair.generate();
+      await fundWallet(buyer);
+      const buyerAta = await ensureAta(custodian.custodianMint, buyer.publicKey);
+
+      // Marketplace-style transfer: moves the 1/1 without transfer_custodian_nft.
+      await provider.sendAndConfirm!(
+        new Transaction().add(
+          createTransferInstruction(
+            sellerAta,
+            buyerAta,
+            authority,
+            1,
+            [],
+            TOKEN_PROGRAM_ID,
+          ),
+        ),
+      );
+
+      const state = await grindersProgram.account.custodianState.fetch(
+        custodian.custodianState,
+      );
+      // Shadow cache still points at the seller (stale).
+      expect(state.nftOwner.toBase58()).to.equal(authority.toBase58());
+      expect(state.nftMint.toBase58()).to.equal(custodian.custodianMint.toBase58());
+
+      const baseAta = getAssociatedTokenAddressSync(
+        usdcMint.publicKey,
+        custodian.custodianState,
+        true,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      );
+      const quoteAta = getAssociatedTokenAddressSync(
+        NATIVE_MINT,
+        custodian.custodianState,
+        true,
+        TOKEN_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      );
+
+      // Former holder cannot call swap (empty ix_data would pass auth before DataEmpty).
+      await expectTransactionError(
+        grindersProgram.methods
+          .custodianSwap(new anchor.BN(0), Buffer.from([]))
+          .accountsPartial({
+            owner: authority,
+            custodianState: custodian.custodianState,
+            ownerNftAta: sellerAta,
+            baseCustodianAta: baseAta,
+            quoteCustodianAta: quoteAta,
+            baseMint: usdcMint.publicKey,
+            quoteMint: NATIVE_MINT,
+          })
+          .rpc(),
+        "NotCustodianOwner",
+      );
+
+      // Live holder reaches the empty-data guard.
+      await expectTransactionError(
+        grindersProgram.methods
+          .custodianSwap(new anchor.BN(0), Buffer.from([]))
+          .accountsPartial({
+            owner: buyer.publicKey,
+            custodianState: custodian.custodianState,
+            ownerNftAta: buyerAta,
+            baseCustodianAta: baseAta,
+            quoteCustodianAta: quoteAta,
+            baseMint: usdcMint.publicKey,
+            quoteMint: NATIVE_MINT,
+          })
+          .signers([buyer])
+          .rpc(),
+        "DataEmpty",
+      );
     });
   });
 });

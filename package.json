@@ -17,7 +17,7 @@
     "distribute": "tsx migrations/grai/distribute.ts",
     "unwrapSol": "tsx migrations/unwrapSol.ts",
     "setSettlementAsset": "tsx migrations/setSettlementAsset.ts",
-    "setPriceFeed": "tsx migrations/setPriceFeed.ts",
+    "setFeed": "tsx migrations/setFeed.ts",
     "status": "tsx migrations/status.ts"
   },
   "dependencies": {

@@ -1,12 +1,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, TokenAccount};
 
-use crate::arise::dead_grai;
-use crate::vault::{redeemable_balance, transfer_from_vault};
+use crate::vault::{dead_grai, redeemable_balance, transfer_from_vault};
 use crate::dividend::settle_all_quads;
 use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
-use crate::{AssetConfig, ErrorCode, LiquidateOpen, Redeem};
+use crate::{AssetConfig, ErrorCode, Liquidate, Redeem};
 
 /// Open liquidation (EVM `liquidate`): 2-of-2 consent with vote quorum.
 ///
@@ -16,8 +15,8 @@ use crate::{AssetConfig, ErrorCode, LiquidateOpen, Redeem};
 ///
 /// On open: scoop orphan/dead GRAI (`grai_vault − total_locked`) to the opener, then start the
 /// claim clock. Per-asset `paused` flags are left unchanged.
-pub fn execute_liquidate_open<'info>(
-    ctx: Context<'_, '_, 'info, 'info, LiquidateOpen<'info>>,
+pub fn execute_liquidate<'info>(
+    ctx: Context<'_, '_, 'info, 'info, Liquidate<'info>>,
 ) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
 

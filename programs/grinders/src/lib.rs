@@ -207,6 +207,7 @@ pub mod grinders {
         custodians::explicit_swap::execute_swap(
             &ctx.accounts.owner,
             &ctx.accounts.custodian_state,
+            &ctx.accounts.owner_nft_ata,
             &mut ctx.accounts.base_custodian_ata,
             &mut ctx.accounts.quote_custodian_ata,
             &ctx.accounts.base_mint,
@@ -227,6 +228,7 @@ pub mod grinders {
             &ctx.accounts.owner,
             &ctx.accounts.fee_payer.to_account_info(),
             &ctx.accounts.custodian_state,
+            &ctx.accounts.owner_nft_ata,
             &ctx.accounts.base_custodian_ata,
             &ctx.accounts.quote_custodian_ata,
             &ctx.accounts.base_mint,
@@ -337,17 +339,40 @@ pub mod grinders {
 
     /// Permissionless idle-reserve sweep while GRAI liquidation is open.
     /// Remaining accounts: per listed GRAI asset — `[grinders_ata, grai_vault_ata]`.
+    /// `grai_vault_ata` must be GRAI `["vault", mint]` (authority = `GraiState`).
     pub fn liquidate_idle<'info>(
         ctx: Context<'_, '_, 'info, 'info, LiquidateIdle<'info>>,
     ) -> Result<()> {
-        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
-
         let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
         let remaining = ctx.remaining_accounts;
         require!(
             remaining.len() == asset_mints.len() * 2,
             ErrorCode::InvalidRemainingAccounts
         );
+
+        let grai_program = ctx.accounts.grinders_state.grai_program;
+        let grai_state_key = ctx.accounts.grai_state.key();
+
+        for (i, mint) in asset_mints.iter().enumerate() {
+            let grinders_ata_info = &remaining[i * 2];
+            let vault_info = &remaining[i * 2 + 1];
+
+            let ata: Account<'info, TokenAccount> = Account::try_from(grinders_ata_info)?;
+            require_keys_eq!(ata.mint, *mint, ErrorCode::NotTradingAsset);
+            require_keys_eq!(
+                ata.owner,
+                ctx.accounts.grinders_state.key(),
+                ErrorCode::InvalidGrindersTokenAccount
+            );
+            custodian::require_grai_vault_ata(
+                vault_info,
+                mint,
+                &grai_program,
+                &grai_state_key,
+            )?;
+        }
+
+        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
 
         let grinders_bump = [ctx.accounts.grinders_state.bump];
         let grinders_signer = ctx
@@ -357,19 +382,13 @@ pub mod grinders {
         let token_program = ctx.accounts.token_program.to_account_info();
         let grinders_info = ctx.accounts.grinders_state.to_account_info();
 
-        for (i, mint) in asset_mints.iter().enumerate() {
+        for (i, _mint) in asset_mints.iter().enumerate() {
             let grinders_ata_info = &remaining[i * 2];
             let vault_info = &remaining[i * 2 + 1];
 
             let bal = {
                 let ata: Account<'info, TokenAccount> =
                     Account::try_from(grinders_ata_info)?;
-                require_keys_eq!(ata.mint, *mint, ErrorCode::NotTradingAsset);
-                require_keys_eq!(
-                    ata.owner,
-                    ctx.accounts.grinders_state.key(),
-                    ErrorCode::InvalidGrindersTokenAccount
-                );
                 ata.amount
             };
             if bal == 0 {
@@ -749,7 +768,6 @@ pub struct TransferCustodianNft<'info> {
         mut,
         seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
         bump = custodian_state.bump,
-        constraint = custodian_state.nft_owner == current_owner.key() @ ErrorCode::InvalidNftOwner,
     )]
     pub custodian_state: Account<'info, CustodianState>,
 
@@ -758,6 +776,7 @@ pub struct TransferCustodianNft<'info> {
     )]
     pub custodian_mint: Account<'info, Mint>,
 
+    /// Live SPL holder of the custodian NFT (EVM `ownerOf`); `nft_owner` cache is updated after transfer.
     #[account(
         mut,
         constraint = from_ata.mint == custodian_mint.key() @ ErrorCode::InvalidNftOwner,
@@ -845,6 +864,14 @@ pub struct CustodianSwap<'info> {
     )]
     pub custodian_state: Account<'info, CustodianState>,
 
+    /// Signer's ATA for `custodian_state.nft_mint` — live `ownerOf` (EVM parity).
+    #[account(
+        constraint = owner_nft_ata.mint == custodian_state.nft_mint @ ErrorCode::InvalidNftOwner,
+        constraint = owner_nft_ata.owner == owner.key() @ ErrorCode::NotCustodianOwner,
+        constraint = owner_nft_ata.amount >= 1 @ ErrorCode::NotCustodianOwner,
+    )]
+    pub owner_nft_ata: Account<'info, TokenAccount>,
+
     #[account(
         mut,
         constraint = base_custodian_ata.mint == custodian_state.base_mint @ ErrorCode::NotTradingAsset,
@@ -886,6 +913,14 @@ pub struct CustodianJupiterGaslessSwap<'info> {
         constraint = custodian_state.custodian_kind == JUPITER_GASLESS_CUSTODIAN_KIND @ ErrorCode::CustodianKindMismatch,
     )]
     pub custodian_state: Account<'info, CustodianState>,
+
+    /// Signer's ATA for `custodian_state.nft_mint` — live `ownerOf` (EVM parity).
+    #[account(
+        constraint = owner_nft_ata.mint == custodian_state.nft_mint @ ErrorCode::InvalidNftOwner,
+        constraint = owner_nft_ata.owner == owner.key() @ ErrorCode::NotCustodianOwner,
+        constraint = owner_nft_ata.amount >= 1 @ ErrorCode::NotCustodianOwner,
+    )]
+    pub owner_nft_ata: Account<'info, TokenAccount>,
 
     #[account(
         mut,

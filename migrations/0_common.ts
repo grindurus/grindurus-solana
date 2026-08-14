@@ -193,6 +193,44 @@ export function referrerRemainingAccounts(
   ];
 }
 
+/** Resolve L1 + L2 books for sticky bind / later mint credit (H-07 + M-04). */
+export async function stickyUplineBooks(
+  connection: Connection,
+  depositor: PublicKey,
+  stickyReferrer: PublicKey,
+  programId: PublicKey = GRAI_PROGRAM_ID,
+): Promise<{ l1ReferrerPda: PublicKey | null; l2ReferrerPda: PublicKey | null }> {
+  let upline = stickyReferrer;
+
+  const lockerInfo = await connection.getAccountInfo(
+    referrerPda(depositor, programId),
+  );
+  if (lockerInfo && lockerInfo.data.length >= 40) {
+    const bound = new PublicKey(lockerInfo.data.subarray(8, 40));
+    if (!bound.equals(PublicKey.default) && !bound.equals(depositor)) {
+      upline = bound;
+    }
+  }
+
+  if (upline.equals(PublicKey.default) || upline.equals(depositor)) {
+    return { l1ReferrerPda: null, l2ReferrerPda: null };
+  }
+  const l1ReferrerPda = referrerPda(upline, programId);
+  const info = await connection.getAccountInfo(l1ReferrerPda);
+  if (!info || info.data.length < 40) {
+    return { l1ReferrerPda, l2ReferrerPda: null };
+  }
+  const up = new PublicKey(info.data.subarray(8, 40));
+  if (
+    up.equals(PublicKey.default) ||
+    up.equals(upline) ||
+    up.equals(depositor)
+  ) {
+    return { l1ReferrerPda, l2ReferrerPda: null };
+  }
+  return { l1ReferrerPda, l2ReferrerPda: referrerPda(up, programId) };
+}
+
 /**
  * Full `deposit` / `deposit_sol` remaining list:
  * lock pairs (if `lock`) then optional L1/L2 books.

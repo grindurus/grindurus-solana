@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program;
-use anchor_spl::token::{self, Transfer};
+use anchor_lang::system_program::{self, Allocate, Assign, CreateAccount, Transfer};
+use anchor_spl::token::{self, Transfer as TokenTransfer};
 
 use crate::dividend;
 use crate::{ErrorCode, Escrow, GraiState};
@@ -19,7 +19,7 @@ pub fn realloc_grai_state<'info>(
         system_program::transfer(
             CpiContext::new(
                 system_program.clone(),
-                system_program::Transfer {
+                Transfer {
                     from: payer.clone(),
                     to: grai_state_info.clone(),
                 },
@@ -28,6 +28,84 @@ pub fn realloc_grai_state<'info>(
         )?;
     }
     grai_state_info.realloc(new_space, false)?;
+    Ok(())
+}
+
+/// Create a program- or token-owned account, absorbing a prefunded empty PDA (M-03).
+///
+/// Mirrors Anchor 0.31 `init`: zero lamports → `create_account`, else transfer + allocate + assign.
+pub fn create_account_absorb_prefund<'info>(
+    account: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    owner: &Pubkey,
+    space: usize,
+    signer_seeds: &[&[u8]],
+) -> Result<()> {
+    require!(
+        account.data_is_empty()
+            && (*account.owner == system_program::ID || account.lamports() == 0),
+        ErrorCode::InvalidPdaInit
+    );
+    require_keys_neq!(payer.key(), account.key(), ErrorCode::InvalidPdaInit);
+
+    let rent = Rent::get()?;
+    let current = account.lamports();
+    if current == 0 {
+        let lamports = rent.minimum_balance(space);
+        system_program::create_account(
+            CpiContext::new_with_signer(
+                system_program.clone(),
+                CreateAccount {
+                    from: payer.clone(),
+                    to: account.clone(),
+                },
+                &[signer_seeds],
+            ),
+            lamports,
+            space as u64,
+            owner,
+        )?;
+        return Ok(());
+    }
+
+    let required = rent
+        .minimum_balance(space)
+        .max(1)
+        .saturating_sub(current);
+    if required > 0 {
+        system_program::transfer(
+            CpiContext::new(
+                system_program.clone(),
+                Transfer {
+                    from: payer.clone(),
+                    to: account.clone(),
+                },
+            ),
+            required,
+        )?;
+    }
+
+    system_program::allocate(
+        CpiContext::new_with_signer(
+            system_program.clone(),
+            Allocate {
+                account_to_allocate: account.clone(),
+            },
+            &[signer_seeds],
+        ),
+        space as u64,
+    )?;
+    system_program::assign(
+        CpiContext::new_with_signer(
+            system_program.clone(),
+            Assign {
+                account_to_assign: account.clone(),
+            },
+            &[signer_seeds],
+        ),
+        owner,
+    )?;
     Ok(())
 }
 
@@ -157,7 +235,7 @@ pub fn perform_lock<'info>(
     token::transfer(
         CpiContext::new(
             token_program.clone(),
-            Transfer {
+            TokenTransfer {
                 from: source_ata.clone(),
                 to: grai_vault_ata.clone(),
                 authority: owner.clone(),

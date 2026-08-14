@@ -56,6 +56,7 @@ export type MintedCustodian = {
   custodianId: number;
   custodianState: PublicKey;
   custodianMint: PublicKey;
+  custodianNftAta: PublicKey;
   grinder: PublicKey;
 };
 
@@ -243,6 +244,7 @@ export async function mintExplicitSwapCustodian(
     custodianId,
     custodianState,
     custodianMint,
+    custodianNftAta,
     grinder: params.grinder,
   };
 }

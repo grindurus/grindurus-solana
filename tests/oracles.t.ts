@@ -116,7 +116,7 @@ export function parseChainlinkTransmissionsFeed(
 /** Mirrors `grai` push-feed parsing (`PriceUpdateV2`, Full verification). */
 export function parsePythPushFeed(
   account: AccountInfo<Buffer>,
-): ParsedOraclePrice {
+): ParsedOraclePrice & { feedId: Buffer } {
   if (!account.owner.equals(PYTH_RECEIVER_PROGRAM_ID)) {
     throw new Error(`unexpected Pyth owner: ${account.owner.toBase58()}`);
   }
@@ -135,8 +135,8 @@ export function parsePythPushFeed(
     throw new Error(`expected Pyth Full verification, got tag=${verificationTag}`);
   }
 
-  // PriceFeedMessage
-  offset += 32; // feed_id
+  const feedId = Buffer.from(data.subarray(offset, offset + 32));
+  offset += 32;
   const price = data.readBigInt64LE(offset);
   offset += 8;
   offset += 8; // conf u64
@@ -160,6 +160,7 @@ export function parsePythPushFeed(
     price,
     decimals: -exponent,
     updatedAt: publishTime,
+    feedId,
   };
 }
 
@@ -450,7 +451,7 @@ describe("external oracles", () => {
     const solConfigInfo = await connection.getAccountInfo(solAssetConfig);
     if (!solConfigInfo) {
       await program.methods
-        .setPriceFeed(false)
+        .setFeed(false)
         .accountsPartial({
           owner: authority,
           assetMint: NATIVE_MINT,
@@ -548,7 +549,7 @@ describe("external oracles", () => {
     const usdcConfigInfo = await connection.getAccountInfo(usdcAssetConfig);
     if (!usdcConfigInfo) {
       await program.methods
-        .setPriceFeed(false)
+        .setFeed(false)
         .accountsPartial({
           owner: authority,
           assetMint: usdcMint.publicKey,
@@ -568,6 +569,7 @@ describe("external oracles", () => {
     const asset = await program.account.assetConfig.fetch(usdcAssetConfig);
     expect(asset.priceFeed.toBase58()).to.equal(PYTH_USDC_USD_PUSH.toBase58());
     expect(asset.assetMint.toBase58()).to.equal(usdcMint.publicKey.toBase58());
+    expect(Buffer.from(asset.pythFeedId).equals(pythUsdc.feedId)).to.be.true;
 
     const depositAmount = 1_000_000; // 1 USDC
     const depositorUsdcAta = getAssociatedTokenAddressSync(

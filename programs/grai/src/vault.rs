@@ -11,6 +11,12 @@ pub fn redeemable_balance(vault_amount: u64, total_claimable: u64) -> u64 {
     vault_amount.saturating_sub(total_claimable)
 }
 
+/// Dead / orphan GRAI on the mint vault: `vault_amount - total_locked`
+/// (EVM `balanceOf(this) - totalLocked`; tokens already here, not via `lock`).
+pub fn dead_grai(vault_amount: u64, total_locked: u64) -> u64 {
+    vault_amount.saturating_sub(total_locked)
+}
+
 /// Transfer tokens with `grai_state` PDA as authority.
 pub fn transfer_from_vault<'info>(
     token_program: &AccountInfo<'info>,

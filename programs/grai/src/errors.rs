@@ -100,4 +100,8 @@ pub enum ErrorCode {
     InvalidReferrer,
     #[msg("Invalid get_referrals range")]
     InvalidReferralRange,
+    #[msg("PDA must be system-owned and empty to initialize")]
+    InvalidPdaInit,
+    #[msg("Pyth PriceUpdateV2 feed_id mismatch or unset")]
+    InvalidPythFeedId,
 }

@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 use anchor_spl::metadata::{
     create_master_edition_v3, create_metadata_accounts_v3,
-    mpl_token_metadata::types::DataV2, CreateMasterEditionV3, CreateMetadataAccountsV3,
+    mpl_token_metadata::types::{Creator, DataV2},
+    CreateMasterEditionV3, CreateMetadataAccountsV3,
 };
 use anchor_spl::token::{self, MintTo};
 
@@ -78,6 +79,7 @@ pub fn mint_treasury_nft<'info>(
     rent: AccountInfo<'info>,
     grai_state_bump: u8,
     royalty_bps: u16,
+    royalty_payee: Pubkey,
 ) -> Result<()> {
     let seeds: &[&[u8]; 2] = &[GraiState::SEED, &[grai_state_bump]];
     let signer: &[&[&[u8]]; 1] = &[&seeds[..]];
@@ -114,7 +116,7 @@ pub fn mint_treasury_nft<'info>(
             symbol: TREASURY_NFT_SYMBOL.to_string(),
             uri: TREASURY_NFT_URI.to_string(),
             seller_fee_basis_points: royalty_bps,
-            creators: None,
+            creators: treasury_royalty_creators(royalty_payee, grai_state.key()),
             collection: None,
             uses: None,
         },
@@ -143,4 +145,18 @@ pub fn mint_treasury_nft<'info>(
     )?;
 
     Ok(())
+}
+
+/// `beneficiar` (or owner) gets 100% of `seller_fee_basis_points` on secondary sales.
+///
+/// `verified` is true only when the payee is the metadata update authority (`GraiState`),
+/// which signs this CPI. A wallet beneficiar cannot be verified at mint — they do not
+/// sign `deposit` — so marketplaces that require verified creators may skip the fee.
+/// Creator is snapshotted at mint; `set_beneficiar` does not rewrite existing metadata.
+fn treasury_royalty_creators(payee: Pubkey, update_authority: Pubkey) -> Option<Vec<Creator>> {
+    Some(vec![Creator {
+        address: payee,
+        verified: payee == update_authority,
+        share: 100,
+    }])
 }

@@ -16,8 +16,8 @@ use crate::{AssetConfig, Claim, ClaimAll, ErrorCode, Position};
 /// `treasury.distribute` / `claimedValue`). Allowed during liquidation: the claim reserve is
 /// carved out of the redeem basket.
 ///
-/// Remaining: triples `[referrer_pda, nft_ata, affiliate_ata]` × `affiliate_levels` for the
-/// locker walk (first PDA is the locker book; must be writable for book credit).
+/// Remaining: `[referrer_pda, nft_ata, affiliate_ata]` × `affiliate_levels` plus the last
+/// ancestor's Referrer PDA (N levels → N+1 books). First PDA is the locker book (writable).
 pub fn execute_claim<'info>(
     ctx: Context<'_, '_, 'info, 'info, Claim<'info>>,
     amount: u64,
@@ -112,9 +112,10 @@ pub fn execute_claim<'info>(
 
 /// EVM `claimAll(locker)` — pays every listed-asset dividend for `holder`.
 ///
-/// Remaining accounts per listed mint in registry order (`(9 + 3 * affiliate_levels) × N`):
+/// Remaining accounts per listed mint in registry order
+/// (`(9 + affiliate_claim_remaining_len(levels)) × N`):
 /// `[asset_mint, asset_config, price_feed, position, vault_ata, holder_ata, tip_ata,
-/// treasury_vault, beneficiar_ata, referrer_pda, nft_ata, affiliate_ata, ...]`.
+/// treasury_vault, beneficiar_ata, referrer_pda, nft_ata, affiliate_ata, …, last_ancestor_book]`.
 /// Position accounts must exist or are created by the payer (EVM storage mappings).
 pub fn execute_claim_all<'info>(
     ctx: Context<'_, '_, 'info, 'info, ClaimAll<'info>>,
@@ -127,7 +128,7 @@ pub fn execute_claim_all<'info>(
     let mints = ctx.accounts.grai_state.asset_mints.clone();
     let remaining = ctx.remaining_accounts;
     let affiliate_levels = ctx.accounts.grai_state.affiliate_levels as usize;
-    let stride = 9 + affiliate_levels * 3;
+    let stride = 9 + treasury::affiliate_claim_remaining_len(affiliate_levels);
     require!(
         remaining.len() == mints.len() * stride,
         ErrorCode::InvalidRemainingAccounts
@@ -168,6 +169,10 @@ pub fn execute_claim_all<'info>(
             ErrorCode::InvalidRemainingAccounts
         );
 
+        dividend::require_vault_pda(vault_info, mint, &program_id)?;
+        dividend::require_holder_ata(holder_ata_info, &holder, mint)?;
+        dividend::require_holder_ata(tip_ata_info, &payer.key(), mint)?;
+
         let (decimals, claimed_value, claimable, claimed) = {
             let mint_acc: Account<anchor_spl::token::Mint> = Account::try_from(mint_info)?;
             let decimals = mint_acc.decimals;
@@ -177,7 +182,6 @@ pub fn execute_claim_all<'info>(
                 .map_err(|_| error!(ErrorCode::InvalidRemainingAccounts))?;
             require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
             let acc = asset.acc_share;
-            let expected_feed = asset.price_feed;
 
             let (mut position, is_new) = dividend::load_or_init_position(
                 position_info,
@@ -207,8 +211,7 @@ pub fn execute_claim_all<'info>(
             let claimed_value = if claimed > 0 {
                 let price = crate::price_feed::fetch_price_from_feed(
                     price_feed_info,
-                    expected_feed,
-                    mint,
+                    &asset,
                     &clock,
                 )?;
                 usd_value(claimed, decimals, &price)?
@@ -254,6 +257,13 @@ pub fn execute_claim_all<'info>(
             ErrorCode::InvalidRemainingAccounts
         );
         let holder_referrer = &affiliate_remaining[0];
+        let (holder_referrer_pda, _) =
+            Pubkey::find_program_address(&[crate::Referrer::SEED, holder.as_ref()], &program_id);
+        require_keys_eq!(
+            holder_referrer.key(),
+            holder_referrer_pda,
+            ErrorCode::InvalidRemainingAccounts
+        );
         treasury::distribute_claim_treasury(
             &ctx.accounts.grai_state,
             &holder,

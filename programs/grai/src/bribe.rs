@@ -21,8 +21,7 @@ pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Re
     let clock = Clock::get()?;
     let price = fetch_price_from_feed(
         &ctx.accounts.settlement_price_feed.to_account_info(),
-        ctx.accounts.settlement_asset_config.price_feed,
-        &ctx.accounts.settlement_mint.key(),
+        &ctx.accounts.settlement_asset_config,
         &clock,
     )?;
 
@@ -74,8 +73,7 @@ pub fn execute_bribe<'info>(
 
     let bribe_price = fetch_price_from_feed(
         &ctx.accounts.settlement_price_feed.to_account_info(),
-        ctx.accounts.settlement_asset_config.price_feed,
-        &ctx.accounts.settlement_mint.key(),
+        &ctx.accounts.settlement_asset_config,
         &clock,
     )?;
 

@@ -19,7 +19,7 @@ On-chain Grinders for Solana — mirrors [`Grinders.sol`](../../../grindurus-evm
 | `EXPLICIT_SWAP_CUSTODIAN_KIND` | `grindurus.custodian.explicit_swap` | `custodian_swap` | grinder (off-chain fee payer) |
 | `JUPITER_GASLESS_CUSTODIAN_KIND` | `grindurus.custodian.jupiter_gasless` | `custodian_jupiter_gasless_swap` | `fee_payer` signer ≠ grinder (stub) |
 
-Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote ATAs. Kind / NFT owner live on `CustodianState`.
+Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote ATAs. Kind / `nft_mint` live on `CustodianState`; swap/transfer gate on live NFT ATA (`ownerOf`).
 
 ## Instructions
 
@@ -30,13 +30,13 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 | `mint` | owner | Init custodian wallet PDA, mint NFT into collection, register custodian |
 | `set_assets` | protocol owner | Retarget base/quote when custodian balances are zero (EVM `setAssets`) |
 | `allocate` | owner | Move reserve from grinders ATA to custodian (event-only; no on-chain ledger) |
-| `custodian_swap` | NFT owner | Swap kind only: router CPI + on-chain `limit_price` |
-| `custodian_jupiter_gasless_swap` | NFT owner + `fee_payer` | Jupiter gasless kind only (logic stub) |
+| `custodian_swap` | NFT holder (live ATA) | Swap kind only: router CPI + on-chain `limit_price` |
+| `custodian_jupiter_gasless_swap` | NFT holder + `fee_payer` | Jupiter gasless kind only (logic stub) |
 | `custodian_deallocate` | protocol owner | Return inventory to grinders (blocked while liquidation open) |
 | `custodian_distribute` | protocol owner | Route yield via GRAI `distribute` (blocked while liquidation open) |
 | `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while liquidation is open |
 | `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults (EVM liquidate hop) while liquidation open |
-| `transfer_custodian_nft` | current NFT owner | Transfer NFT and sync `custodian_state.nft_owner` |
+| `transfer_custodian_nft` | live NFT holder | Transfer NFT and refresh `custodian_state.nft_owner` cache |
 | `withdraw` | owner | Withdraw SOL from grinders PDA |
 | `withdraw_token` | owner | Withdraw SPL from grinders ATA |
 

@@ -1,7 +1,8 @@
 use anchor_lang::prelude::*;
 use anchor_spl::associated_token::get_associated_token_address;
-use anchor_spl::token::{Mint, TokenAccount};
+use anchor_spl::token::TokenAccount;
 
+use crate::dividend;
 use crate::vault::{redeemable_balance, transfer_from_vault};
 use crate::{ErrorCode, Revive};
 
@@ -14,10 +15,40 @@ use crate::{ErrorCode, Revive};
 /// untouched.
 ///
 /// Remaining accounts: quints `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per
-/// listed asset in registry order. `price_feed` is accepted for client symmetry but unused.
+/// listed asset in registry order. `vault_ata` must be `["vault", mint]`; `asset_config` must
+/// be the canonical PDA. `price_feed` is accepted for client symmetry but unused.
 pub fn execute_revive<'info>(
     ctx: Context<'_, '_, 'info, 'info, Revive<'info>>,
 ) -> Result<()> {
+    let supply = ctx.accounts.grai_mint.supply;
+    let bump = ctx.accounts.grai_state.bump;
+    let grinders = ctx.accounts.grai_state.grinders;
+    let program_id = *ctx.program_id;
+    let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
+    let remaining = ctx.remaining_accounts;
+    require!(
+        remaining.len() == asset_mints.len() * 5,
+        ErrorCode::InvalidRemainingAccounts
+    );
+
+    // Bind remaining before liquidation/time gates (H-05): a spoofed GraiState-owned
+    // token account (treasury vault, empty dummy) must fail even when liquidation is closed.
+    for (i, mint) in asset_mints.iter().enumerate() {
+        let asset_info = &remaining[i * 5];
+        let mint_info = &remaining[i * 5 + 1];
+        let vault_info = &remaining[i * 5 + 3];
+        let grinders_ata_info = &remaining[i * 5 + 4];
+
+        require_keys_eq!(mint_info.key(), *mint, ErrorCode::AssetUnknown);
+        dividend::load_asset_config(asset_info, mint, &program_id)?;
+        dividend::require_vault_pda(vault_info, mint, &program_id)?;
+        require_keys_eq!(
+            grinders_ata_info.key(),
+            get_associated_token_address(&grinders, mint),
+            ErrorCode::InvalidDestination
+        );
+    }
+
     require!(
         ctx.accounts.grai_state.liquidation && ctx.accounts.grai_state.liquidation_at != 0,
         ErrorCode::LiquidationClosed
@@ -36,47 +67,17 @@ pub fn execute_revive<'info>(
         ErrorCode::RedeemPeriodActive
     );
 
-    let supply = ctx.accounts.grai_mint.supply;
-    let bump = ctx.accounts.grai_state.bump;
-    let grinders = ctx.accounts.grai_state.grinders;
-    let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
-    let remaining = ctx.remaining_accounts;
-    require!(
-        remaining.len() == asset_mints.len() * 5,
-        ErrorCode::InvalidRemainingAccounts
-    );
-
     let grai_state_info = ctx.accounts.grai_state.to_account_info();
     let token_program_info = ctx.accounts.token_program.to_account_info();
 
     for (i, mint) in asset_mints.iter().enumerate() {
         let asset_info = &remaining[i * 5];
-        let mint_info = &remaining[i * 5 + 1];
-        let _price_feed_info = &remaining[i * 5 + 2];
         let vault_info = &remaining[i * 5 + 3];
         let grinders_ata_info = &remaining[i * 5 + 4];
 
-        require_keys_eq!(mint_info.key(), *mint, ErrorCode::AssetUnknown);
-        // Sweep destination must be the Grinders ATA (revive is permissionless).
-        require_keys_eq!(
-            grinders_ata_info.key(),
-            get_associated_token_address(&grinders, mint),
-            ErrorCode::InvalidDestination
-        );
-        {
-            let mint_acc: Account<'info, Mint> = Account::try_from(mint_info)?;
-            let _ = mint_acc.decimals;
-        }
-
-        let reserved = {
-            let asset: Account<'info, crate::AssetConfig> = Account::try_from(asset_info)?;
-            require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
-            asset.total_claimable
-        };
-
+        let reserved = dividend::load_asset_config(asset_info, mint, &program_id)?.total_claimable;
         let bal = {
             let vault: Account<'info, TokenAccount> = Account::try_from(vault_info)?;
-            require_keys_eq!(vault.mint, *mint, ErrorCode::InvalidDestination);
             vault.amount
         };
         let sweepable = redeemable_balance(bal, reserved);

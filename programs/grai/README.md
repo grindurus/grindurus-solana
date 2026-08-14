@@ -28,7 +28,7 @@ Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ove
 | `set_grinders` | owner | Deposit sink PDA; requires Grinders→this GRAI back-link |
 | `set_config` | owner | Tip, bribe premium, quorum, periods (yield cuts immutable; blocked in liquidation) |
 | `set_settlement_asset` | owner | Listed mint used for bribe payments |
-| `set_price_feed` | owner | EVM `setFeed`: list / pause-only / replace-while-paused / delist (`SystemProgram` = FEED_NONE) |
+| `set_feed` | owner | EVM `setFeed`: list / pause-only / replace-while-paused / delist (`SystemProgram` = FEED_NONE) |
 | `deposit` / `deposit_sol` | depositor | Open deposits → Grinders, mint GRAI, sticky `ReferralBook`; first bind mints Metaplex Treasury NFT (EVM `_ensure`); optional `lock` |
 | `distribute` | custody wallet | Split yield into treasury vault / dividend index |
 | `lock` / `unlock` | locker | Escrow GRAI; unlock applies flat `unlock_penalty_bps` |
@@ -58,8 +58,10 @@ treasury-nft = ["treasury-nft", locker]      # Metaplex 1/1 cashflow NFT mint
 
 `deposit` / `deposit_sol` mint the Metaplex cashflow NFT to the depositor on first bind
 (EVM `_ensure`). OTC sale of claim rights is an ordinary Metaplex/SPL NFT transfer.
-`deposit` / `deposit_sol` remaining accounts are optional referrer books `[L1, L2]`
-(`SystemProgram` for an unused level). If `lock = true`, pass the normal dividend settlement pairs
+`deposit` / `deposit_sol` remaining accounts are referrer books `[L1, L2]` for sticky
+bind and every later mint credit (`SystemProgram` for an unused level). After bind,
+omitting ancestor books reverts (`InvalidRemainingAccounts`) so L1/L2 cannot drift
+behind locker `value` (M-04). If `lock = true`, pass the normal dividend settlement pairs
 first (`[asset_config, position] × listed assets`), followed by those referral books. `poach`
 requires the buyer book, seller book, and old/new L2 books; use `SystemProgram` for an unused
 self-owned seller or L2 slot.
@@ -101,7 +103,7 @@ self-owned seller or L2 slot.
 src/
   config.rs       # initialize, grinders, protocol config
   treasury.rs     # per-mint treasury vaults, referrals, affiliate distribution
-  assets.rs       # set_price_feed / set_settlement_asset
+  assets.rs       # set_feed / set_settlement_asset
   deposit.rs      # deposit / deposit_sol
   distribute.rs   # yield cuts → treasury / dividend
   vault.rs        # vault transfer + redeemable helpers
@@ -120,7 +122,7 @@ src/
 2. `grai.initialize` — owner + GRAI mint keypair (Metaplex metadata)
 3. `grinders.initialize` with this program id, then `grai.set_grinders(grinders_state)`
 4. `set_beneficiar`, `set_config` (optional; defaults applied at init; cuts fixed)
-5. `set_price_feed(paused, feed)` per mint (lists asset + treasury vault), then `set_settlement_asset`
+5. `set_feed(paused, feed)` per mint (lists asset + treasury vault), then `set_settlement_asset`
 6. Users `deposit` / `deposit_sol`; Grinders `custodian_distribute` → `distribute`
 
 ## Build

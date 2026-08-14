@@ -6,7 +6,12 @@
 //! - `value` / `l1_value` / `l2_value` — deposit + claim books (sticky; not reversed on redeem)
 //!
 //! Deposit `mint` and claim `distribute` credit books. Looping mint self-roots;
-//! looping `poach` reverts. Claim pays the current NFT holder of each referrer node.
+//! incomplete remaining on the loop walk reverts (`InvalidRemainingAccounts`).
+//! - Mint `credit_books` also requires ancestor books after sticky bind (M-04).
+//! - `credit_books` credits only PDA(`["referrer", locker]`) and sticky upline PDAs (M-11).
+//! Looping `poach` reverts. Claim pays the current NFT holder of each referrer node.
+//! Unresolved NFT ATA skips that level (share stays in treasury; walk continues) — M-07.
+//! Cashflow NFT mint destination is ATA(locker, mint) with token owner = locker (M-06).
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
@@ -16,14 +21,28 @@ use anchor_spl::token::{
     TokenAccount, Transfer,
 };
 
-use crate::vault::transfer_from_vault;
 use crate::metadata::{self, TREASURY_NFT_SEED};
-use crate::state::register_referrer;
+use crate::state::{create_account_absorb_prefund, register_referrer};
 use crate::tokenomics::{bps_of, BPS};
+use crate::vault::transfer_from_vault;
 use crate::{ErrorCode, GraiState, Referrer};
 
 /// Max referrer levels for claim-time affiliate split (EVM `revenueShareBps` length == 2).
 pub const MAX_AFFILIATE_LEVELS: usize = 2;
+
+/// Claim remaining length for the affiliate walk: `[cur_book, nft_ata, yield_ata] × levels`
+/// plus the last ancestor's Referrer PDA.
+///
+/// N paid levels need N+1 books (locker + each ancestor). Without the extra PDA,
+/// `referrer_info(L{N})` misses the last hop — L{N} share goes to beneficiar and
+/// `credit_books` never increments that ancestor's `l2_value` (H-04).
+pub(crate) fn affiliate_claim_remaining_len(levels: usize) -> usize {
+    if levels == 0 {
+        0
+    } else {
+        levels * 3 + 1
+    }
+}
 
 pub const DEFAULT_ROYALTY_BPS: u16 = 500;
 pub const DEFAULT_AFFILIATE_LEVELS: u8 = 2;
@@ -63,8 +82,9 @@ pub struct TreasuryNftAccounts<'info> {
 /// EVM `Treasury.mint(locker, referrer, value)`: sticky bind once + credit deposit book +
 /// mint Metaplex cashflow NFT on first ensure (EVM `_ensure` / ERC-721 mint).
 ///
-/// Remaining accounts (optional, in order): L1 book PDA, L2 book PDA for referrer wallets
-/// (`["referrer", affiliate]`). Pass `system_program` when unused.
+/// Remaining accounts (in order): L1 book PDA, L2 book PDA for referrer wallets
+/// (`["referrer", affiliate]`). Required on every mint credit after sticky bind (M-04);
+/// pass `system_program` only when that hop is unused (self-root / no L2).
 pub fn mint_referrer<'info>(
     grai_state: &mut GraiState,
     grai_state_info: &AccountInfo<'info>,
@@ -99,11 +119,13 @@ pub fn mint_referrer<'info>(
             referrer = *locker;
         } else if referrer != *locker {
             require_valid_referrer(&referrer, grai_state_key, program_id)?;
-            if !matches!(
-                has_referral_loop(locker, &referrer, remaining, program_id)?,
-                LoopStatus::No
-            ) {
-                referrer = *locker;
+            match has_referral_loop(locker, &referrer, remaining, program_id)? {
+                // Missing ancestor PDA is not a proven cycle (H-07). Self-root is sticky.
+                LoopStatus::Incomplete => {
+                    return err!(ErrorCode::InvalidRemainingAccounts);
+                }
+                LoopStatus::Yes => referrer = *locker,
+                LoopStatus::No => {}
             }
         }
         book.referrer = referrer;
@@ -148,6 +170,7 @@ pub fn mint_referrer<'info>(
 
     if value > 0 {
         store_referrer(locker_referrer, &book)?;
+        // Mint path: missing L1/L2 remaining must revert (M-04), not silently under-credit.
         credit_books(
             locker_referrer,
             locker,
@@ -155,6 +178,7 @@ pub fn mint_referrer<'info>(
             levels,
             remaining,
             program_id,
+            true,
         )?;
         return Ok(());
     }
@@ -184,23 +208,19 @@ pub fn ensure_treasury_nft<'info>(
     let (expected_mint, _) =
         Pubkey::find_program_address(&[TREASURY_NFT_SEED, locker.as_ref()], program_id);
     require_keys_eq!(nft.mint.key(), expected_mint, ErrorCode::InvalidMint);
+    // M-06: mint destination must be ATA(locker, mint) — never a caller-owned token account.
+    require_locker_nft_ata(&nft.nft_ata, locker, &nft.mint.key(), false)?;
 
     if nft.mint.data_is_empty() {
         let space = Mint::LEN;
-        let lamports = Rent::get()?.minimum_balance(space);
         let seeds: &[&[u8]] = &[TREASURY_NFT_SEED, locker.as_ref(), &[nft.mint_bump]];
-        system_program::create_account(
-            CpiContext::new_with_signer(
-                system_program_ai.clone(),
-                system_program::CreateAccount {
-                    from: payer.clone(),
-                    to: nft.mint.clone(),
-                },
-                &[seeds],
-            ),
-            lamports,
-            space as u64,
+        create_account_absorb_prefund(
+            &nft.mint,
+            payer,
+            system_program_ai,
             &token::ID,
+            space,
+            seeds,
         )?;
         token::initialize_mint2(
             CpiContext::new(
@@ -222,6 +242,7 @@ pub fn ensure_treasury_nft<'info>(
                 .map_err(|_| error!(ErrorCode::InvalidMint))?,
         );
         if supply >= 1 {
+            require_locker_nft_ata(&nft.nft_ata, locker, &nft.mint.key(), true)?;
             book.nft_mint = nft.mint.key();
             store_referrer(locker_referrer, book)?;
             return Ok(());
@@ -255,17 +276,63 @@ pub fn ensure_treasury_nft<'info>(
         nft.rent.clone(),
         grai_state.bump,
         grai_state.royalty_bps,
+        if grai_state.beneficiar == Pubkey::default() {
+            grai_state.owner
+        } else {
+            grai_state.beneficiar
+        },
     )?;
 
+    require_locker_nft_ata(&nft.nft_ata, locker, &nft.mint.key(), true)?;
     book.nft_mint = nft.mint.key();
     store_referrer(locker_referrer, book)?;
     msg!("treasury nft mint locker={} mint={}", locker, book.nft_mint);
     Ok(())
 }
 
+/// Cashflow NFT ATA must be the canonical ATA of `locker` for `mint` (M-06).
+///
+/// If the account is initialized, its mint/owner fields must match. `require_held` also
+/// requires `amount >= 1` (retry-after-mint / post-mint bind).
+fn require_locker_nft_ata(
+    nft_ata: &AccountInfo,
+    locker: &Pubkey,
+    mint: &Pubkey,
+    require_held: bool,
+) -> Result<()> {
+    let expected = associated_token::get_associated_token_address(locker, mint);
+    require_keys_eq!(nft_ata.key(), expected, ErrorCode::InvalidDestination);
+    if nft_ata.data_is_empty() {
+        require!(!require_held, ErrorCode::InvalidDestination);
+        return Ok(());
+    }
+    require_keys_eq!(*nft_ata.owner, token::ID, ErrorCode::InvalidDestination);
+    let data = nft_ata.try_borrow_data()?;
+    require!(data.len() >= 72, ErrorCode::InvalidDestination);
+    let ata_mint =
+        Pubkey::try_from(&data[0..32]).map_err(|_| error!(ErrorCode::InvalidDestination))?;
+    let owner =
+        Pubkey::try_from(&data[32..64]).map_err(|_| error!(ErrorCode::InvalidDestination))?;
+    let amount = u64::from_le_bytes(
+        data[64..72]
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidDestination))?,
+    );
+    require_keys_eq!(ata_mint, *mint, ErrorCode::InvalidDestination);
+    require_keys_eq!(owner, *locker, ErrorCode::InvalidDestination);
+    if require_held {
+        require!(amount >= 1, ErrorCode::InvalidAmount);
+    }
+    Ok(())
+}
+
 /// EVM `Treasury._creditBooks`: credit locker `value` and walk L1/L2 referrers.
 ///
-/// Missing referrer PDAs stop the walk (claim soft-path); mint ensures them before calling.
+/// - Locker book must be PDA(`["referrer", locker]`); upline credits only sticky-tree PDAs
+///   resolved via `referrer_info` (M-11).
+/// - `require_ancestors = true` (mint / deposit): missing upline PDAs in `remaining` revert
+///   (`InvalidRemainingAccounts`) so locker `value` cannot rise while L1/L2 stay stale (M-04).
+/// - `require_ancestors = false` (claim): soft-stop when a hop is missing (payout soft-path).
 pub fn credit_books(
     locker_referrer: &AccountInfo,
     locker: &Pubkey,
@@ -273,11 +340,24 @@ pub fn credit_books(
     levels: u8,
     remaining: &[AccountInfo],
     program_id: &Pubkey,
+    require_ancestors: bool,
 ) -> Result<()> {
     if value == 0 {
         return Ok(());
     }
+
+    // Locker book must be the canonical PDA — never credit a caller-supplied foreign Referrer.
+    let (locker_pda, _) =
+        Pubkey::find_program_address(&[Referrer::SEED, locker.as_ref()], program_id);
+    require_keys_eq!(
+        locker_referrer.key(),
+        locker_pda,
+        ErrorCode::InvalidRemainingAccounts
+    );
+
     if locker_referrer.owner != program_id || locker_referrer.data_is_empty() {
+        // Claim soft-path: unbound locker has nothing to credit. Mint path always has a book.
+        require!(!require_ancestors, ErrorCode::InvalidRemainingAccounts);
         return Ok(());
     }
 
@@ -286,6 +366,7 @@ pub fn credit_books(
         .value
         .checked_add(value)
         .ok_or(ErrorCode::MathOverflow)?;
+    // Sticky tree walk: only L1/L2 PDAs derived from `book.referrer` (via `referrer_info`).
     let mut ref_key = book.referrer;
     store_referrer(locker_referrer, &book)?;
 
@@ -294,9 +375,11 @@ pub fn credit_books(
             break;
         }
         let Some(info) = referrer_info(&ref_key, remaining, program_id) else {
+            require!(!require_ancestors, ErrorCode::InvalidRemainingAccounts);
             break;
         };
         if info.owner != program_id || info.data_is_empty() {
+            require!(!require_ancestors, ErrorCode::InvalidRemainingAccounts);
             break;
         }
         let mut up = load_referrer(info)?;
@@ -344,22 +427,31 @@ pub fn execute_preview_poach(ctx: Context<crate::PreviewPoach>) -> Result<crate:
 ///
 /// Accounts:
 /// - `locker_referrer`: slot being poached
-/// - `buyer_book`: poacher's Referrer PDA (created if needed)
-/// - `seller_book`: current affiliate's Referrer PDA (may equal locker when self-owned — pass
-///   `locker_referrer` address only when `affiliate == locker` is false; when self-owned pass
-///   `system_program` and seller debit is skipped)
-/// - `old_l2_book` / `new_l2_book`: `system_program` when unused
+/// - `buyer_book`: poacher's Referrer PDA (created if needed). When `poacher == locker`
+///   (self-poach), this **must** be the same PDA as `locker_referrer` — credits and rebind
+///   share one Anchor `Account` write (M-05).
+/// - `seller_book`: current affiliate's Referrer PDA; pass System Program / unused when
+///   the seat is already self-owned (`seller == locker`)
+/// - `old_l2_book` / `new_l2_book`: System Program when unused
+///
+/// Self-poach (`poacher == locker`) is allowed only when an upline exists (`seller != locker`).
+/// Self-root seats cannot be self-poached (`AlreadyBound`).
 pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'info>>) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
     let locker = ctx.accounts.locker.key();
     let poacher = ctx.accounts.poacher.key();
     let (price, seller) = preview_poach(&ctx.accounts.locker_referrer, &poacher)?;
+    let self_poach = poacher == locker;
+    // Self-poach buys out an upline into self-root. No upline → nothing to buy.
+    if self_poach {
+        require_keys_neq!(seller, locker, ErrorCode::AlreadyBound);
+    }
     require!(
         ctx.accounts.poacher_grai_ata.amount >= price,
         ErrorCode::InvalidAmount
     );
     let program_id = *ctx.program_id;
-    if poacher != locker {
+    if !self_poach {
         require_valid_referrer(
             &poacher,
             &ctx.accounts.grai_state.key(),
@@ -374,13 +466,11 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
         ctx.accounts.new_l2_book.to_account_info(),
         ctx.accounts.locker_referrer.to_account_info(),
     ]);
-    require!(
-        matches!(
-            has_referral_loop(&locker, &poacher, &loop_pool, &program_id)?,
-            LoopStatus::No
-        ),
-        ErrorCode::ReferralLoop
-    );
+    match has_referral_loop(&locker, &poacher, &loop_pool, &program_id)? {
+        LoopStatus::No => {}
+        LoopStatus::Yes => return err!(ErrorCode::ReferralLoop),
+        LoopStatus::Incomplete => return err!(ErrorCode::InvalidRemainingAccounts),
+    }
     require_keys_eq!(
         ctx.accounts.seller_grai_ata.owner,
         seller,
@@ -405,8 +495,9 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
     let direct = ctx.accounts.locker_referrer.l1_value;
     let payer = ctx.accounts.poacher.to_account_info();
     let system_program = ctx.accounts.system_program.to_account_info();
+    let grai_state_info = ctx.accounts.grai_state.to_account_info();
+    let shift_l2 = ctx.accounts.grai_state.affiliate_levels > 1;
 
-    // Ensure buyer book exists (poacher may never have deposited).
     let (buyer_pda, buyer_bump) =
         Pubkey::find_program_address(&[Referrer::SEED, poacher.as_ref()], &program_id);
     require_keys_eq!(
@@ -414,26 +505,7 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
         buyer_pda,
         ErrorCode::InvalidRemainingAccounts
     );
-    let grai_state_info = ctx.accounts.grai_state.to_account_info();
-    let (mut buyer, buyer_new) = ensure_referrer_account(
-        &ctx.accounts.buyer_book.to_account_info(),
-        &poacher,
-        &payer,
-        &system_program,
-        &program_id,
-        buyer_bump,
-    )?;
-    if buyer_new {
-        register_referrer(
-            &mut ctx.accounts.grai_state,
-            &grai_state_info,
-            &payer,
-            &system_program,
-            poacher,
-        )?;
-    }
 
-    let shift_l2 = ctx.accounts.grai_state.affiliate_levels > 1;
     // Non-self seller: debit seller L1/L2 and old L2.
     if seller != locker {
         let (seller_pda, seller_bump) =
@@ -507,18 +579,63 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
         }
     }
 
-    buyer.l1_value = buyer
-        .l1_value
-        .checked_add(own)
-        .ok_or(ErrorCode::MathOverflow)?;
-    if shift_l2 {
-        buyer.l2_value = buyer
-            .l2_value
-            .checked_add(direct)
+    // Credit buyer + rebind sticky link.
+    // Self-poach: buyer PDA == locker_referrer — mutate the Anchor `Account` once (M-05).
+    // EVM `newL2 = referrerOf(newReferrer)` is evaluated before rebind; for self-poach that is
+    // still the old upline (`seller`).
+    let new_l2 = if self_poach {
+        require_keys_eq!(
+            ctx.accounts.buyer_book.key(),
+            ctx.accounts.locker_referrer.key(),
+            ErrorCode::InvalidRemainingAccounts
+        );
+        let book = &mut ctx.accounts.locker_referrer;
+        let new_l2 = book.referrer;
+        book.l1_value = book
+            .l1_value
+            .checked_add(own)
             .ok_or(ErrorCode::MathOverflow)?;
-    }
-    let new_l2 = buyer.referrer;
-    store_referrer(&ctx.accounts.buyer_book.to_account_info(), &buyer)?;
+        if shift_l2 {
+            book.l2_value = book
+                .l2_value
+                .checked_add(direct)
+                .ok_or(ErrorCode::MathOverflow)?;
+        }
+        book.referrer = poacher;
+        new_l2
+    } else {
+        let (mut buyer, buyer_new) = ensure_referrer_account(
+            &ctx.accounts.buyer_book.to_account_info(),
+            &poacher,
+            &payer,
+            &system_program,
+            &program_id,
+            buyer_bump,
+        )?;
+        if buyer_new {
+            register_referrer(
+                &mut ctx.accounts.grai_state,
+                &grai_state_info,
+                &payer,
+                &system_program,
+                poacher,
+            )?;
+        }
+        buyer.l1_value = buyer
+            .l1_value
+            .checked_add(own)
+            .ok_or(ErrorCode::MathOverflow)?;
+        if shift_l2 {
+            buyer.l2_value = buyer
+                .l2_value
+                .checked_add(direct)
+                .ok_or(ErrorCode::MathOverflow)?;
+        }
+        let new_l2 = buyer.referrer;
+        store_referrer(&ctx.accounts.buyer_book.to_account_info(), &buyer)?;
+        ctx.accounts.locker_referrer.referrer = poacher;
+        new_l2
+    };
 
     if shift_l2 && new_l2 != Pubkey::default() && new_l2 != poacher && new_l2 != locker {
         let (new_pda, new_bump) =
@@ -552,7 +669,6 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
         store_referrer(&ctx.accounts.new_l2_book.to_account_info(), &new_book)?;
     }
 
-    ctx.accounts.locker_referrer.referrer = poacher;
     msg!("poach locker={} poacher={} price={}", locker, poacher, price);
     Ok(())
 }
@@ -616,20 +732,14 @@ pub fn ensure_treasury_vault<'info>(
     }
 
     let space = TokenAccount::LEN;
-    let lamports = Rent::get()?.minimum_balance(space);
     let seeds: &[&[u8]] = &[TREASURY_VAULT_SEED, mint.as_ref(), &[bump]];
-    system_program::create_account(
-        CpiContext::new_with_signer(
-            system_program_ai.clone(),
-            system_program::CreateAccount {
-                from: payer.clone(),
-                to: vault_info.clone(),
-            },
-            &[seeds],
-        ),
-        lamports,
-        space as u64,
+    create_account_absorb_prefund(
+        vault_info,
+        payer,
+        system_program_ai,
         &token::ID,
+        space,
+        seeds,
     )?;
 
     token::initialize_account3(CpiContext::new(
@@ -665,20 +775,14 @@ fn ensure_referrer_account<'info>(
     );
 
     let space = 8 + Referrer::LEN;
-    let lamports = Rent::get()?.minimum_balance(space);
     let seeds: &[&[u8]] = &[Referrer::SEED, key.as_ref(), &[bump]];
-    system_program::create_account(
-        CpiContext::new_with_signer(
-            system_program_ai.clone(),
-            system_program::CreateAccount {
-                from: payer.clone(),
-                to: info.clone(),
-            },
-            &[seeds],
-        ),
-        lamports,
-        space as u64,
+    create_account_absorb_prefund(
+        info,
+        payer,
+        system_program_ai,
         program_id,
+        space,
+        seeds,
     )?;
 
     Ok((
@@ -788,33 +892,42 @@ fn token_amount(info: &AccountInfo) -> Result<u64> {
 }
 
 /// Resolve claim payee: NFT holder when minted, otherwise the referrer locker wallet.
+///
+/// Returns `None` when the cashflow NFT exists but `nft_ata` is missing/wrong/empty (caller may
+/// pass SystemProgram). Callers must **not** fold that level’s share into beneficiar — leave it
+/// in the treasury vault and continue the sticky walk (M-07). Paying the naked referrer wallet
+/// would bypass OTC NFT transfers.
 fn resolve_cashflow_payee(
     book: &Referrer,
     referrer: &Pubkey,
     nft_ata_info: &AccountInfo,
-) -> Result<Pubkey> {
+) -> Result<Option<Pubkey>> {
     if book.nft_mint == Pubkey::default() {
-        return Ok(*referrer);
+        return Ok(Some(*referrer));
     }
-    // Soft-fail path: missing/wrong NFT ATA → treat as unpaid affiliate (caller may pass
-    // SystemProgram). Paying the naked referrer wallet would bypass OTC NFT transfers.
     if nft_ata_info.data_is_empty() || *nft_ata_info.owner != token::ID {
-        return err!(ErrorCode::InvalidDestination);
+        return Ok(None);
     }
     let data = nft_ata_info.try_borrow_data()?;
-    require!(data.len() >= 72, ErrorCode::InvalidDestination);
-    let mint =
-        Pubkey::try_from(&data[0..32]).map_err(|_| error!(ErrorCode::InvalidDestination))?;
-    let owner =
-        Pubkey::try_from(&data[32..64]).map_err(|_| error!(ErrorCode::InvalidDestination))?;
-    let amount = u64::from_le_bytes(
-        data[64..72]
-            .try_into()
-            .map_err(|_| error!(ErrorCode::InvalidDestination))?,
-    );
-    require_keys_eq!(mint, book.nft_mint, ErrorCode::InvalidDestination);
-    require!(amount >= 1, ErrorCode::InvalidAmount);
-    Ok(owner)
+    if data.len() < 72 {
+        return Ok(None);
+    }
+    let mint = match Pubkey::try_from(&data[0..32]) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    let owner = match Pubkey::try_from(&data[32..64]) {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
+    let amount = u64::from_le_bytes(match data[64..72].try_into() {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    });
+    if mint != book.nft_mint || amount < 1 {
+        return Ok(None);
+    }
+    Ok(Some(owner))
 }
 
 fn token_owner(info: &AccountInfo) -> Result<Pubkey> {
@@ -870,7 +983,15 @@ pub fn distribute_claim_treasury<'info>(
     remaining: &[AccountInfo<'info>],
     program_id: &Pubkey,
 ) -> Result<()> {
+    let levels = grai_state.affiliate_levels as usize;
+    // Same remaining pool for payout and `credit_books` (H-04: N levels → N+1 books).
+    require!(
+        remaining.len() >= affiliate_claim_remaining_len(levels),
+        ErrorCode::InvalidRemainingAccounts
+    );
+
     // EVM: book credit always runs before payout underfund check (poach ask tracks realized yield).
+    // Claim soft-path: missing ancestor PDAs stop the walk (do not brick claim).
     credit_books(
         locker_referrer,
         locker,
@@ -878,6 +999,7 @@ pub fn distribute_claim_treasury<'info>(
         grai_state.affiliate_levels,
         remaining,
         program_id,
+        false,
     )?;
 
     if gross_profit_share == 0 {
@@ -894,17 +1016,14 @@ pub fn distribute_claim_treasury<'info>(
         return Ok(());
     }
 
-    let levels = grai_state.affiliate_levels as usize;
     let mut paid_revenue = 0u64;
+    // Affiliate shares skipped because NFT ATA could not be resolved — stay in treasury vault
+    // (not folded into beneficiar). Walk continues so deeper levels can still be paid (M-07).
+    let mut retained_affiliate = 0u64;
     let mut cur = *locker;
 
     if revenue_share > 0 && levels > 0 {
-        // Remaining: `[cur_referrer_pda, nft_ata, yield_ata]` × levels.
-        require!(
-            remaining.len() >= levels * 3,
-            ErrorCode::InvalidRemainingAccounts
-        );
-
+        // Remaining: `[cur_book, nft_ata, yield_ata] × levels` + last ancestor book.
         for level in 0..levels {
             let ref_info = &remaining[level * 3];
             let nft_ata_info = &remaining[level * 3 + 1];
@@ -928,11 +1047,22 @@ pub fn distribute_claim_treasury<'info>(
                 break;
             }
             let referrer_book = load_referrer(referrer_ai)?;
-            let Ok(payee) = resolve_cashflow_payee(&referrer_book, &referrer, nft_ata_info) else {
-                break;
+            let share = bps_of(revenue_share, grai_state.affiliate_share_bps[level])?;
+
+            let Some(payee) = resolve_cashflow_payee(&referrer_book, &referrer, nft_ata_info)?
+            else {
+                retained_affiliate = retained_affiliate
+                    .checked_add(share)
+                    .ok_or(ErrorCode::MathOverflow)?;
+                msg!(
+                    "treasury affiliate level={} retained (nft unresolved) share={}",
+                    level,
+                    share
+                );
+                cur = referrer;
+                continue;
             };
 
-            let share = bps_of(revenue_share, grai_state.affiliate_share_bps[level])?;
             if try_pay_from_treasury(
                 token_program,
                 treasury_vault,
@@ -959,6 +1089,8 @@ pub fn distribute_claim_treasury<'info>(
 
     let net = gross_profit_share
         .checked_sub(paid_revenue)
+        .ok_or(ErrorCode::MathOverflow)?
+        .checked_sub(retained_affiliate)
         .ok_or(ErrorCode::MathOverflow)?;
     if net > 0 {
         let ok = try_pay_from_treasury(
@@ -1033,7 +1165,13 @@ pub fn close_treasury_vault_if_empty<'info>(
     Ok(())
 }
 
+/// Marketplace royalty (receiver, amount). Receiver matches Metaplex creators at mint.
 #[allow(dead_code)]
-pub fn royalty_info(grai_state: &GraiState, sale_price: u64) -> Result<u64> {
-    bps_of(sale_price, grai_state.royalty_bps)
+pub fn royalty_info(grai_state: &GraiState, sale_price: u64) -> Result<(Pubkey, u64)> {
+    let receiver = if grai_state.beneficiar == Pubkey::default() {
+        grai_state.owner
+    } else {
+        grai_state.beneficiar
+    };
+    Ok((receiver, bps_of(sale_price, grai_state.royalty_bps)?))
 }

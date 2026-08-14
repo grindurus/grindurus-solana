@@ -4,9 +4,9 @@ use anchor_lang::system_program;
 use anchor_spl::token::{self, InitializeAccount3, TokenAccount};
 
 use crate::price_feed;
-use crate::state::realloc_grai_state;
+use crate::state::{create_account_absorb_prefund, realloc_grai_state};
 use crate::treasury;
-use crate::{AssetConfig, ErrorCode, GraiState, SetPriceFeed};
+use crate::{AssetConfig, ErrorCode, GraiState, SetFeed};
 
 /// EVM `FEED_NONE`: pass the System Program (or default pubkey) as `price_feed` to delist.
 pub fn is_feed_none(feed: &AccountInfo) -> bool {
@@ -18,8 +18,8 @@ pub fn is_feed_none(feed: &AccountInfo) -> bool {
 /// - listed + unpaused → only update `paused` (oracle ignored)
 /// - listed + paused + FEED_NONE → delist
 /// - listed + paused + feed → full `price_feed` replace (+ `paused`)
-pub fn execute_set_price_feed<'info>(
-    ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>,
+pub fn execute_set_feed<'info>(
+    ctx: Context<'_, '_, 'info, 'info, SetFeed<'info>>,
     paused: bool,
 ) -> Result<()> {
     let mint = ctx.accounts.asset_mint.key();
@@ -51,7 +51,7 @@ pub fn execute_set_price_feed<'info>(
         // EVM: listed + unpaused → only `paused` applied; oracle fields ignored.
         asset.paused = paused;
         store_asset_config(&ctx.accounts.asset_config.to_account_info(), &asset)?;
-        msg!("set_price_feed pause mint={} paused={}", mint, paused);
+        msg!("set_feed pause mint={} paused={}", mint, paused);
         return Ok(());
     }
 
@@ -65,10 +65,12 @@ pub fn execute_set_price_feed<'info>(
         &mint,
     )?;
     asset.price_feed = ctx.accounts.price_feed.key();
+    asset.pyth_feed_id =
+        price_feed::resolve_stored_pyth_feed_id(&ctx.accounts.price_feed.to_account_info())?;
     asset.paused = paused;
     store_asset_config(&ctx.accounts.asset_config.to_account_info(), &asset)?;
     msg!(
-        "set_price_feed replace mint={} feed={} paused={}",
+        "set_feed replace mint={} feed={} paused={}",
         mint,
         asset.price_feed,
         paused
@@ -77,7 +79,7 @@ pub fn execute_set_price_feed<'info>(
 }
 
 fn list<'info>(
-    ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>,
+    ctx: Context<'_, '_, 'info, 'info, SetFeed<'info>>,
     paused: bool,
 ) -> Result<()> {
     let mint = ctx.accounts.asset_mint.key();
@@ -126,6 +128,7 @@ fn list<'info>(
         &program_id,
         &mint,
         ctx.accounts.price_feed.key(),
+        price_feed::resolve_stored_pyth_feed_id(&ctx.accounts.price_feed.to_account_info())?,
         id,
         paused,
         config_bump,
@@ -158,11 +161,11 @@ fn list<'info>(
         &program_id,
     )?;
 
-    msg!("set_price_feed list mint={} id={} paused={}", mint, id, paused);
+    msg!("set_feed list mint={} id={} paused={}", mint, id, paused);
     Ok(())
 }
 
-fn delist<'info>(ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>) -> Result<()> {
+fn delist<'info>(ctx: Context<'_, '_, 'info, 'info, SetFeed<'info>>) -> Result<()> {
     let mint = ctx.accounts.asset_mint.key();
     let program_id = *ctx.program_id;
 
@@ -253,7 +256,7 @@ fn delist<'info>(ctx: Context<'_, '_, 'info, 'info, SetPriceFeed<'info>>) -> Res
         &ctx.accounts.owner.to_account_info(),
     )?;
 
-    msg!("set_price_feed delist mint={}", mint);
+    msg!("set_feed delist mint={}", mint);
     Ok(())
 }
 
@@ -279,6 +282,7 @@ fn ensure_asset_config<'info>(
     program_id: &Pubkey,
     mint: &Pubkey,
     price_feed: Pubkey,
+    pyth_feed_id: [u8; 32],
     id: u32,
     paused: bool,
     bump: u8,
@@ -287,6 +291,7 @@ fn ensure_asset_config<'info>(
         let mut asset = load_asset_config(config_info, program_id)?;
         require_keys_eq!(asset.asset_mint, *mint, ErrorCode::AssetUnknown);
         asset.price_feed = price_feed;
+        asset.pyth_feed_id = pyth_feed_id;
         asset.paused = paused;
         asset.id = id;
         store_asset_config(config_info, &asset)?;
@@ -294,20 +299,14 @@ fn ensure_asset_config<'info>(
     }
 
     let space = 8 + AssetConfig::LEN;
-    let lamports = Rent::get()?.minimum_balance(space);
     let seeds: &[&[u8]] = &[AssetConfig::SEED, mint.as_ref(), &[bump]];
-    system_program::create_account(
-        CpiContext::new_with_signer(
-            system_program_ai.clone(),
-            system_program::CreateAccount {
-                from: payer.clone(),
-                to: config_info.clone(),
-            },
-            &[seeds],
-        ),
-        lamports,
-        space as u64,
+    create_account_absorb_prefund(
+        config_info,
+        payer,
+        system_program_ai,
         program_id,
+        space,
+        seeds,
     )?;
 
     let asset = AssetConfig {
@@ -318,6 +317,7 @@ fn ensure_asset_config<'info>(
         acc_share: 0,
         total_claimable: 0,
         bump,
+        pyth_feed_id,
     };
     store_asset_config(config_info, &asset)
 }
@@ -346,20 +346,14 @@ fn ensure_vault<'info>(
     }
 
     let space = TokenAccount::LEN;
-    let lamports = Rent::get()?.minimum_balance(space);
     let seeds: &[&[u8]] = &[AssetConfig::VAULT_SEED, mint.as_ref(), &[bump]];
-    system_program::create_account(
-        CpiContext::new_with_signer(
-            system_program_ai.clone(),
-            system_program::CreateAccount {
-                from: payer.clone(),
-                to: vault_info.clone(),
-            },
-            &[seeds],
-        ),
-        lamports,
-        space as u64,
+    create_account_absorb_prefund(
+        vault_info,
+        payer,
+        system_program_ai,
         &token::ID,
+        space,
+        seeds,
     )?;
 
     token::initialize_account3(CpiContext::new(

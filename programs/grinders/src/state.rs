@@ -33,6 +33,7 @@ pub struct CustodianState {
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
     pub nft_mint: Pubkey,
+    /// Cached holder hint (updated on mint / `transfer_custodian_nft`). Auth uses live SPL ATA.
     pub nft_owner: Pubkey,
     pub bump: u8,
 }

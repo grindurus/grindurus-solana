@@ -87,20 +87,21 @@ pub fn ensure_feed_matches_asset_mint(
 }
 
 /// Reads a configured price feed — custom, Pyth (legacy or push), or Chainlink v2 account.
+///
+/// Push Pyth: `asset.pyth_feed_id` must equal `price_message.feed_id` (EVM `Feed.data`).
 pub fn fetch_price_from_feed(
     price_feed: &AccountInfo<'_>,
-    expected_feed: Pubkey,
-    expected_asset_mint: &Pubkey,
+    asset: &AssetConfig,
     clock: &Clock,
 ) -> Result<PriceData> {
     require_keys_eq!(
         price_feed.key(),
-        expected_feed,
+        asset.price_feed,
         ErrorCode::InvalidChainlinkFeed
     );
 
     if price_feed.owner == &CUSTOM_PRICE_FEED_PROGRAM_ID {
-        return fetch_custom_price_from_account(price_feed, expected_asset_mint, clock);
+        return fetch_custom_price_from_account(price_feed, &asset.asset_mint, clock);
     }
 
     if is_pyth_legacy_owner(price_feed.owner) {
@@ -108,7 +109,7 @@ pub fn fetch_price_from_feed(
     }
 
     if is_pyth_receiver_owner(price_feed.owner) {
-        return fetch_pyth_push_price_from_account(price_feed, clock);
+        return fetch_pyth_push_price_from_account(price_feed, &asset.pyth_feed_id, clock);
     }
 
     fetch_chainlink_price_from_feed(price_feed, clock)
@@ -171,11 +172,32 @@ fn is_pyth_receiver_owner(owner: &Pubkey) -> bool {
     owner == &PYTH_RECEIVER_PROGRAM_ID || owner == &PYTH_RECEIVER_PROGRAM_ID_UPGRADED
 }
 
+/// Persistable Pyth price id for `AssetConfig` (EVM `Feed.data`).
+/// Receiver push accounts → non-zero `feed_id`; everything else → `[0; 32]`.
+pub fn resolve_stored_pyth_feed_id(feed: &AccountInfo<'_>) -> Result<[u8; 32]> {
+    if !is_pyth_receiver_owner(feed.owner) {
+        return Ok([0u8; 32]);
+    }
+    let update = deserialize_pyth_price_update_v2(feed)?;
+    require!(
+        update.verification_level == PythVerificationLevel::Full,
+        ErrorCode::PythReadError
+    );
+    let id = update.price_message.feed_id;
+    require!(id != [0u8; 32], ErrorCode::InvalidPythFeedId);
+    Ok(id)
+}
+
 fn fetch_pyth_push_price_from_account(
     feed: &AccountInfo<'_>,
+    expected_pyth_feed_id: &[u8; 32],
     clock: &Clock,
 ) -> Result<PriceData> {
     require!(is_pyth_receiver_owner(feed.owner), ErrorCode::PythReadError);
+    require!(
+        *expected_pyth_feed_id != [0u8; 32],
+        ErrorCode::InvalidPythFeedId
+    );
 
     let update = deserialize_pyth_price_update_v2(feed)?;
     require!(
@@ -184,6 +206,11 @@ fn fetch_pyth_push_price_from_account(
     );
 
     let message = update.price_message;
+    require!(
+        message.feed_id == *expected_pyth_feed_id,
+        ErrorCode::InvalidPythFeedId
+    );
+
     let age = clock
         .unix_timestamp
         .saturating_sub(message.publish_time);
@@ -279,5 +306,6 @@ pub fn fetch_asset_price<'info>(
     price_feed: &AccountInfo<'info>,
     clock: &Clock,
 ) -> Result<PriceData> {
-    fetch_price_from_feed(price_feed, asset.price_feed, asset_mint, clock)
+    require_keys_eq!(*asset_mint, asset.asset_mint, ErrorCode::AssetUnknown);
+    fetch_price_from_feed(price_feed, asset, clock)
 }

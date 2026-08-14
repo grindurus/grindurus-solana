@@ -13,6 +13,7 @@ pub fn execute_jupiter_gasless_swap<'info>(
     owner: &Signer,
     fee_payer: &AccountInfo<'info>,
     custodian_state: &Account<'info, CustodianState>,
+    owner_nft_ata: &Account<'info, TokenAccount>,
     base_custodian_ata: &Account<'info, TokenAccount>,
     quote_custodian_ata: &Account<'info, TokenAccount>,
     base_mint: &Account<'info, Mint>,
@@ -22,7 +23,7 @@ pub fn execute_jupiter_gasless_swap<'info>(
     _ix_data: Vec<u8>,
 ) -> Result<()> {
     require_custodian_kind(custodian_state, &JUPITER_GASLESS_CUSTODIAN_KIND)?;
-    assert_custodian_owner(owner, custodian_state)?;
+    assert_custodian_owner(owner, custodian_state, owner_nft_ata)?;
     require_keys_neq!(fee_payer.key(), owner.key(), ErrorCode::GrinderMustNotPayGas);
 
     require_keys_eq!(
