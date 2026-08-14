@@ -10,12 +10,15 @@ pub struct GrindersState {
     pub next_custodian_id: u64,
     /// Metaplex collection parent for all custodian NFTs (mirrors ERC-721 contract).
     pub collection_mint: Pubkey,
+    /// Grinders-owner limb of GRAI 2-of-2 liquidation (EVM `Grinders.confirmed`).
+    /// Armed via `confirm`; required by every sweep; cleared by GRAI on `revive`.
+    pub confirmed: bool,
     pub bump: u8,
 }
 
 impl GrindersState {
     pub const SEED: &'static [u8] = b"grinders";
-    pub const LEN: usize = 32 + 32 + 8 + 32 + 1;
+    pub const LEN: usize = 32 + 32 + 8 + 32 + 1 + 1;
 
     pub fn signer_seeds<'a>(&'a self, bump: &'a [u8; 1]) -> [&'a [u8]; 2] {
         [Self::SEED, bump]

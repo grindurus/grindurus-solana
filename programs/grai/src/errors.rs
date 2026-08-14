@@ -90,7 +90,7 @@ pub enum ErrorCode {
     InsolventRevive,
     #[msg("Deposit book is zero while shares remain")]
     InsolventBook,
-    #[msg("Liquidation has not been confirmed by the owner")]
+    #[msg("Liquidation has not been confirmed by the Grinders owner")]
     LiquidationNotConfirmed,
     #[msg("Invalid get_lockers range")]
     InvalidLockerRange,

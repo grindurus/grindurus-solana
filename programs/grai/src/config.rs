@@ -30,7 +30,6 @@ pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
         grai_state.total_locked = 0;
         grai_state.total_voted = 0;
         grai_state.liquidation = false;
-        grai_state.confirmed = false;
         grai_state.liquidation_at = 0;
         grai_state.config = default_protocol_config();
         grai_state.royalty_bps = DEFAULT_ROYALTY_BPS;
@@ -126,13 +125,14 @@ pub fn execute_transfer_ownership(
     Ok(())
 }
 
-/// EVM `GRAI.acceptOwnership`: pending becomes owner, `confirmed` is cleared.
+/// EVM `GRAI.acceptOwnership`: pending becomes owner.
+/// Grinders-owner liquidation arm lives on Grinders and is cleared only by Grinders
+/// `acceptOwnership` / `revive` (EVM parity) — not here.
 pub fn execute_accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
     let grai_state = &mut ctx.accounts.grai_state;
     let new_owner = ctx.accounts.pending_owner.key();
     grai_state.owner = new_owner;
     grai_state.pending_owner = Pubkey::default();
-    grai_state.confirmed = false;
-    msg!("OwnershipTransferred owner={} confirmed=false", new_owner);
+    msg!("OwnershipTransferred owner={}", new_owner);
     Ok(())
 }

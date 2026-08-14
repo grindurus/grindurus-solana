@@ -10,9 +10,11 @@ import { Grai } from "../target/types/grai";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
+  createInitializeMint2Instruction,
   createMintToInstruction,
   createTransferInstruction,
   getAssociatedTokenAddressSync,
+  MINT_SIZE,
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
@@ -622,13 +624,10 @@ describe("Treasury referrals / poach / NFT", () => {
     const oldL2Book = opts.oldL2
       ? referrerPda(opts.oldL2, program.programId)[0]
       : buyerBook;
-    // Self-poach: EVM `newL2 = referrerOf(locker)` before rebind == seller.
-    const selfPoach = poacher.publicKey.equals(locker);
+    // Self-poach no longer credits a new L2 (H-04); placeholder may be buyerBook.
     const newL2Book = opts.newL2
       ? referrerPda(opts.newL2, program.programId)[0]
-      : selfPoach && !seller.equals(locker)
-        ? sellerBook
-        : buyerBook;
+      : buyerBook;
 
     await program.methods
       .poach()
@@ -1388,6 +1387,50 @@ describe("Treasury referrals / poach / NFT", () => {
     }
   });
 
+  it("claim rejects missing L1 book when upline exists (H-03)", async () => {
+    const locker = Keypair.generate();
+    const l1 = Keypair.generate();
+    await airdrop(locker);
+    await airdrop(l1);
+    await prepareSoleLockerClaim(locker);
+
+    try {
+      await depositUsdc(l1, 1_000_000n);
+      await depositUsdc(locker, 100_000_000n, l1.publicKey, l1.publicKey);
+      await lockAll(locker);
+      await distributeYield(YIELD);
+
+      const lockerBook = referrerPda(locker.publicKey, program.programId)[0];
+      const valueBefore = BigInt(
+        (await program.account.referrer.fetch(lockerBook)).value.toString(),
+      );
+      const l1Book = referrerPda(l1.publicKey, program.programId)[0];
+      const l1ValueBefore = BigInt(
+        (await program.account.referrer.fetch(l1Book)).l1Value.toString(),
+      );
+
+      // Pass locker book + placeholders, but omit the real L1 Referrer PDA.
+      await expectTransactionError(
+        claimMax(locker, {
+          l1NftAta: await nftAtaOf(l1.publicKey),
+          l1YieldAta: await ensureAta(usdcMint.publicKey, l1.publicKey),
+        }),
+        "InvalidRemainingAccounts",
+      );
+
+      const valueAfter = BigInt(
+        (await program.account.referrer.fetch(lockerBook)).value.toString(),
+      );
+      const l1ValueAfter = BigInt(
+        (await program.account.referrer.fetch(l1Book)).l1Value.toString(),
+      );
+      expect(valueAfter).to.equal(valueBefore);
+      expect(l1ValueAfter).to.equal(l1ValueBefore);
+    } finally {
+      await unlockUser(locker.publicKey, locker);
+    }
+  });
+
   ////////////////////////////// poach //////////////////////////////
 
   it("poach self-slot pays locker and rewrites sticky referrer", async () => {
@@ -1414,7 +1457,7 @@ describe("Treasury referrals / poach / NFT", () => {
     expect(await tokenBal(await nftAtaOf(locker.publicKey))).to.equal(1n);
   });
 
-  it("self-poach with upline keeps buyer l1 credit (M-05)", async () => {
+  it("self-poach with upline does not double-count own into l1 (H-04)", async () => {
     const locker = Keypair.generate();
     const upline = Keypair.generate();
     await airdrop(locker);
@@ -1437,10 +1480,14 @@ describe("Treasury referrals / poach / NFT", () => {
       referrerPda(locker.publicKey, program.programId)[0],
     );
     expect(book.referrer.toBase58()).to.equal(locker.publicKey.toBase58());
-    // Buyer credits must survive Anchor exit (M-05): l1 += own (90M).
-    await assertNode(locker.publicKey, 90_000_000n, 90_000_000n, 0n);
-    // Seller: l1 -= own → 0; l2 -= 0 + own (newL2 credit) → 90M
-    await assertNode(upline.publicKey, 10_000_000n, 0n, 90_000_000n);
+    // EVM rebind self-root: debit upline only — own stays in `value`, not copied into `l1`.
+    await assertNode(locker.publicKey, 90_000_000n, 0n, 0n);
+    // Seller: l1 -= own → 0; no bogus L2 re-credit of own.
+    await assertNode(upline.publicKey, 10_000_000n, 0n, 0n);
+
+    // Next ask must stay value + l1 (= 90M), not 2× value.
+    const nextAsk = await previewPoach(locker.publicKey, upline.publicKey);
+    expect(BigInt(nextAsk.price.toString())).to.equal(90_000_000n);
   });
 
   it("self-poach without upline reverts AlreadyBound", async () => {
@@ -1548,6 +1595,92 @@ describe("Treasury referrals / poach / NFT", () => {
         .rpc(),
       "AlreadyBound",
     );
+  });
+
+  it("poach rejects junk SPL mint (C-02)", async () => {
+    const locker = Keypair.generate();
+    const seller = Keypair.generate();
+    const attacker = Keypair.generate();
+    await airdrop(locker);
+    await airdrop(seller);
+    await airdrop(attacker);
+    await depositUsdc(seller, 10_000_000n);
+    await depositUsdc(locker, 50_000_000n, seller.publicKey, seller.publicKey);
+
+    const junkMint = Keypair.generate();
+    const lamports =
+      await provider.connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+    await provider.sendAndConfirm!(
+      new Transaction().add(
+        SystemProgram.createAccount({
+          fromPubkey: authority,
+          newAccountPubkey: junkMint.publicKey,
+          lamports,
+          space: MINT_SIZE,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+        createInitializeMint2Instruction(
+          junkMint.publicKey,
+          6,
+          attacker.publicKey,
+          null,
+          TOKEN_PROGRAM_ID,
+        ),
+      ),
+      [junkMint],
+    );
+
+    const attackerJunkAta = await ensureAta(junkMint.publicKey, attacker.publicKey);
+    const sellerJunkAta = await ensureAta(junkMint.publicKey, seller.publicKey);
+    await provider.sendAndConfirm!(
+      new Transaction().add(
+        createMintToInstruction(
+          junkMint.publicKey,
+          attackerJunkAta,
+          attacker.publicKey,
+          1_000_000_000n,
+          [],
+          TOKEN_PROGRAM_ID,
+        ),
+      ),
+      [attacker],
+    );
+
+    const lockerBook = referrerPda(locker.publicKey, program.programId)[0];
+    const buyerBook = referrerPda(attacker.publicKey, program.programId)[0];
+    const sellerBook = referrerPda(seller.publicKey, program.programId)[0];
+
+    await expectTransactionError(
+      program.methods
+        .poach()
+        .accountsPartial({
+          poacher: attacker.publicKey,
+          graiState,
+          locker: locker.publicKey,
+          lockerReferrer: lockerBook,
+          buyerBook,
+          sellerBook,
+          oldL2Book: buyerBook,
+          newL2Book: buyerBook,
+          graiMint: junkMint.publicKey,
+          poacherGraiAta: attackerJunkAta,
+          sellerGraiAta: sellerJunkAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .remainingAccounts([
+          meta(lockerBook, true),
+          meta(buyerBook, true),
+          meta(sellerBook, true),
+        ])
+        .signers([attacker])
+        .rpc(),
+      "InvalidMint",
+    );
+
+    // Sticky referrer unchanged — slot was not stolen.
+    const book = await program.account.referrer.fetch(lockerBook);
+    expect(book.referrer.toBase58()).to.equal(seller.publicKey.toBase58());
   });
 
   it("poach reverts ReferralLoop when downline buys referrer seat", async () => {

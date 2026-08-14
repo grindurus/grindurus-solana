@@ -35,9 +35,9 @@ Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ove
 | `claim` | caller | Claim dividends; tip → caller; books += claimedValue; revenue → cashflow owners / beneficiar |
 | `claim_all` | caller | Claim all listed assets, including the per-mint treasury split |
 | `vote` / `bribe` | voter / briber | Vote toward quorum; buy out votes with dynamic ask |
-| `liquidate` | owner / anyone | Open liquidation when `confirmed` + quorum; scoop dead GRAI to caller |
+| `liquidate` | anyone | Open when `Grinders.confirmed` + quorum; scoop dead GRAI to caller |
 | `redeem` | holder | Burn GRAI for pro-rata basket (books sticky — not reversed) |
-| `revive` | anyone | Close liquidation after redeem window; sweep leftovers to Grinders (no NAV raise) |
+| `revive` | anyone | Close after redeem window; sweep leftovers to Grinders; clear Grinders arm |
 
 **Views / previews:** `get_assets` (listed mints), `get_lockers`, `get_voters`, `get_referrals`, `get_redeemables`, `has_quorum`,
 `preview_deposit`, `preview_unlock`, `preview_claim`, `preview_claim_all`,
@@ -93,8 +93,8 @@ self-owned seller or L2 slot.
   treasury vault
 - **Unlock:** flat `unlock_penalty_bps` penalty stays as orphan/dead GRAI; scooped to the liquidate opener
 - **Bribe:** dynamic ask around book vs vote share / half-quorum (`bribe_premium_bps`)
-- **Liquidation:** 2-of-2 (`confirmed` + quorum) → scoop dead GRAI → redeem basket excludes claim reserve →
-  `revive` returns leftovers to Grinders and does **not** raise `total_value` from leftover NAV
+- **Liquidation:** 2-of-2 (`Grinders.confirmed` + vote quorum) → scoop dead GRAI → redeem basket excludes claim reserve →
+  `revive` returns leftovers to Grinders, clears Grinders arm, and does **not** raise `total_value` from leftover NAV
   (zeros the book only when supply is zero)
 
 ## Module layout

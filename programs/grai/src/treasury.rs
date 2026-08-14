@@ -7,7 +7,7 @@
 //!
 //! Deposit `mint` and claim `distribute` credit books. Looping mint self-roots;
 //! incomplete remaining on the loop walk reverts (`InvalidRemainingAccounts`).
-//! - Mint `credit_books` also requires ancestor books after sticky bind (M-04).
+//! - Mint / claim `credit_books` require ancestor books when the sticky tree has upline (M-04 / H-03).
 //! - `credit_books` credits only PDA(`["referrer", locker]`) and sticky upline PDAs (M-11).
 //! Looping `poach` reverts. Claim pays the current NFT holder of each referrer node.
 //! Unresolved NFT ATA skips that level (share stays in treasury; walk continues) — M-07.
@@ -330,9 +330,8 @@ fn require_locker_nft_ata(
 ///
 /// - Locker book must be PDA(`["referrer", locker]`); upline credits only sticky-tree PDAs
 ///   resolved via `referrer_info` (M-11).
-/// - `require_ancestors = true` (mint / deposit): missing upline PDAs in `remaining` revert
-///   (`InvalidRemainingAccounts`) so locker `value` cannot rise while L1/L2 stay stale (M-04).
-/// - `require_ancestors = false` (claim): soft-stop when a hop is missing (payout soft-path).
+/// - `require_ancestors = true` (mint / deposit / claim): missing upline PDAs in `remaining`
+///   revert (`InvalidRemainingAccounts`) so locker `value` cannot rise while L1/L2 stay stale.
 pub fn credit_books(
     locker_referrer: &AccountInfo,
     locker: &Pubkey,
@@ -580,29 +579,18 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
     }
 
     // Credit buyer + rebind sticky link.
-    // Self-poach: buyer PDA == locker_referrer — mutate the Anchor `Account` once (M-05).
-    // EVM `newL2 = referrerOf(newReferrer)` is evaluated before rebind; for self-poach that is
-    // still the old upline (`seller`).
+    // Self-poach: buyer PDA == locker_referrer — mutate the Anchor `Account` once.
+    // EVM `Treasury.rebind` self-root reclaim (`newReferrer == locker`): debit old upline
+    // only — do **not** credit `own` onto the locker's `l1_value` (would double-count in
+    // `poachOf = value + l1_value`) nor treat the old upline as a new L2.
     let new_l2 = if self_poach {
         require_keys_eq!(
             ctx.accounts.buyer_book.key(),
             ctx.accounts.locker_referrer.key(),
             ErrorCode::InvalidRemainingAccounts
         );
-        let book = &mut ctx.accounts.locker_referrer;
-        let new_l2 = book.referrer;
-        book.l1_value = book
-            .l1_value
-            .checked_add(own)
-            .ok_or(ErrorCode::MathOverflow)?;
-        if shift_l2 {
-            book.l2_value = book
-                .l2_value
-                .checked_add(direct)
-                .ok_or(ErrorCode::MathOverflow)?;
-        }
-        book.referrer = poacher;
-        new_l2
+        ctx.accounts.locker_referrer.referrer = poacher;
+        Pubkey::default()
     } else {
         let (mut buyer, buyer_new) = ensure_referrer_account(
             &ctx.accounts.buyer_book.to_account_info(),
@@ -991,7 +979,8 @@ pub fn distribute_claim_treasury<'info>(
     );
 
     // EVM: book credit always runs before payout underfund check (poach ask tracks realized yield).
-    // Claim soft-path: missing ancestor PDAs stop the walk (do not brick claim).
+    // Claim requires the same ancestor books as mint (H-03) — incomplete remaining reverts so
+    // locker.value cannot rise while L1/L2 stay stale (poach ask stays consistent).
     credit_books(
         locker_referrer,
         locker,
@@ -999,7 +988,7 @@ pub fn distribute_claim_treasury<'info>(
         grai_state.affiliate_levels,
         remaining,
         program_id,
-        false,
+        true,
     )?;
 
     if gross_profit_share == 0 {

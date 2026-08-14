@@ -1,4 +1,9 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    hash::hash,
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+};
 use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::TokenAccount;
 
@@ -12,7 +17,7 @@ use crate::{ErrorCode, Revive};
 /// (`asset_config.total_claimable`) stays on the vaults so post-revive `claim` still pays.
 /// Does **not** reprice `total_value` from leftover NAV — book stays at the post-redeem level
 /// (EVM `revive`). If no shares remain, `total_value = 0`. Per-asset `paused` flags are left
-/// untouched.
+/// untouched. Clears Grinders `confirmed` via CPI (EVM `grinders.revive()`).
 ///
 /// Remaining accounts: quints `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per
 /// listed asset in registry order. `vault_ata` must be `["vault", mint]`; `asset_config` must
@@ -101,7 +106,40 @@ pub fn execute_revive<'info>(
     }
     grai_state.liquidation = false;
     grai_state.liquidation_at = 0;
-    grai_state.confirmed = false;
+
+    // EVM `grinders.revive()` — clear the Grinders-owner arm (PDA signs as grai_state).
+    let grinders_state_info = ctx.accounts.grinders_state.to_account_info();
+    let grinders_program_info = ctx.accounts.grinders_program.to_account_info();
+    require!(
+        grinders_program_info.executable,
+        ErrorCode::InvalidGrinders
+    );
+    require_keys_eq!(
+        *grinders_state_info.owner,
+        grinders_program_info.key(),
+        ErrorCode::InvalidGrinders
+    );
+
+    let mut ix_data = [0u8; 8];
+    ix_data.copy_from_slice(&hash(b"global:revive").to_bytes()[..8]);
+    let ix = Instruction {
+        program_id: grinders_program_info.key(),
+        accounts: vec![
+            AccountMeta::new(grinders_state_info.key(), false),
+            AccountMeta::new_readonly(grai_state_info.key(), true),
+        ],
+        data: ix_data.to_vec(),
+    };
+    let seeds: &[&[u8]] = &[crate::GraiState::SEED, &[bump]];
+    invoke_signed(
+        &ix,
+        &[
+            grinders_state_info,
+            grai_state_info,
+            grinders_program_info,
+        ],
+        &[seeds],
+    )?;
 
     msg!("revive supply={}", supply);
     Ok(())

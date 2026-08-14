@@ -18,6 +18,8 @@ use crate::{AssetConfig, Claim, ClaimAll, ErrorCode, Position};
 ///
 /// Remaining: `[referrer_pda, nft_ata, affiliate_ata]` × `affiliate_levels` plus the last
 /// ancestor's Referrer PDA (N levels → N+1 books). First PDA is the locker book (writable).
+/// Sticky upline Referrer PDAs that exist in the tree **must** be present (same as mint) or
+/// the ix reverts — claim must not credit `locker.value` while leaving L1/L2 stale (H-03).
 pub fn execute_claim<'info>(
     ctx: Context<'_, '_, 'info, 'info, Claim<'info>>,
     amount: u64,

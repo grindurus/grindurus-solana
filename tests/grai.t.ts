@@ -1836,27 +1836,28 @@ describe("GRAI tokenomics", () => {
     expect(quorum).to.be.false;
   });
 
-  it("accept_ownership clears confirmed so prior owner consent does not survive", async () => {
-    const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
-    const callerGraiAta = await ensureAta(graiMint.publicKey, authority);
-
-    await program.methods
-      .liquidate()
+  it("grinders confirm arms liquidation; GRAI accept_ownership does not clear it", async () => {
+    await grindersProgram.methods
+      .confirm()
       .accountsPartial({
-        caller: authority,
-        graiState,
-        graiMint: graiMint.publicKey,
-        graiVaultAta,
-        callerGraiAta,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
+        owner: authority,
+        grindersState,
       })
       .rpc();
 
-    let state = await program.account.graiState.fetch(graiState);
-    expect(state.confirmed).to.be.true;
-    expect(state.liquidation).to.be.false;
+    let grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(grinders.confirmed).to.be.true;
+
+    // Disarm so later tests start clean (and verify toggle).
+    await grindersProgram.methods
+      .confirm()
+      .accountsPartial({
+        owner: authority,
+        grindersState,
+      })
+      .rpc();
+    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(grinders.confirmed).to.be.false;
 
     const next = Keypair.generate();
     await fundWallet(next);
@@ -1870,9 +1871,8 @@ describe("GRAI tokenomics", () => {
       .signers([next])
       .rpc();
 
-    state = await program.account.graiState.fetch(graiState);
+    const state = await program.account.graiState.fetch(graiState);
     expect(state.owner.toBase58()).to.equal(next.publicKey.toBase58());
-    expect(state.confirmed).to.be.false;
 
     await restoreOwner(next);
   });
@@ -2410,6 +2410,8 @@ describe("GRAI tokenomics", () => {
           .accountsPartial({
             caller: authority,
             graiState,
+            grindersState,
+            grindersProgram: GRINDERS_PROGRAM_ID,
             graiMint: graiMint.publicKey,
             tokenProgram: TOKEN_PROGRAM_ID,
           })

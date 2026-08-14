@@ -3,6 +3,7 @@ use anchor_lang::system_program::{transfer as transfer_sol, Transfer as Transfer
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::metadata::{
     create_metadata_accounts_v3, mpl_token_metadata::types::DataV2, CreateMetadataAccountsV3,
+    Metadata,
 };
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
 
@@ -43,6 +44,7 @@ pub mod grinders {
             grinders.grai_program = ctx.accounts.grai_program.key();
             grinders.next_custodian_id = 0;
             grinders.collection_mint = ctx.accounts.collection_mint.key();
+            grinders.confirmed = false;
             grinders.bump = grinders_bump;
         }
 
@@ -67,6 +69,31 @@ pub mod grinders {
             grinders.grai_program,
             grinders.collection_mint
         );
+        Ok(())
+    }
+
+    /// Toggle the Grinders-owner limb of GRAI 2-of-2 liquidation (EVM `Grinders.confirm`).
+    /// Arm stays set through open so keeper sweeps keep working; GRAI clears via `revive`.
+    pub fn confirm(ctx: Context<Confirm>) -> Result<()> {
+        let grinders = &mut ctx.accounts.grinders_state;
+        grinders.confirmed = !grinders.confirmed;
+        msg!("grinders confirm={}", grinders.confirmed);
+        emit!(ConfirmEvent {
+            confirmed: grinders.confirmed,
+        });
+        Ok(())
+    }
+
+    /// Clear the liquidation arm when GRAI closes the cycle (EVM `Grinders.revive`).
+    /// Only the linked GRAI protocol PDA may call (via CPI from `grai::revive`).
+    pub fn revive(ctx: Context<ReviveConfirm>) -> Result<()> {
+        require!(
+            ctx.accounts.grai_state.to_account_info().is_signer,
+            ErrorCode::NotGrai
+        );
+        ctx.accounts.grinders_state.confirmed = false;
+        msg!("grinders revive confirmed=false");
+        emit!(ConfirmEvent { confirmed: false });
         Ok(())
     }
 
@@ -337,7 +364,8 @@ pub mod grinders {
         )
     }
 
-    /// Permissionless idle-reserve sweep while GRAI liquidation is open.
+    /// Permissionless idle-reserve sweep while Grinders liquidation arm is set
+    /// (EVM `Grinders.liquidate(0,0)` — gated by `confirmed`, not `grai.liquidation`).
     /// Remaining accounts: per listed GRAI asset — `[grinders_ata, grai_vault_ata]`.
     /// `grai_vault_ata` must be GRAI `["vault", mint]` (authority = `GraiState`).
     pub fn liquidate_idle<'info>(
@@ -372,7 +400,10 @@ pub mod grinders {
             )?;
         }
 
-        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
+        require!(
+            ctx.accounts.grinders_state.confirmed,
+            ErrorCode::LiquidationNotConfirmed
+        );
 
         let grinders_bump = [ctx.accounts.grinders_state.bump];
         let grinders_signer = ctx
@@ -417,10 +448,14 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Permissionless custodian sweep while GRAI liquidation is open (EVM `Grinders.liquidate`).
+    /// Permissionless custodian sweep while Grinders liquidation arm is set
+    /// (EVM `Grinders.liquidate` page — gated by `confirmed`, not `grai.liquidation`).
     /// Pulls base + quote → Grinders ATAs, then forwards those amounts → GRAI vaults.
     pub fn liquidate_custodian(ctx: Context<LiquidateCustodian>) -> Result<()> {
-        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
+        require!(
+            ctx.accounts.grinders_state.confirmed,
+            ErrorCode::LiquidationNotConfirmed
+        );
 
         let custodian_id = ctx.accounts.custodian_state.custodian_id;
         let custodian_id_bytes = custodian_id.to_le_bytes();
@@ -606,6 +641,41 @@ pub mod grinders {
 }
 
 #[derive(Accounts)]
+pub struct Confirm<'info> {
+    #[account(
+        mut,
+        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+    )]
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+}
+
+/// Clear `confirmed` — only linked GRAI protocol PDA (signer via CPI from `grai::revive`).
+#[derive(Accounts)]
+pub struct ReviveConfirm<'info> {
+    #[account(
+        mut,
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+        constraint = grai_state.grinders == grinders_state.key() @ ErrorCode::NotGrai,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
+}
+
+#[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
@@ -641,18 +711,38 @@ pub struct Initialize<'info> {
     )]
     pub collection_token_account: Account<'info, TokenAccount>,
 
-    /// CHECK: Metaplex metadata for the collection parent NFT.
-    #[account(mut)]
-    pub collection_metadata: UncheckedAccount<'info>,
-
-    /// CHECK: Master edition for the collection parent NFT.
-    #[account(mut)]
-    pub collection_master_edition: UncheckedAccount<'info>,
-
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
-    /// CHECK: Metaplex token metadata program.
-    pub token_metadata_program: UncheckedAccount<'info>,
+    /// Metaplex Token Metadata (`mpl_token_metadata::ID`) — M-01: typed so CPI cannot target a fake program.
+    pub token_metadata_program: Program<'info, Metadata>,
+
+    /// CHECK: Metaplex metadata PDA for `collection_mint`.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            collection_mint.key().as_ref(),
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub collection_metadata: UncheckedAccount<'info>,
+
+    /// CHECK: Metaplex master edition PDA for `collection_mint`.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            collection_mint.key().as_ref(),
+            b"edition",
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
+    pub collection_master_edition: UncheckedAccount<'info>,
+
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -699,10 +789,34 @@ pub struct MintCustodian<'info> {
     )]
     pub collection_mint: Box<Account<'info, Mint>>,
 
-    /// CHECK: Metaplex metadata for the collection parent NFT.
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    /// Metaplex Token Metadata (`mpl_token_metadata::ID`) — M-01: typed so CPI cannot target a fake program.
+    pub token_metadata_program: Program<'info, Metadata>,
+
+    /// CHECK: Metaplex metadata PDA for the collection parent NFT.
+    #[account(
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            collection_mint.key().as_ref(),
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
     pub collection_metadata: UncheckedAccount<'info>,
 
-    /// CHECK: Master edition for the collection parent NFT.
+    /// CHECK: Metaplex master edition PDA for the collection parent NFT.
+    #[account(
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            collection_mint.key().as_ref(),
+            b"edition",
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
     pub collection_master_edition: UncheckedAccount<'info>,
 
     #[account(
@@ -724,8 +838,17 @@ pub struct MintCustodian<'info> {
     )]
     pub custodian_nft_ata: Box<Account<'info, TokenAccount>>,
 
-    /// CHECK: Metaplex metadata account for the custodian NFT.
-    #[account(mut)]
+    /// CHECK: Metaplex metadata PDA for the custodian NFT.
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            custodian_mint.key().as_ref(),
+        ],
+        bump,
+        seeds::program = token_metadata_program.key(),
+    )]
     pub custodian_metadata: UncheckedAccount<'info>,
 
     /// CHECK: base ATA for custodian wallet.
@@ -746,10 +869,6 @@ pub struct MintCustodian<'info> {
     )]
     pub quote_custodian_ata: Box<Account<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    /// CHECK: Metaplex token metadata program.
-    pub token_metadata_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
     /// CHECK: rent sysvar.
     #[account(address = anchor_lang::solana_program::sysvar::rent::ID)]
@@ -1244,6 +1363,11 @@ pub struct LiquidateCustodian<'info> {
     pub quote_vault_ata: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
+}
+
+#[event]
+pub struct ConfirmEvent {
+    pub confirmed: bool,
 }
 
 #[event]

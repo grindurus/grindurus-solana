@@ -54,6 +54,8 @@ pub enum ErrorCode {
     NoLiquidation,
     #[msg("GRAI liquidation is open")]
     LiquidationOpen,
+    #[msg("Liquidation has not been confirmed by the Grinders owner")]
+    LiquidationNotConfirmed,
     #[msg("Remaining accounts do not match the expected layout")]
     InvalidRemainingAccounts,
     #[msg("Base mint cannot be default")]

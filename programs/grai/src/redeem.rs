@@ -7,43 +7,44 @@ use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
 use crate::{AssetConfig, ErrorCode, Liquidate, Redeem};
 
-/// Open liquidation (EVM `liquidate`): 2-of-2 consent with vote quorum.
+/// Offset of `confirmed: bool` in GrindersState after the 8-byte Anchor discriminator.
+/// Layout: owner(32) + grai_program(32) + next_custodian_id(8) + collection_mint(32) + confirmed(1) + bump(1).
+const GRINDERS_CONFIRMED_OFFSET: usize = 8 + 32 + 32 + 8 + 32;
+
+/// Read `Grinders.confirmed` (EVM 2-of-2 owner arm) without depending on the grinders crate.
+fn grinders_confirmed(grinders_state: &AccountInfo) -> Result<bool> {
+    let data = grinders_state.try_borrow_data()?;
+    require!(
+        data.len() > GRINDERS_CONFIRMED_OFFSET,
+        ErrorCode::InvalidGrinders
+    );
+    Ok(data[GRINDERS_CONFIRMED_OFFSET] != 0)
+}
+
+/// Open liquidation (EVM `liquidate`): vote quorum **and** `Grinders.confirmed`.
 ///
-/// - Authority + no quorum → toggle `confirmed` and return.
-/// - Authority + quorum → open (owner consent).
-/// - Anyone else → open only when `confirmed && hasQuorum()`.
-///
-/// On open: scoop orphan/dead GRAI (`grai_vault − total_locked`) to the opener, then start the
-/// claim clock. Per-asset `paused` flags are left unchanged.
+/// Anyone may call. On open: scoop orphan/dead GRAI (`grai_vault − total_locked`) to the
+/// opener, then start the claim clock. Sweeps stay on Grinders (`liquidate_idle` /
+/// `liquidate_custodian`), gated by the same arm — compose them in this tx for atomic pull.
+/// Per-asset `paused` flags are left unchanged.
 pub fn execute_liquidate<'info>(
     ctx: Context<'_, '_, 'info, 'info, Liquidate<'info>>,
 ) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
 
     let supply = ctx.accounts.grai_mint.supply;
-    let quorum = has_quorum(
-        ctx.accounts.grai_state.total_voted,
-        supply,
-        ctx.accounts.grai_state.config.quorum_bps,
+    require!(
+        has_quorum(
+            ctx.accounts.grai_state.total_voted,
+            supply,
+            ctx.accounts.grai_state.config.quorum_bps,
+        ),
+        ErrorCode::LiquidationQuorumNotMet
     );
-    let is_owner = ctx.accounts.caller.key() == ctx.accounts.grai_state.owner;
-
-    if is_owner {
-        if !quorum {
-            ctx.accounts.grai_state.confirmed = !ctx.accounts.grai_state.confirmed;
-            msg!(
-                "liquidate confirmed={}",
-                ctx.accounts.grai_state.confirmed
-            );
-            return Ok(());
-        }
-    } else {
-        require!(
-            ctx.accounts.grai_state.confirmed,
-            ErrorCode::LiquidationNotConfirmed
-        );
-        require!(quorum, ErrorCode::LiquidationQuorumNotMet);
-    }
+    require!(
+        grinders_confirmed(&ctx.accounts.grinders_state.to_account_info())?,
+        ErrorCode::LiquidationNotConfirmed
+    );
 
     let clock = Clock::get()?;
     let bump = ctx.accounts.grai_state.bump;

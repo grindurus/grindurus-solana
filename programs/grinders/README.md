@@ -34,8 +34,10 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 | `custodian_jupiter_gasless_swap` | NFT holder + `fee_payer` | Jupiter gasless kind only (logic stub) |
 | `custodian_deallocate` | protocol owner | Return inventory to grinders (blocked while liquidation open) |
 | `custodian_distribute` | protocol owner | Route yield via GRAI `distribute` (blocked while liquidation open) |
-| `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while liquidation is open |
-| `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults (EVM liquidate hop) while liquidation open |
+| `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while `confirmed` |
+| `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults while `confirmed` |
+| `confirm` | owner | Toggle Grinders-owner liquidation arm (EVM `confirm`) |
+| `revive` | GRAI CPI | Clear `confirmed` when GRAI closes the cycle |
 | `transfer_custodian_nft` | live NFT holder | Transfer NFT and refresh `custodian_state.nft_owner` cache |
 | `withdraw` | owner | Withdraw SOL from grinders PDA |
 | `withdraw_token` | owner | Withdraw SPL from grinders ATA |

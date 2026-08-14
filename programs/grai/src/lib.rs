@@ -80,8 +80,6 @@ pub struct GraiState {
     pub total_locked: u64,
     pub total_voted: u64,
     pub liquidation: bool,
-    /// Owner consent bit for 2-of-2 liquidation open (EVM `confirmed`).
-    pub confirmed: bool,
     pub liquidation_at: i64,
     pub config: Config,
     /// Secondary-sale royalty in bps written to Treasury NFT Metaplex metadata.
@@ -115,7 +113,6 @@ impl GraiState {
         + 16
         + 8
         + 8
-        + 1
         + 1
         + 8
         + Config::LEN
@@ -381,6 +378,10 @@ pub struct Poach<'info> {
     #[account(mut)]
     pub new_l2_book: UncheckedAccount<'info>,
 
+    /// Protocol GRAI mint only (C-02) — junk SPL cannot buy a referral slot.
+    #[account(
+        constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
+    )]
     pub grai_mint: Account<'info, Mint>,
 
     #[account(
@@ -1418,10 +1419,11 @@ pub struct PreviewRedeem<'info> {
     pub holder_grai_ata: Box<Account<'info, TokenAccount>>,
 }
 
-/// Open liquidation (2-of-2 with vote quorum, EVM `liquidate`).
-/// Authority: toggle `confirmed` when no quorum; with quorum this call opens.
-/// Anyone else: open when `confirmed && hasQuorum()`.
+/// Open liquidation (2-of-2: vote quorum here **and** `Grinders.confirmed`).
+/// Anyone may call; `!confirmed` or missing quorum aborts open (EVM atomic open).
 /// On open, orphan vault GRAI (`grai_vault − total_locked`) is sent to `caller`.
+/// Custodian / idle sweeps stay on Grinders (`liquidate_*`), gated by the same arm —
+/// compose them in the same tx as this ix for EVM-style atomic pull.
 #[derive(Accounts)]
 pub struct Liquidate<'info> {
     #[account(mut)]
@@ -1433,6 +1435,13 @@ pub struct Liquidate<'info> {
         bump = grai_state.bump,
     )]
     pub grai_state: Account<'info, GraiState>,
+
+    /// Linked Grinders state (`grai_state.grinders`). `confirmed` is the owner arm.
+    /// CHECK: owner program + layout validated in handler.
+    #[account(
+        constraint = grinders_state.key() == grai_state.grinders @ ErrorCode::InvalidGrinders,
+    )]
+    pub grinders_state: UncheckedAccount<'info>,
 
     #[account(
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
@@ -1463,6 +1472,7 @@ pub struct Liquidate<'info> {
 /// Close liquidation (permissionless). Remaining accounts: quints
 /// `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per listed asset in registry order.
 /// `vault_ata` must be `["vault", mint]`; `asset_config` must be the canonical PDA.
+/// Clears Grinders `confirmed` via CPI (EVM `grinders.revive()`).
 #[derive(Accounts)]
 pub struct Revive<'info> {
     pub caller: Signer<'info>,
@@ -1473,6 +1483,17 @@ pub struct Revive<'info> {
         bump = grai_state.bump,
     )]
     pub grai_state: Account<'info, GraiState>,
+
+    /// Linked Grinders state — mutated by CPI `grinders::revive`.
+    /// CHECK: key + program owner validated in handler before CPI.
+    #[account(
+        mut,
+        constraint = grinders_state.key() == grai_state.grinders @ ErrorCode::InvalidGrinders,
+    )]
+    pub grinders_state: UncheckedAccount<'info>,
+
+    /// CHECK: Grinders program id (must own `grinders_state`); validated in handler.
+    pub grinders_program: UncheckedAccount<'info>,
 
     #[account(
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
@@ -1604,7 +1625,7 @@ pub mod grai {
         config::execute_transfer_ownership(ctx, new_owner)
     }
 
-    /// Pending owner takes over; clears `confirmed` so prior liquidation consent dies with the old owner.
+    /// Pending owner takes over (EVM Ownable2Step). Grinders liquidation arm is separate.
     pub fn accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
         config::execute_accept_ownership(ctx)
     }
