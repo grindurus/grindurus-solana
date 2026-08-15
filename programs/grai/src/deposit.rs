@@ -106,6 +106,10 @@ pub fn execute_deposit<'info>(
         .checked_add(value)
         .ok_or(ErrorCode::MathOverflow)?;
 
+    // Persist PDA bump even when not locking so `claim`/`unlock` (`bump = escrow.bump`)
+    // work against an empty escrow created by `init_if_needed`.
+    ctx.accounts.escrow.bump = ctx.bumps.escrow;
+
     if lock {
         let source = ctx.accounts.depositor_grai_ata.to_account_info();
         let vault = ctx.accounts.grai_vault_ata.to_account_info();
@@ -251,6 +255,8 @@ pub fn execute_deposit_sol<'info>(
         .total_value
         .checked_add(value)
         .ok_or(ErrorCode::MathOverflow)?;
+
+    ctx.accounts.escrow.bump = ctx.bumps.escrow;
 
     if lock {
         let source = ctx.accounts.depositor_grai_ata.to_account_info();
