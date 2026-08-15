@@ -1142,7 +1142,9 @@ describe("Treasury referrals / poach / NFT", () => {
       const aliceNft = await nftAtaOf(aliceLocker.publicKey);
       const bobNft = await nftAtaOf(bobLocker.publicKey);
 
-      // 4) All claim (Alice claimable = 0).
+      // 4) Carol + Bob claim. Alice has no post-deposit distribute → claimable 0;
+      // affiliate already paid on their claims. Alice `claim` is a no-op (EVM
+      // `if (claimable == 0) return 0`), not a revert.
       await claimMax(carolLocker, {
         l1: bobLocker.publicKey,
         l2: aliceLocker.publicKey,
@@ -1156,7 +1158,9 @@ describe("Treasury referrals / poach / NFT", () => {
         l1NftAta: aliceNft,
         l1YieldAta: aliceUsdc,
       });
+      const aliceAfterAffiliate = await tokenBal(aliceUsdc);
       await claimMax(aliceLocker);
+      expect(await tokenBal(aliceUsdc)).to.equal(aliceAfterAffiliate);
 
       // Dividends: Carol & Bob split 50/50; Alice locked out of this dist.
       expect((await tokenBal(carolUsdc)) - carolBefore).to.equal(halfDividend);

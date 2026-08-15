@@ -1,0 +1,33 @@
+[package]
+name = "grs"
+version = "0.1.0"
+description = "GRS LayerZero OFT (Grindurus protocol token)"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "grs"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "oapp/idl-build"]
+custom-heap = []
+custom-panic = []
+anchor-debug = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_os, values("solana"))',
+] }
+
+[dependencies]
+anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
+anchor-spl = "0.31.1"
+oapp = { package = "oapp-latest", git = "https://github.com/LayerZero-Labs/LayerZero-v2.git", rev = "c09287a" }
+utils = { package = "utils-latest", git = "https://github.com/LayerZero-Labs/LayerZero-v2.git", rev = "c09287a" }
+solana-helper = "0.1.0"

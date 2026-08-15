@@ -9,15 +9,18 @@ skip-lint = false
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
 grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
+grs = "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo"
 
 [programs.localnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
 grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
+grs = "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo"
 
 [programs.mainnet]
 grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
+grs = "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo"
 
 [registry]
 url = "https://api.apr.dev"
@@ -27,7 +30,7 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "npx tsx ./node_modules/mocha/bin/mocha -t 1000000 tests/oracles.t.ts tests/grai.t.ts tests/treasury.t.ts"
+test = "npx tsx ./node_modules/mocha/bin/mocha -t 1000000 tests/oracles.t.ts tests/grai.t.ts tests/treasury.t.ts tests/grs.t.ts"
 
 [test]
 startup_wait = 5000

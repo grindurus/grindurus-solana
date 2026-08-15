@@ -549,6 +549,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
+name = "cpi-helper"
+version = "0.1.0"
+source = "git+https://github.com/LayerZero-Labs/LayerZero-v2.git?rev=c09287a#c09287a8b1f236fcc057f474d8a773a0fb7758df"
+dependencies = [
+ "bs58",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -656,6 +667,18 @@ name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "endpoint-interface"
+version = "0.1.0"
+source = "git+https://github.com/LayerZero-Labs/LayerZero-v2.git?rev=c09287a#c09287a8b1f236fcc057f474d8a773a0fb7758df"
+dependencies = [
+ "anchor-lang",
+ "cpi-helper",
+ "messagelib-interface-latest",
+ "solana-helper",
+ "utils-latest",
+]
 
 [[package]]
 name = "equivalent"
@@ -787,6 +810,17 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "grai",
+]
+
+[[package]]
+name = "grs"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "oapp-latest",
+ "solana-helper",
+ "utils-latest",
 ]
 
 [[package]]
@@ -986,6 +1020,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "messagelib-interface-latest"
+version = "0.1.0"
+source = "git+https://github.com/LayerZero-Labs/LayerZero-v2.git?rev=c09287a#c09287a8b1f236fcc057f474d8a773a0fb7758df"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "mpl-token-metadata"
 version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1068,6 +1110,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "oapp-latest"
+version = "0.2.0"
+source = "git+https://github.com/LayerZero-Labs/LayerZero-v2.git?rev=c09287a#c09287a8b1f236fcc057f474d8a773a0fb7758df"
+dependencies = [
+ "anchor-lang",
+ "endpoint-interface",
 ]
 
 [[package]]
@@ -1765,6 +1816,18 @@ dependencies = [
  "solana-atomic-u64",
  "solana-sanitize",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "solana-helper"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09c6deff8c48efb84b5828db064ad9873ef3445f129f888b4b6a664bd5220e35"
+dependencies = [
+ "bs58",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -2909,6 +2972,14 @@ checksum = "0200d0fc04d809396c2ad43f3c95da3582a2556eba8d453c1087f4120ee352ff"
 dependencies = [
  "fnv",
  "lazy_static",
+]
+
+[[package]]
+name = "utils-latest"
+version = "0.1.0"
+source = "git+https://github.com/LayerZero-Labs/LayerZero-v2.git?rev=c09287a#c09287a8b1f236fcc057f474d8a773a0fb7758df"
+dependencies = [
+ "anchor-lang",
 ]
 
 [[package]]

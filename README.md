@@ -36,6 +36,7 @@ liquidate → redeem → revive  →  scoop dead GRAI, open window, burn for pro
 | `grai`              | GRAI mint, oracles, deposits, lock/vote/bribe/liquidation                                 | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` |
 | `grinders`          | Metaplex custodian NFT collection, allocate/deallocate, swap CPI, liquidateIdle/Custodian | `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa` |
 | `custom_price_feed` | Test/dev SPL price feed account (Chainlink/Pyth also supported on `add_asset`)            | `BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1` |
+| `grs`               | LayerZero OFT for GRS (9 local / 6 shared decimals, 1B home genesis)                       | `39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo` |
 
 
 ### GRAI (`programs/grai`)
