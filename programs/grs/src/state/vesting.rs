@@ -1,6 +1,7 @@
 use crate::*;
 
 /// Holder-created vest. Tokens sit in `vest_escrow` until `release`. No cap table.
+/// Ids are sequential (`1 … vesting_count`) so `get_vestings` can page like EVM.
 #[account]
 #[derive(InitSpace)]
 pub struct Vesting {

@@ -10,9 +10,11 @@ import {
   MINT_SIZE,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  transferChecked,
 } from "@solana/spl-token";
 import { expect } from "chai";
 import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Grs } from "../target/types/grs";
 
 const GRS_DECIMALS = 9;
 const GRS_SHARED = 6;
@@ -21,10 +23,10 @@ const GRS_MAX = BigInt("1000000000000000000"); // 1e9 * 1e9
 describe("grs oft", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-  const program = anchor.workspace.Grs as Program;
+  const program = anchor.workspace.Grs as Program<Grs>;
   const admin = provider.wallet.publicKey;
 
-  async function createMint(): Promise<PublicKey> {
+  async function createMint(decimals = GRS_DECIMALS): Promise<PublicKey> {
     const mint = Keypair.generate();
     const lamports = await provider.connection.getMinimumBalanceForRentExemption(MINT_SIZE);
     const tx = new Transaction().add(
@@ -35,7 +37,7 @@ describe("grs oft", () => {
         lamports,
         programId: TOKEN_PROGRAM_ID,
       }),
-      createInitializeMint2Instruction(mint.publicKey, GRS_DECIMALS, admin, null, TOKEN_PROGRAM_ID),
+      createInitializeMint2Instruction(mint.publicKey, decimals, admin, null, TOKEN_PROGRAM_ID),
     );
     await provider.sendAndConfirm(tx, [mint]);
     return mint.publicKey;
@@ -94,9 +96,32 @@ describe("grs oft", () => {
         [Buffer.from("peers"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      saleRegistry: PublicKey.findProgramAddressSync(
+        [Buffer.from("sales"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
       systemProgram: SystemProgram.programId,
     }).rpc();
     return grsConfig;
+  }
+
+  function salePdas(oftStore: PublicKey) {
+    const [saleRegistry] = PublicKey.findProgramAddressSync(
+      [Buffer.from("sales"), oftStore.toBuffer()],
+      program.programId,
+    );
+    const [saleEscrow] = PublicKey.findProgramAddressSync(
+      [Buffer.from("sale_escrow"), oftStore.toBuffer()],
+      program.programId,
+    );
+    return { saleRegistry, saleEscrow };
+  }
+
+  function vestingPda(oftStore: PublicKey, id: number) {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("vest"), oftStore.toBuffer(), idSeed(id)],
+      program.programId,
+    )[0];
   }
 
   async function mintToAdmin(mint: PublicKey, amount: bigint) {
@@ -251,7 +276,7 @@ describe("grs oft", () => {
     const grsConfig = await initGrsConfig(oftStore, mint, true);
     const amount = 1_000_000_000n;
     const ata = await mintToAdmin(mint, amount);
-    const id = 7;
+    const id = 1;
     const [vesting] = PublicKey.findProgramAddressSync(
       [Buffer.from("vest"), oftStore.toBuffer(), idSeed(id)],
       program.programId,
@@ -320,6 +345,10 @@ describe("grs oft", () => {
         [Buffer.from("peers"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      saleRegistry: PublicKey.findProgramAddressSync(
+        [Buffer.from("sales"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
       systemProgram: SystemProgram.programId,
     }).rpc();
 
@@ -374,11 +403,15 @@ describe("grs oft", () => {
         [Buffer.from("peers"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      saleRegistry: PublicKey.findProgramAddressSync(
+        [Buffer.from("sales"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
       systemProgram: SystemProgram.programId,
     }).rpc();
 
-    const store = await program.account.oftStore.fetch(oftStore);
-    expect(store.ld2sdRate.toNumber()).to.equal(1000);
+    const store: any = await program.account.oftStore.fetch(oftStore);
+    expect((store.ld2SdRate ?? store.ld2sdRate).toString()).to.equal("1000");
     expect(store.tokenMint.toBase58()).to.equal(mint.toBase58());
 
     const cfg = await program.account.grsConfig.fetch(grsConfig);
@@ -425,6 +458,10 @@ describe("grs oft", () => {
       tokenMint: mint,
       grsConfig,
       peerRegistry,
+      saleRegistry: PublicKey.findProgramAddressSync(
+        [Buffer.from("sales"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
       systemProgram: SystemProgram.programId,
     }).rpc();
 
@@ -449,16 +486,18 @@ describe("grs oft", () => {
       program.programId,
     );
 
+    const peerCfg = (bytes: Buffer) => ({ peerAddress: [Array.from(bytes)] }) as any;
+
     await program.methods
-      .setPeerConfig({ remoteEid: eidA, config: { peerAddress: Array.from(peerA) } })
+      .setPeerConfig({ remoteEid: eidA, config: peerCfg(peerA) })
       .accounts({ admin, peer: peerPdaA, oftStore, peerRegistry, systemProgram: SystemProgram.programId })
       .rpc();
     await program.methods
-      .setPeerConfig({ remoteEid: eidB, config: { peerAddress: Array.from(Buffer.alloc(32, 3)) } })
+      .setPeerConfig({ remoteEid: eidB, config: peerCfg(Buffer.alloc(32, 3)) })
       .accounts({ admin, peer: peerPdaB, oftStore, peerRegistry, systemProgram: SystemProgram.programId })
       .rpc();
     await program.methods
-      .setPeerConfig({ remoteEid: eidB, config: { peerAddress: Array.from(peerB) } })
+      .setPeerConfig({ remoteEid: eidB, config: peerCfg(peerB) })
       .accounts({ admin, peer: peerPdaB, oftStore, peerRegistry, systemProgram: SystemProgram.programId })
       .rpc();
 
@@ -470,7 +509,7 @@ describe("grs oft", () => {
     expect(Buffer.from(listed[1].peer)).to.deep.equal(peerB);
 
     await program.methods
-      .setPeerConfig({ remoteEid: eidA, config: { peerAddress: Array.from(Buffer.alloc(32, 0)) } })
+      .setPeerConfig({ remoteEid: eidA, config: peerCfg(Buffer.alloc(32, 0)) })
       .accounts({ admin, peer: peerPdaA, oftStore, peerRegistry, systemProgram: SystemProgram.programId })
       .rpc();
 
@@ -478,5 +517,303 @@ describe("grs oft", () => {
     expect(listed).to.have.length(1);
     expect(listed[0].eid).to.equal(eidB);
     expect(Buffer.from(listed[0].peer)).to.deep.equal(peerB);
+  });
+
+  it("get_vestings pages sequential ids", async () => {
+    const mint = await createMint();
+    const { oftStore } = await initNativeOft(mint);
+    const grsConfig = await initGrsConfig(oftStore, mint, false);
+    const unit = 1_000_000_000n;
+    const ata = await mintToAdmin(mint, 6n * unit);
+    const [vestEscrow] = PublicKey.findProgramAddressSync(
+      [Buffer.from("vest_escrow"), oftStore.toBuffer()],
+      program.programId,
+    );
+
+    const vest = async (id: number, amount: bigint) => {
+      await program.methods
+        .vest(
+          new anchor.BN(id),
+          admin,
+          new anchor.BN(amount.toString()),
+          new anchor.BN(1),
+          new anchor.BN(0),
+          new anchor.BN(1),
+        )
+        .accounts({
+          funder: admin,
+          oftStore,
+          grsConfig,
+          vesting: vestingPda(oftStore, id),
+          vestEscrow,
+          tokenSource: ata,
+          tokenMint: mint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+    };
+
+    try {
+      await vest(2, unit);
+      expect.fail("id must be vesting_count + 1");
+    } catch (e: any) {
+      expect(String(e)).to.match(/InvalidVestingId/);
+    }
+
+    await vest(1, unit);
+    await vest(2, 2n * unit);
+    await vest(3, 3n * unit);
+
+    const count = await program.methods.vestingCount().accounts({ oftStore, grsConfig }).view();
+    expect(count.toNumber()).to.equal(3);
+
+    const meta = (id: number) => ({ pubkey: vestingPda(oftStore, id), isWritable: false, isSigner: false });
+    const page = await program.methods
+      .getVestings(new anchor.BN(1), new anchor.BN(1))
+      .accounts({ oftStore, grsConfig })
+      .remainingAccounts([meta(2)])
+      .view();
+    expect(page).to.have.length(1);
+    expect(page[0].id.toNumber()).to.equal(2);
+    expect(page[0].allocationLd.toString()).to.equal((2n * unit).toString());
+
+    const tail = await program.methods
+      .getVestings(new anchor.BN(2), new anchor.BN(10))
+      .accounts({ oftStore, grsConfig })
+      .remainingAccounts([meta(3)])
+      .view();
+    expect(tail).to.have.length(1);
+    expect(tail[0].id.toNumber()).to.equal(3);
+
+    const empty = await program.methods
+      .getVestings(new anchor.BN(3), new anchor.BN(1))
+      .accounts({ oftStore, grsConfig })
+      .view();
+    expect(empty).to.have.length(0);
+    const none = await program.methods
+      .getVestings(new anchor.BN(0), new anchor.BN(0))
+      .accounts({ oftStore, grsConfig })
+      .view();
+    expect(none).to.have.length(0);
+  });
+
+  it("buy sol from token sales and page get_sales", async () => {
+    const mint = await createMint();
+    const { oftStore } = await initNativeOft(mint);
+    const grsConfig = await initGrsConfig(oftStore, mint, true);
+    const { saleRegistry, saleEscrow } = salePdas(oftStore);
+    const inventory = 10n * 1_000_000_000n;
+    const adminAta = await mintToAdmin(mint, inventory);
+
+    const price = new anchor.BN(10_000_000); // 0.01 SOL / GRS
+    await program.methods
+      .setSale(new anchor.BN(0), PublicKey.default, price, PublicKey.default)
+      .accounts({
+        admin,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        saleEscrow,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    await transferChecked(provider.connection, payer, adminAta, mint, saleEscrow, admin, inventory, GRS_DECIMALS);
+
+    const amount = 10n * 1_000_000_000n;
+    const cost = await program.methods
+      .quoteSale(new anchor.BN(1), new anchor.BN(amount.toString()))
+      .accounts({ oftStore, saleRegistry })
+      .view();
+    expect(cost.toNumber()).to.equal(100_000_000);
+
+    const buyer = Keypair.generate();
+    const air = await provider.connection.requestAirdrop(buyer.publicKey, 2_000_000_000);
+    await provider.connection.confirmTransaction(air);
+    const buyerAta = getAssociatedTokenAddressSync(mint, buyer.publicKey);
+    const adminBefore = BigInt(await provider.connection.getBalance(admin));
+
+    await program.methods
+      .buy(new anchor.BN(1), new anchor.BN(amount.toString()))
+      .accounts({
+        buyer: buyer.publicKey,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        payee: admin,
+        to: buyer.publicKey,
+        saleEscrow,
+        tokenDest: buyerAta,
+        tokenMint: mint,
+        quoteMint: null,
+        quoteSource: null,
+        quoteDest: null,
+        quoteTokenProgram: null,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([buyer])
+      .rpc();
+
+    expect((await getAccount(provider.connection, buyerAta)).amount).to.equal(amount);
+    const cfg = await program.account.grsConfig.fetch(grsConfig);
+    expect(cfg.tokenSalesSpent.toString()).to.equal(amount.toString());
+    const delta = BigInt(await provider.connection.getBalance(admin)) - adminBefore;
+    expect(delta >= 90_000_000n && delta <= 100_000_000n).to.equal(true);
+
+    const listed = await program.methods
+      .getSales(new anchor.BN(0), new anchor.BN(10))
+      .accounts({ oftStore, saleRegistry })
+      .view();
+    expect(listed).to.have.length(1);
+    expect(listed[0].price.toNumber()).to.equal(10_000_000);
+    expect((await program.methods.saleCount().accounts({ oftStore, saleRegistry }).view()).toNumber()).to.equal(1);
+  });
+
+  it("buy spl quote, closed sale, spoke cannot sell", async () => {
+    const mint = await createMint();
+    const { oftStore } = await initNativeOft(mint);
+    const grsConfig = await initGrsConfig(oftStore, mint, true);
+    const { saleRegistry, saleEscrow } = salePdas(oftStore);
+    const usdc = await createMint(6);
+    const amount = 100n * 1_000_000_000n;
+    const adminAta = await mintToAdmin(mint, amount);
+    const price = new anchor.BN(100_000); // $0.10 / GRS (6 dec)
+
+    await program.methods
+      .setSale(new anchor.BN(0), usdc, price, admin)
+      .accounts({
+        admin,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        saleEscrow,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const payer = (provider.wallet as anchor.Wallet).payer;
+    await transferChecked(provider.connection, payer, adminAta, mint, saleEscrow, admin, amount, GRS_DECIMALS);
+
+    const buyer = Keypair.generate();
+    const air = await provider.connection.requestAirdrop(buyer.publicKey, 1_000_000_000);
+    await provider.connection.confirmTransaction(air);
+    const buyerUsdc = getAssociatedTokenAddressSync(usdc, buyer.publicKey);
+    const adminUsdc = getAssociatedTokenAddressSync(usdc, admin);
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        createAssociatedTokenAccountInstruction(admin, buyerUsdc, buyer.publicKey, usdc),
+        createAssociatedTokenAccountInstruction(admin, adminUsdc, admin, usdc),
+      ),
+    );
+    const cost = 10_000_000n;
+    await mintTo(provider.connection, payer, usdc, buyerUsdc, admin, cost);
+
+    const buyerAta = getAssociatedTokenAddressSync(mint, buyer.publicKey);
+    await program.methods
+      .buy(new anchor.BN(1), new anchor.BN(amount.toString()))
+      .accountsPartial({
+        buyer: buyer.publicKey,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        payee: admin,
+        to: buyer.publicKey,
+        saleEscrow,
+        tokenDest: buyerAta,
+        tokenMint: mint,
+        quoteMint: usdc,
+        quoteSource: buyerUsdc,
+        quoteDest: adminUsdc,
+        quoteTokenProgram: TOKEN_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([buyer])
+      .rpc();
+
+    expect((await getAccount(provider.connection, buyerAta)).amount).to.equal(amount);
+    expect((await getAccount(provider.connection, adminUsdc)).amount).to.equal(cost);
+
+    await program.methods
+      .setSale(new anchor.BN(1), usdc, new anchor.BN(0), admin)
+      .accounts({
+        admin,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        saleEscrow,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    const closed = await program.account.saleRegistry.fetch(saleRegistry);
+    expect(closed.entries[0].price.toNumber()).to.equal(0);
+    try {
+      await program.methods
+        .buy(new anchor.BN(1), new anchor.BN(1_000_000_000))
+        .accounts({
+          buyer: buyer.publicKey,
+          oftStore,
+          grsConfig,
+          saleRegistry,
+          payee: admin,
+          to: buyer.publicKey,
+          saleEscrow,
+          tokenDest: buyerAta,
+          tokenMint: mint,
+          quoteMint: usdc,
+          quoteSource: buyerUsdc,
+          quoteDest: adminUsdc,
+          quoteTokenProgram: TOKEN_PROGRAM_ID,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer])
+        .rpc();
+      expect.fail("closed sale must revert");
+    } catch (e: any) {
+      const blob = [
+        e?.error?.errorCode?.code,
+        e?.error?.errorMessage,
+        e?.message,
+        ...(e?.logs ?? []),
+        String(e),
+      ].join(" ");
+      expect(blob).to.match(/SaleClosed/);
+    }
+
+    const spokeMint = await createMint();
+    const { oftStore: spokeStore } = await initNativeOft(spokeMint);
+    const spokeCfg = await initGrsConfig(spokeStore, spokeMint, false);
+    const spokeSales = salePdas(spokeStore);
+    try {
+      await program.methods
+        .setSale(new anchor.BN(0), PublicKey.default, new anchor.BN(1), PublicKey.default)
+        .accounts({
+          admin,
+          oftStore: spokeStore,
+          grsConfig: spokeCfg,
+          saleRegistry: spokeSales.saleRegistry,
+          saleEscrow: spokeSales.saleEscrow,
+          tokenMint: spokeMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+      expect.fail("spoke set_sale must revert");
+    } catch (e: any) {
+      expect(String(e)).to.match(/NotHome/);
+    }
   });
 });

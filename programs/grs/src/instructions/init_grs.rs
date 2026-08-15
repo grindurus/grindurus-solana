@@ -30,6 +30,14 @@ pub struct InitGrs<'info> {
         bump
     )]
     pub peer_registry: Account<'info, PeerRegistry>,
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + SaleRegistry::INIT_SPACE,
+        seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
+        bump
+    )]
+    pub sale_registry: Account<'info, SaleRegistry>,
     pub system_program: Program<'info, System>,
 }
 
@@ -47,6 +55,9 @@ impl InitGrs<'_> {
 
         ctx.accounts.peer_registry.oft_store = ctx.accounts.oft_store.key();
         ctx.accounts.peer_registry.bump = ctx.bumps.peer_registry;
+
+        ctx.accounts.sale_registry.oft_store = ctx.accounts.oft_store.key();
+        ctx.accounts.sale_registry.bump = ctx.bumps.sale_registry;
         Ok(())
     }
 }

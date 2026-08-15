@@ -26,4 +26,18 @@ pub enum OFTError {
     InvalidRecipient,
     InvalidSchedule,
     NothingToRelease,
+    /// Cap-table / sale instructions run only on the canonical GRS mint.
+    NotHome,
+    UnknownSale,
+    SaleClosed,
+    InvalidPayment,
+    PaymentFailed,
+    /// `buy` would spend past the 50M TokenSales cap.
+    BucketExceeded,
+    /// Sale registry already holds `GRS_MAX_SALES` rows.
+    TooManySales,
+    /// `vest` id must be `vesting_count + 1` (1-based, same as EVM).
+    InvalidVestingId,
+    /// Remaining accounts for a paged view do not match the requested slice.
+    InvalidRemainingAccounts,
 }

@@ -29,8 +29,12 @@ pub const GRS_LOCAL_DECIMALS: u8 = 9;
 pub const GRS_SHARED_DECIMALS: u8 = 6;
 /// `10^(GRS_LOCAL_DECIMALS - GRS_SHARED_DECIMALS)`.
 pub const GRS_LD2SD_RATE: u64 = 1_000;
+/// Local decoded `1 GRS`.
+pub const GRS_ONE_LD: u64 = 1_000_000_000;
 /// `1_000_000_000 * 10^GRS_LOCAL_DECIMALS`.
-pub const GRS_MAX_SUPPLY_LD: u64 = 1_000_000_000 * 1_000_000_000;
+pub const GRS_MAX_SUPPLY_LD: u64 = 1_000_000_000 * GRS_ONE_LD;
+/// Token-sales bucket (`docs/grs.svg` 50M). Home `buy` only; no `grant` on Solana.
+pub const GRS_TOKEN_SALES_CAP_LD: u64 = 50_000_000 * GRS_ONE_LD;
 /// Max cliff for holder `vest` (365 days). Same as EVM `GRS.MAX_CLIFF`.
 pub const GRS_MAX_CLIFF_SECONDS: u64 = 365 * 24 * 60 * 60;
 /// Max linear unlock for holder `vest` (4 × 365 days). Same as EVM `GRS.MAX_DURATION`.
@@ -60,6 +64,32 @@ pub mod grs {
         GetPeers::apply(&ctx)
     }
 
+    pub fn sale_count(ctx: Context<GetSales>) -> Result<u64> {
+        GetSales::sale_count(&ctx)
+    }
+
+    /// Page of sales. `offset` is 0-based into the array (id `offset + 1`).
+    pub fn get_sales(ctx: Context<GetSales>, offset: u64, limit: u64) -> Result<Vec<Sale>> {
+        GetSales::apply(&ctx, offset, limit)
+    }
+
+    pub fn quote_sale(ctx: Context<QuoteSale>, id: u64, amount_ld: u64) -> Result<u64> {
+        QuoteSale::apply(&ctx, id, amount_ld)
+    }
+
+    pub fn vesting_count(ctx: Context<GetVestings>) -> Result<u64> {
+        GetVestings::count(&ctx)
+    }
+
+    /// Page of vestings. Remaining accounts must be PDAs for ids `offset+1 …` (like EVM).
+    pub fn get_vestings(
+        ctx: Context<GetVestings>,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<VestingView>> {
+        GetVestings::apply(&ctx, offset, limit)
+    }
+
     // ============================== Admin ==============================
     pub fn set_oft_config(
         mut ctx: Context<SetOFTConfig>,
@@ -81,6 +111,17 @@ pub mod grs {
 
     pub fn withdraw_fee(mut ctx: Context<WithdrawFee>, params: WithdrawFeeParams) -> Result<()> {
         WithdrawFee::apply(&mut ctx, &params)
+    }
+
+    /// Create (`id == 0`) or update a sale. `price == 0` closes that id. Home / admin only.
+    pub fn set_sale(
+        mut ctx: Context<SetSale>,
+        id: u64,
+        quote: Pubkey,
+        price: u64,
+        recipient: Pubkey,
+    ) -> Result<u64> {
+        SetSale::apply(&mut ctx, id, quote, price, recipient)
     }
 
     // ============================== Public ==============================
@@ -155,8 +196,13 @@ pub mod grs {
         LzReceiveTypes::apply(&ctx, &params)
     }
 
-    /// Lock the caller's GRS into a non-revocable vest (no cap table). `id` is a per-OFT unique key
-    /// (`PDA ["vest", oft_store, id]`). Instant (`cliff_seconds` = `duration_seconds` = 0) reverts.
+    /// Buy `amount_ld` GRS from the TokenSales escrow via sale `id`. Instant. Home only.
+    pub fn buy(mut ctx: Context<Buy>, id: u64, amount_ld: u64) -> Result<u64> {
+        Buy::apply(&mut ctx, id, amount_ld)
+    }
+
+    /// Lock the caller's GRS into a non-revocable vest (no cap table). `id` must be
+    /// `vesting_count + 1` (`PDA ["vest", oft_store, id]`). Instant (cliff = duration = 0) reverts.
     pub fn vest(
         mut ctx: Context<Vest>,
         id: u64,

@@ -11,6 +11,10 @@ pub struct GrsConfig {
     pub home: bool,
     pub genesis_minted: bool,
     pub bump: u8,
+    /// Sequential `vest` ids issued (`id = 1 … vesting_count`).
+    pub vesting_count: u64,
+    /// Spent from the 50M TokenSales cap (`buy` only; no `grant` on Solana).
+    pub token_sales_spent: u64,
 }
 
 impl GrsConfig {

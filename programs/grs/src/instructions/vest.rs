@@ -14,6 +14,7 @@ pub struct Vest<'info> {
     )]
     pub oft_store: Account<'info, OFTStore>,
     #[account(
+        mut,
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
         bump = grs_config.bump
     )]
@@ -74,6 +75,13 @@ impl Vest<'_> {
             duration_seconds <= GRS_MAX_DURATION_SECONDS,
             OFTError::InvalidSchedule
         );
+        let next = ctx
+            .accounts
+            .grs_config
+            .vesting_count
+            .checked_add(1)
+            .ok_or(error!(OFTError::InvalidSchedule))?;
+        require!(id == next, OFTError::InvalidVestingId);
 
         let start_ = if start == 0 { now_ts()? } else { start };
         let cliff_end = start_.checked_add(cliff_seconds).ok_or(error!(OFTError::InvalidSchedule))?;
@@ -104,6 +112,7 @@ impl Vest<'_> {
         vesting.cliff_end = cliff_end;
         vesting.end = end;
         vesting.bump = ctx.bumps.vesting;
+        ctx.accounts.grs_config.vesting_count = next;
 
         emit!(Vested {
             id,

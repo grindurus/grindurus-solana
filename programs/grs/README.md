@@ -36,8 +36,13 @@ npx hardhat lz:oapp:wire --oapp-config layerzero.config.ts
 
 Home can be Solana or Ethereum; the other listed chains are spokes (`home = false`, supply 0 until inbound OFT credits).
 
-Holder vesting (no cap table, same math as EVM `GRS.vest` / `release`):
-
-5. `vest(id, to, amount_ld, start, cliff_seconds, duration_seconds)` — anyone with GRS locks into PDA `["vest", oft_store, id]` + shared `vest_escrow`. Instant (`cliff` = `duration` = 0) reverts. Cliff ≤ 365 days, linear ≤ 4 × 365 days. `start = 0` means now. `id` is a caller-chosen unique `u64`.
+5. `vest(id, to, amount_ld, start, cliff_seconds, duration_seconds)` — anyone with GRS locks into PDA `["vest", oft_store, id]` + shared `vest_escrow`. `id` must be `vesting_count + 1` (1-based, same as EVM). Instant (`cliff` = `duration` = 0) reverts. Cliff ≤ 365 days, linear ≤ 4 × 365 days. `start = 0` means now.
 6. `release` — anyone pulls currently vested tokens to the beneficiary ATA.
 7. `vested(timestamp)` / `releasable` — views on a vest account.
+8. `vesting_count` / `get_vestings(offset, limit)` — paged vestings. Remaining accounts must be the PDAs for ids `offset+1 …` (empty remaining when the page is empty).
+
+Home **token sales** (50M cap, no `grant` / other buckets):
+
+9. `set_sale(id, quote, price, recipient)` — admin, home only. `id = 0` creates; `id > 0` updates. `price = 0` closes that row. `quote = Pubkey::default()` is native SOL. `recipient = default` pays `admin` at buy. Inits `sale_escrow` (admin funds it from genesis GRS).
+10. `quote_sale(id, amount_ld)` / `buy(id, amount_ld)` — cost is `ceil(amount_ld * price / 10^9)`. SOL via system transfer; otherwise SPL `transfer_checked`. `buy` spends `token_sales_spent` against 50M and transfers GRS from `sale_escrow`.
+11. `sale_count` / `get_sales(offset, limit)` — same pagination as EVM (`offset` 0-based; id = `offset + 1`).

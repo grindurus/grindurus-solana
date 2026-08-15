@@ -31,3 +31,20 @@ pub struct Released {
     pub to: Pubkey,
     pub amount_ld: u64,
 }
+
+#[event]
+pub struct SaleSet {
+    pub id: u64,
+    pub quote: Pubkey,
+    pub price: u64,
+    pub recipient: Pubkey,
+}
+
+#[event]
+pub struct Bought {
+    pub id: u64,
+    pub buyer: Pubkey,
+    pub to: Pubkey,
+    pub amount_ld: u64,
+    pub cost: u64,
+}
