@@ -49,7 +49,6 @@ pub fn execute_vote<'info>(
             &system_program,
             ctx.remaining_accounts,
             program_id,
-            now,
         )?;
     }
 

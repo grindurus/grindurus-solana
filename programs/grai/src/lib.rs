@@ -167,8 +167,6 @@ pub struct Escrow {
     pub amount: u64,
     /// GRAI counted toward liquidation quorum (<= amount).
     pub voted: u64,
-    /// Timestamp of the latest `lock`.
-    pub locked_at: i64,
     /// Timestamp of the latest `vote`.
     pub voted_at: i64,
     /// Index of this account in `grai_state.lockers`.
@@ -180,7 +178,7 @@ pub struct Escrow {
 
 impl Escrow {
     pub const SEED: &'static [u8] = b"escrow";
-    pub const LEN: usize = 8 + 8 + 8 + 8 + 4 + 4 + 1;
+    pub const LEN: usize = 8 + 8 + 8 + 4 + 4 + 1;
 
     /// Dividend base: only unvoted escrow earns dividends (EVM `_unvoted`).
     pub fn unvoted(&self) -> u64 {
@@ -1907,7 +1905,6 @@ pub struct EscrowView {
     pub locker_id: u32,
     pub amount: u64,
     pub voted: u64,
-    pub locked_at: i64,
     pub voted_at: i64,
     pub voter_id: u32,
 }

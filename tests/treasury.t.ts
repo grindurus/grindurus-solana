@@ -835,6 +835,356 @@ describe("Treasury referrals / poach / NFT", () => {
     }
   });
 
+  it("three lockers: 2 deposit → distribute → 3rd deposit → distribute → all claim", async () => {
+    const aliceLocker = Keypair.generate();
+    const bobLocker = Keypair.generate();
+    const carolLocker = Keypair.generate();
+    await airdrop(aliceLocker);
+    await airdrop(bobLocker);
+    await airdrop(carolLocker);
+    await unlockAuthorityIfNeeded();
+
+    const depositAmount = 100_000_000n; // 100 USDC each
+    const PRECISION = 10n ** 18n;
+    const accrued = (stake: bigint, acc: bigint, debtAcc: bigint) =>
+      (stake * acc) / PRECISION - (stake * debtAcc) / PRECISION;
+
+    try {
+      const aliceGraiAta = await ensureAta(
+        graiMint.publicKey,
+        aliceLocker.publicKey,
+      );
+      const bobGraiAta = await ensureAta(graiMint.publicKey, bobLocker.publicKey);
+      const carolGraiAta = await ensureAta(
+        graiMint.publicKey,
+        carolLocker.publicKey,
+      );
+      const aliceGraiBefore = await tokenBal(aliceGraiAta);
+      const bobGraiBefore = await tokenBal(bobGraiAta);
+
+      await depositUsdc(aliceLocker, depositAmount);
+      await depositUsdc(bobLocker, depositAmount);
+
+      const aliceMinted = (await tokenBal(aliceGraiAta)) - aliceGraiBefore;
+      const bobMinted = (await tokenBal(bobGraiAta)) - bobGraiBefore;
+      expect(aliceMinted).to.equal(bobMinted);
+      expect(aliceMinted > 0n).to.be.true;
+
+      // Snapshot index before Alice/Bob lock — their debt checkpoints here.
+      const accAtAliceBobLock = BigInt(
+        (
+          await program.account.assetConfig.fetch(usdcAssetConfig)
+        ).accShare.toString(),
+      );
+
+      await lockAll(aliceLocker);
+      await lockAll(bobLocker);
+
+      for (const [user, minted] of [
+        [aliceLocker, aliceMinted],
+        [bobLocker, bobMinted],
+      ] as const) {
+        const escrow = await program.account.escrow.fetch(
+          escrowPda(user.publicKey, program.programId)[0],
+        );
+        expect(BigInt(escrow.amount.toString())).to.equal(minted);
+        expect(BigInt(escrow.voted.toString())).to.equal(0n);
+      }
+
+      {
+        const state = await program.account.graiState.fetch(graiState);
+        const base =
+          BigInt(state.totalLocked.toString()) -
+          BigInt(state.totalVoted.toString());
+        expect(base).to.equal(aliceMinted + bobMinted);
+      }
+
+      const treasuryBefore = await tokenBal(usdcTreasuryVault);
+      const claimableBefore = BigInt(
+        (
+          await program.account.assetConfig.fetch(usdcAssetConfig)
+        ).totalClaimable.toString(),
+      );
+
+      // 1) First distribute — only Alice + Bob in the dividend base.
+      await distributeYield(YIELD);
+      expect((await tokenBal(usdcTreasuryVault)) - treasuryBefore).to.equal(
+        GROSS_PROFIT_SHARE,
+      );
+      expect(
+        BigInt(
+          (
+            await program.account.assetConfig.fetch(usdcAssetConfig)
+          ).totalClaimable.toString(),
+        ) - claimableBefore,
+      ).to.equal(DIVIDEND);
+
+      // 2) Third depositor joins after dist1 (debt @ post-dist1 → no dist1 claim).
+      const carolGraiBefore = await tokenBal(carolGraiAta);
+      await depositUsdc(carolLocker, depositAmount);
+      const carolMinted = (await tokenBal(carolGraiAta)) - carolGraiBefore;
+      expect(carolMinted).to.equal(aliceMinted);
+
+      const accAtCarolLock = BigInt(
+        (
+          await program.account.assetConfig.fetch(usdcAssetConfig)
+        ).accShare.toString(),
+      );
+      await lockAll(carolLocker);
+
+      {
+        const state = await program.account.graiState.fetch(graiState);
+        const base =
+          BigInt(state.totalLocked.toString()) -
+          BigInt(state.totalVoted.toString());
+        expect(base).to.equal(aliceMinted + bobMinted + carolMinted);
+      }
+
+      const treasuryAfterDist1 = await tokenBal(usdcTreasuryVault);
+      const claimableAfterDist1 = BigInt(
+        (
+          await program.account.assetConfig.fetch(usdcAssetConfig)
+        ).totalClaimable.toString(),
+      );
+
+      // 3) Second distribute — split across all three equal locks.
+      await distributeYield(YIELD);
+      expect((await tokenBal(usdcTreasuryVault)) - treasuryAfterDist1).to.equal(
+        GROSS_PROFIT_SHARE,
+      );
+      expect(
+        BigInt(
+          (
+            await program.account.assetConfig.fetch(usdcAssetConfig)
+          ).totalClaimable.toString(),
+        ) - claimableAfterDist1,
+      ).to.equal(DIVIDEND);
+
+      const accFinal = BigInt(
+        (
+          await program.account.assetConfig.fetch(usdcAssetConfig)
+        ).accShare.toString(),
+      );
+      const aliceExpected = accrued(aliceMinted, accFinal, accAtAliceBobLock);
+      const bobExpected = accrued(bobMinted, accFinal, accAtAliceBobLock);
+      const carolExpected = accrued(carolMinted, accFinal, accAtCarolLock);
+      const claimedTotal = aliceExpected + bobExpected + carolExpected;
+      const indexDust = DIVIDEND * 2n - claimedTotal;
+
+      const aliceUsdc = await ensureAta(
+        usdcMint.publicKey,
+        aliceLocker.publicKey,
+      );
+      const bobUsdc = await ensureAta(usdcMint.publicKey, bobLocker.publicKey);
+      const carolUsdc = await ensureAta(
+        usdcMint.publicKey,
+        carolLocker.publicKey,
+      );
+      const aliceUsdcBefore = await tokenBal(aliceUsdc);
+      const bobUsdcBefore = await tokenBal(bobUsdc);
+      const carolUsdcBefore = await tokenBal(carolUsdc);
+      const benBefore = await tokenBal(beneficiarAta);
+
+      async function bookValue(locker: PublicKey): Promise<bigint> {
+        return BigInt(
+          (
+            await program.account.referrer.fetch(
+              referrerPda(locker, program.programId)[0],
+            )
+          ).value.toString(),
+        );
+      }
+      const aliceBookBefore = await bookValue(aliceLocker.publicKey);
+      const bobBookBefore = await bookValue(bobLocker.publicKey);
+      const carolBookBefore = await bookValue(carolLocker.publicKey);
+
+      // 4) All claim.
+      await claimMax(aliceLocker);
+      await claimMax(bobLocker);
+      await claimMax(carolLocker);
+
+      expect((await tokenBal(aliceUsdc)) - aliceUsdcBefore).to.equal(
+        aliceExpected,
+      );
+      expect((await tokenBal(bobUsdc)) - bobUsdcBefore).to.equal(bobExpected);
+      expect((await tokenBal(carolUsdc)) - carolUsdcBefore).to.equal(
+        carolExpected,
+      );
+      expect(aliceExpected).to.equal(bobExpected);
+      expect(carolExpected > 0n).to.be.true;
+      expect(carolExpected < aliceExpected).to.be.true;
+      // Self-root: gross profit share == claimed → beneficiar.
+      expect((await tokenBal(beneficiarAta)) - benBefore).to.equal(claimedTotal);
+      expect(
+        (await bookValue(aliceLocker.publicKey)) - aliceBookBefore,
+      ).to.equal(aliceExpected);
+      expect((await bookValue(bobLocker.publicKey)) - bobBookBefore).to.equal(
+        bobExpected,
+      );
+      expect(
+        (await bookValue(carolLocker.publicKey)) - carolBookBefore,
+      ).to.equal(carolExpected);
+      // Floor dust stays in total_claimable (not paid to these three).
+      expect(
+        BigInt(
+          (
+            await program.account.assetConfig.fetch(usdcAssetConfig)
+          ).totalClaimable.toString(),
+        ),
+      ).to.equal(claimableBefore + indexDust);
+    } finally {
+      await unlockUser(aliceLocker.publicKey, aliceLocker);
+      await unlockUser(bobLocker.publicKey, bobLocker);
+      await unlockUser(carolLocker.publicKey, carolLocker);
+    }
+  });
+
+  it("Carol→Bob→Alice: stub bind, distribute, Alice self-root, claim affiliates", async () => {
+    // Order matters: Carol binds Bob (stub) → Bob binds Alice (stub) → dist → Alice self-roots → claim.
+    const aliceLocker = Keypair.generate();
+    const bobLocker = Keypair.generate();
+    const carolLocker = Keypair.generate();
+    await airdrop(aliceLocker);
+    await airdrop(bobLocker);
+    await airdrop(carolLocker);
+    await unlockAuthorityIfNeeded();
+
+    const depositAmount = 100_000_000n;
+    const halfDividend = DIVIDEND / 2n; // Carol + Bob equal locks
+    // claimed * revenueShareBps / dividendCutBps = 25e6 * 1000/5000 = 5e6
+    const revenuePerClaim = (halfDividend * BigInt(REVENUE_SHARE_BPS)) / 5_000n;
+    const l1Share = (revenuePerClaim * 8_000n) / 10_000n; // 4e6
+    const l2Share = (revenuePerClaim * 2_000n) / 10_000n; // 1e6
+
+    try {
+      // 1) Carol deposits with Bob as sticky referrer (creates Bob stub).
+      await depositUsdc(
+        carolLocker,
+        depositAmount,
+        bobLocker.publicKey,
+        bobLocker.publicKey,
+      );
+      // 2) Bob deposits with Alice as sticky referrer (creates Alice stub; backfills Alice.l2).
+      await depositUsdc(
+        bobLocker,
+        depositAmount,
+        aliceLocker.publicKey,
+        aliceLocker.publicKey,
+      );
+
+      {
+        const carolBook = await program.account.referrer.fetch(
+          referrerPda(carolLocker.publicKey, program.programId)[0],
+        );
+        const bobBook = await program.account.referrer.fetch(
+          referrerPda(bobLocker.publicKey, program.programId)[0],
+        );
+        expect(carolBook.referrer.toBase58()).to.equal(
+          bobLocker.publicKey.toBase58(),
+        );
+        expect(bobBook.referrer.toBase58()).to.equal(
+          aliceLocker.publicKey.toBase58(),
+        );
+      }
+      await assertNode(
+        carolLocker.publicKey,
+        depositAmount,
+        0n,
+        0n,
+      );
+      await assertNode(
+        bobLocker.publicKey,
+        depositAmount,
+        depositAmount, // Carol under Bob as L1
+        0n,
+      );
+      await assertNode(
+        aliceLocker.publicKey,
+        0n, // stub — no own deposit yet
+        depositAmount, // Bob under Alice as L1
+        depositAmount, // Carol under Alice as L2 (backfill on Bob bind)
+      );
+
+      await lockAll(carolLocker);
+      await lockAll(bobLocker);
+
+      await distributeYield(YIELD);
+
+      // 3) Alice deposits after distribute — self-root (no sticky arg); no dist share.
+      await depositUsdc(aliceLocker, depositAmount);
+      {
+        const aliceBook = await program.account.referrer.fetch(
+          referrerPda(aliceLocker.publicKey, program.programId)[0],
+        );
+        expect(aliceBook.referrer.toBase58()).to.equal(
+          aliceLocker.publicKey.toBase58(),
+        );
+      }
+
+      const aliceUsdc = await ensureAta(
+        usdcMint.publicKey,
+        aliceLocker.publicKey,
+      );
+      const bobUsdc = await ensureAta(usdcMint.publicKey, bobLocker.publicKey);
+      const carolUsdc = await ensureAta(
+        usdcMint.publicKey,
+        carolLocker.publicKey,
+      );
+      const aliceBefore = await tokenBal(aliceUsdc);
+      const bobBefore = await tokenBal(bobUsdc);
+      const carolBefore = await tokenBal(carolUsdc);
+      const benBefore = await tokenBal(beneficiarAta);
+
+      const aliceNft = await nftAtaOf(aliceLocker.publicKey);
+      const bobNft = await nftAtaOf(bobLocker.publicKey);
+
+      // 4) All claim (Alice claimable = 0).
+      await claimMax(carolLocker, {
+        l1: bobLocker.publicKey,
+        l2: aliceLocker.publicKey,
+        l1NftAta: bobNft,
+        l2NftAta: aliceNft,
+        l1YieldAta: bobUsdc,
+        l2YieldAta: aliceUsdc,
+      });
+      await claimMax(bobLocker, {
+        l1: aliceLocker.publicKey,
+        l1NftAta: aliceNft,
+        l1YieldAta: aliceUsdc,
+      });
+      await claimMax(aliceLocker);
+
+      // Dividends: Carol & Bob split 50/50; Alice locked out of this dist.
+      expect((await tokenBal(carolUsdc)) - carolBefore).to.equal(halfDividend);
+      expect((await tokenBal(bobUsdc)) - bobBefore).to.equal(
+        halfDividend + l1Share, // own dividend + Carol→Bob L1 affiliate
+      );
+      expect((await tokenBal(aliceUsdc)) - aliceBefore).to.equal(
+        l2Share + l1Share, // Carol→Alice L2 + Bob→Alice L1; no dividend
+      );
+
+      // Revenue share table (USDC atomic):
+      //   Carol claim: Bob L1=4e6, Alice L2=1e6, beneficiar=20e6
+      //   Bob claim:   Alice L1=4e6, L2 skip (Alice self-root), beneficiar=21e6
+      //   Alice claim: 0
+      const bobAffiliate = l1Share; // 4e6
+      const aliceAffiliate = l2Share + l1Share; // 5e6
+      const beneficiarGot =
+        halfDividend - bobAffiliate - l2Share + // Carol claim net
+        halfDividend - l1Share; // Bob claim net (unpaid L2 stays with beneficiar)
+      expect(beneficiarGot).to.equal(41_000_000n);
+      expect((await tokenBal(beneficiarAta)) - benBefore).to.equal(
+        beneficiarGot,
+      );
+      expect(bobAffiliate + aliceAffiliate + beneficiarGot).to.equal(
+        GROSS_PROFIT_SHARE,
+      );
+    } finally {
+      await unlockUser(carolLocker.publicKey, carolLocker);
+      await unlockUser(bobLocker.publicKey, bobLocker);
+    }
+  });
+
   ////////////////////////////// mint / NFT / books //////////////////////////////
 
   it("deposit self-roots, mints Treasury NFT, and credits own value", async () => {

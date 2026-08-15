@@ -182,7 +182,6 @@ pub fn perform_lock<'info>(
     system_program: &AccountInfo<'info>,
     remaining: &[AccountInfo<'info>],
     program_id: &Pubkey,
-    now: i64,
 ) -> Result<()> {
     require!(add_amount > 0, ErrorCode::AmountZero);
 
@@ -230,7 +229,6 @@ pub fn perform_lock<'info>(
         .ok_or(ErrorCode::MathOverflow)?;
 
     escrow.amount = new_amount;
-    escrow.locked_at = now;
 
     token::transfer(
         CpiContext::new(

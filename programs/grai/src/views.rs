@@ -129,7 +129,6 @@ fn read_escrow_range<'info>(
             locker_id: escrow.locker_id,
             amount: escrow.amount,
             voted: escrow.voted,
-            locked_at: escrow.locked_at,
             voted_at: escrow.voted_at,
             voter_id: escrow.voter_id,
         });

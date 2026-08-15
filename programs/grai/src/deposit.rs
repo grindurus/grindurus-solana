@@ -126,7 +126,6 @@ pub fn execute_deposit<'info>(
             &system_program,
             &ctx.remaining_accounts[..lock_account_count],
             program_id,
-            clock.unix_timestamp,
         )?;
     }
 
@@ -273,7 +272,6 @@ pub fn execute_deposit_sol<'info>(
             &system_program,
             &ctx.remaining_accounts[..lock_account_count],
             program_id,
-            clock.unix_timestamp,
         )?;
     }
 

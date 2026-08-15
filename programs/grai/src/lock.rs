@@ -14,7 +14,6 @@ pub fn execute_lock<'info>(
         ErrorCode::InsufficientGraiBalance
     );
 
-    let clock = Clock::get()?;
     let source = ctx.accounts.locker_grai_ata.to_account_info();
     let vault = ctx.accounts.grai_vault_ata.to_account_info();
     let owner = ctx.accounts.locker.to_account_info();
@@ -35,7 +34,6 @@ pub fn execute_lock<'info>(
         &system_program,
         ctx.remaining_accounts,
         program_id,
-        clock.unix_timestamp,
     )?;
 
     msg!(
