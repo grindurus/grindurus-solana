@@ -807,4 +807,65 @@ describe("grs oft", () => {
       expect(String(e)).to.match(/NotHome/);
     }
   });
+
+  it("Ownable2Step: transfer sets pending, accept hands off, cancel and stranger fail", async () => {
+    const mint = await createMint();
+    const { oftStore } = await initNativeOft(mint);
+    const next = Keypair.generate();
+    const stranger = Keypair.generate();
+    const air = await provider.connection.requestAirdrop(next.publicKey, 1_000_000_000);
+    await provider.connection.confirmTransaction(air);
+    const air2 = await provider.connection.requestAirdrop(stranger.publicKey, 1_000_000_000);
+    await provider.connection.confirmTransaction(air2);
+
+    try {
+      await program.methods
+        .transferOwnership(admin)
+        .accounts({ admin, oftStore })
+        .rpc();
+      expect.fail("self-transfer must revert");
+    } catch (e: any) {
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e}`).to.match(/InvalidPendingOwner/);
+    }
+
+    await program.methods.transferOwnership(next.publicKey).accounts({ admin, oftStore }).rpc();
+    let store = await program.account.oftStore.fetch(oftStore);
+    expect(store.admin.toBase58()).to.equal(admin.toBase58());
+    expect(store.pendingOwner.toBase58()).to.equal(next.publicKey.toBase58());
+
+    try {
+      await program.methods
+        .acceptOwnership()
+        .accounts({ pendingOwner: stranger.publicKey, oftStore })
+        .signers([stranger])
+        .rpc();
+      expect.fail("stranger accept must revert");
+    } catch (e: any) {
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e}`).to.match(/Unauthorized/);
+    }
+
+    await program.methods.transferOwnership(PublicKey.default).accounts({ admin, oftStore }).rpc();
+    store = await program.account.oftStore.fetch(oftStore);
+    expect(store.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
+
+    await program.methods.transferOwnership(next.publicKey).accounts({ admin, oftStore }).rpc();
+    await program.methods
+      .acceptOwnership()
+      .accounts({ pendingOwner: next.publicKey, oftStore })
+      .signers([next])
+      .rpc();
+    store = await program.account.oftStore.fetch(oftStore);
+    expect(store.admin.toBase58()).to.equal(next.publicKey.toBase58());
+    expect(store.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
+
+    try {
+      await program.methods
+        .transferOwnership(admin)
+        .accounts({ admin, oftStore })
+        .rpc();
+      expect.fail("old admin must not transfer after handoff");
+    } catch (e: any) {
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e}`).to.match(/Unauthorized/);
+    }
+  });
 });

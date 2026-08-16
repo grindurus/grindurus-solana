@@ -17,7 +17,7 @@ impl SetOFTConfig<'_> {
     pub fn apply(ctx: &mut Context<SetOFTConfig>, params: &SetOFTConfigParams) -> Result<()> {
         match params.clone() {
             SetOFTConfigParams::Admin(admin) => {
-                ctx.accounts.oft_store.admin = admin;
+                propose_admin(&mut ctx.accounts.oft_store, admin)?;
             },
             SetOFTConfigParams::Delegate(delegate) => {
                 let oft_store_seed = ctx.accounts.oft_store.token_escrow.key();

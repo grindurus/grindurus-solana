@@ -1,6 +1,18 @@
 use crate::*;
 
 #[event]
+pub struct OwnershipTransferStarted {
+    pub previous_owner: Pubkey,
+    pub new_owner: Pubkey,
+}
+
+#[event]
+pub struct OwnershipTransferred {
+    pub previous_owner: Pubkey,
+    pub new_owner: Pubkey,
+}
+
+#[event]
 pub struct OFTSent {
     pub guid: [u8; 32],
     pub dst_eid: u32,

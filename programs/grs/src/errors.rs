@@ -46,4 +46,6 @@ pub enum OFTError {
     InvalidVestingId,
     /// Remaining accounts for a paged view do not match the requested slice.
     InvalidRemainingAccounts,
+    /// `transfer_ownership` to the current `admin` is a no-op (EVM Ownable2Step).
+    InvalidPendingOwner,
 }

@@ -99,6 +99,20 @@ pub mod grs {
         SetOFTConfig::apply(&mut ctx, &params)
     }
 
+    /// Propose a new `oft_store.admin` (EVM `Ownable2Step.transferOwnership`).
+    /// Pass `Pubkey::default()` to cancel; `admin` is unchanged until `accept_ownership`.
+    pub fn transfer_ownership(
+        mut ctx: Context<TransferOwnership>,
+        new_owner: Pubkey,
+    ) -> Result<()> {
+        TransferOwnership::apply(&mut ctx, new_owner)
+    }
+
+    /// Pending owner takes over `oft_store.admin` (EVM `acceptOwnership`).
+    pub fn accept_ownership(mut ctx: Context<AcceptOwnership>) -> Result<()> {
+        AcceptOwnership::apply(&mut ctx)
+    }
+
     pub fn set_peer_config(
         mut ctx: Context<SetPeerConfig>,
         params: SetPeerConfigParams,

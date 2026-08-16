@@ -14,6 +14,8 @@ pub struct OFTStore {
     pub tvl_ld: u64, // total value locked. if oft_type is Native, it is always 0.
     // configurable
     pub admin: Pubkey,
+    /// EVM `Ownable2Step.pendingOwner`. `Pubkey::default()` = none / cancelled.
+    pub pending_owner: Pubkey,
     pub default_fee_bps: u16,
     pub paused: bool,
     pub pauser: Option<Pubkey>,

@@ -57,6 +57,7 @@ impl InitOFT<'_> {
         ctx.accounts.oft_store.bump = ctx.bumps.oft_store;
         ctx.accounts.oft_store.tvl_ld = 0;
         ctx.accounts.oft_store.admin = params.admin;
+        ctx.accounts.oft_store.pending_owner = Pubkey::default();
         ctx.accounts.oft_store.default_fee_bps = 0;
         ctx.accounts.oft_store.paused = false;
         ctx.accounts.oft_store.pauser = None;
