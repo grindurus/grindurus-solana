@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer as transfer_sol, Transfer as TransferSol};
 use anchor_spl::associated_token::AssociatedToken;

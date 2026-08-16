@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use anchor_lang::prelude::*;
 
 pub mod compose_msg_codec;
