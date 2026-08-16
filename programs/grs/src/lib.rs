@@ -151,7 +151,8 @@ pub mod grs {
         QuoteSale::apply(&ctx, dst_eid, id)
     }
 
-    /// LZ-publish an existing home sale: burn from `sale_escrow`, spoke mints that GRS.
+    /// LZ-publish an existing home sale: burn from `sale_escrow`, spoke mints that GRS,
+    /// home row remaining is zeroed so local `buy` cannot fill the same lot.
     pub fn publish_sale(
         mut ctx: Context<PublishSale>,
         dst_eid: u32,

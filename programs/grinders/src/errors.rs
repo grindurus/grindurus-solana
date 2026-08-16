@@ -68,4 +68,6 @@ pub enum ErrorCode {
     NonZeroBalance,
     #[msg("GRAI program id cannot be default")]
     GraiTokenZero,
+    #[msg("New owner must differ from the current owner")]
+    InvalidPendingOwner,
 }

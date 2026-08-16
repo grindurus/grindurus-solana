@@ -8,8 +8,9 @@ use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
 use crate::{AssetConfig, ErrorCode, Liquidate, Redeem};
 
 /// Offset of `confirmed: bool` in GrindersState after the 8-byte Anchor discriminator.
-/// Layout: owner(32) + grai_program(32) + next_custodian_id(8) + collection_mint(32) + confirmed(1) + bump(1).
-const GRINDERS_CONFIRMED_OFFSET: usize = 8 + 32 + 32 + 8 + 32;
+/// Layout: owner(32) + pending_owner(32) + grai_program(32) + next_custodian_id(8)
+/// + collection_mint(32) + confirmed(1) + bump(1).
+const GRINDERS_CONFIRMED_OFFSET: usize = 8 + 32 + 32 + 32 + 8 + 32;
 
 /// Read `Grinders.confirmed` (EVM 2-of-2 owner arm) without depending on the grinders crate.
 fn grinders_confirmed(grinders_state: &AccountInfo) -> Result<bool> {

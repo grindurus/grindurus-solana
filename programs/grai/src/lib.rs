@@ -81,6 +81,8 @@ pub struct GraiState {
     pub total_voted: u64,
     pub liquidation: bool,
     pub liquidation_at: i64,
+    /// Canonical share mint created in `initialize` (C-01). Never inferred from mint authority.
+    pub grai_mint: Pubkey,
     pub config: Config,
     /// Secondary-sale royalty in bps written to Treasury NFT Metaplex metadata.
     /// Receiver is `beneficiar` (or `owner` if unset), snapshotted at mint.
@@ -115,6 +117,7 @@ impl GraiState {
         + 8
         + 1
         + 8
+        + 32
         + Config::LEN
         + 2
         + 1
@@ -378,6 +381,7 @@ pub struct Poach<'info> {
 
     /// Protocol GRAI mint only (C-02) — junk SPL cannot buy a referral slot.
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Account<'info, Mint>,
@@ -535,6 +539,7 @@ pub struct Deposit<'info> {
 
     #[account(
         mut,
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -674,6 +679,7 @@ pub struct DepositSol<'info> {
 
     #[account(
         mut,
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -828,6 +834,7 @@ pub struct Distribute<'info> {
     pub price_feed: UncheckedAccount<'info>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -883,6 +890,7 @@ pub struct Lock<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -935,6 +943,7 @@ pub struct Unlock<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1002,14 +1011,14 @@ pub struct Claim<'info> {
     )]
     pub price_feed: UncheckedAccount<'info>,
 
+    /// CHECK: Position PDA. Created in the handler if empty (`load_or_init_position`).
+    /// Do not use `init_if_needed` + `bump == 0` as is-new: a real PDA bump can be 0 (M-10).
     #[account(
-        init_if_needed,
-        payer = payer,
-        space = 8 + Position::LEN,
+        mut,
         seeds = [Position::SEED, holder.key().as_ref(), asset_mint.key().as_ref()],
         bump,
     )]
-    pub position: Box<Account<'info, Position>>,
+    pub position: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -1104,6 +1113,7 @@ pub struct Vote<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1158,6 +1168,7 @@ pub struct Bribe<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1253,6 +1264,7 @@ pub struct PreviewBribe<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1292,6 +1304,7 @@ pub struct PreviewDeposit<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1399,6 +1412,7 @@ pub struct PreviewRedeem<'info> {
     pub grai_state: Box<Account<'info, GraiState>>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1442,6 +1456,7 @@ pub struct Liquidate<'info> {
     pub grinders_state: UncheckedAccount<'info>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Account<'info, Mint>,
@@ -1494,6 +1509,7 @@ pub struct Revive<'info> {
     pub grinders_program: UncheckedAccount<'info>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Account<'info, Mint>,
@@ -1517,6 +1533,7 @@ pub struct Redeem<'info> {
 
     #[account(
         mut,
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Box<Account<'info, Mint>>,
@@ -1604,6 +1621,7 @@ pub struct HasQuorum<'info> {
     pub grai_state: Account<'info, GraiState>,
 
     #[account(
+        constraint = grai_mint.key() == grai_state.grai_mint @ ErrorCode::InvalidMint,
         constraint = grai_mint.mint_authority == COption::Some(grai_state.key()) @ ErrorCode::InvalidMint,
     )]
     pub grai_mint: Account<'info, Mint>,

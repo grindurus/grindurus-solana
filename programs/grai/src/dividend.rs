@@ -190,7 +190,7 @@ pub fn load_or_init_position<'info>(
     ))
 }
 
-fn store_position(position_info: &AccountInfo, position: &Position) -> Result<()> {
+pub(crate) fn store_position(position_info: &AccountInfo, position: &Position) -> Result<()> {
     let mut data = position_info.try_borrow_mut_data()?;
     let mut cursor: &mut [u8] = &mut data[..];
     position.try_serialize(&mut cursor)?;

@@ -33,22 +33,31 @@ pub fn execute_claim<'info>(
     let unvoted = ctx.accounts.escrow.unvoted();
     let bump = ctx.accounts.grai_state.bump;
 
-    let position = &mut ctx.accounts.position;
-    if position.bump == 0 {
-        position.bump = ctx.bumps.position;
-        settle(acc, 0, unvoted, position)?;
+    let position_info = ctx.accounts.position.to_account_info();
+    let (mut position, is_new) = dividend::load_or_init_position(
+        &position_info,
+        &ctx.accounts.holder.key(),
+        &ctx.accounts.asset_mint.key(),
+        &ctx.accounts.payer.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
+        ctx.program_id,
+    )?;
+    if is_new {
+        settle(acc, 0, unvoted, &mut position)?;
     } else {
-        settle(acc, unvoted, unvoted, position)?;
+        settle(acc, unvoted, unvoted, &mut position)?;
     }
 
     let claimable = position.claimable;
     if claimable == 0 {
+        dividend::store_position(&position_info, &position)?;
         msg!("claim asset={} claimed=0", ctx.accounts.asset_mint.key());
         return Ok(());
     }
 
     let claimed = preview_claim(amount, claimable);
     if claimed == 0 {
+        dividend::store_position(&position_info, &position)?;
         return Ok(());
     }
 
@@ -96,6 +105,7 @@ pub fn execute_claim<'info>(
     position.claimable = claimable
         .checked_sub(claimed)
         .ok_or(ErrorCode::MathOverflow)?;
+    dividend::store_position(&position_info, &position)?;
     ctx.accounts.asset_config.total_claimable = ctx
         .accounts
         .asset_config

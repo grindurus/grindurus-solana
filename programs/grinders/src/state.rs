@@ -6,19 +6,22 @@ pub const NATIVE_ASSET: Pubkey = Pubkey::new_from_array([0u8; 32]);
 #[account]
 pub struct GrindersState {
     pub owner: Pubkey,
+    /// Two-step handoff target (EVM `Ownable2Step.pendingOwner`). Default = none.
+    pub pending_owner: Pubkey,
     pub grai_program: Pubkey,
     pub next_custodian_id: u64,
     /// Metaplex collection parent for all custodian NFTs (mirrors ERC-721 contract).
     pub collection_mint: Pubkey,
     /// Grinders-owner limb of GRAI 2-of-2 liquidation (EVM `Grinders.confirmed`).
-    /// Armed via `confirm`; required by every sweep; cleared by GRAI on `revive`.
+    /// Armed via `confirm`; required by every sweep; cleared by GRAI on `revive`
+    /// and by `accept_ownership` so a prior arm does not survive handoff.
     pub confirmed: bool,
     pub bump: u8,
 }
 
 impl GrindersState {
     pub const SEED: &'static [u8] = b"grinders";
-    pub const LEN: usize = 32 + 32 + 8 + 32 + 1 + 1;
+    pub const LEN: usize = 32 + 32 + 32 + 8 + 32 + 1 + 1;
 
     pub fn signer_seeds<'a>(&'a self, bump: &'a [u8; 1]) -> [&'a [u8]; 2] {
         [Self::SEED, bump]

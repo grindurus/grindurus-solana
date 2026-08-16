@@ -12,8 +12,8 @@ use crate::{
 pub const GRINDERS_PROGRAM_ID: Pubkey = pubkey!("7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v");
 
 /// Offset of `grai_program` in `GrindersState` after the 8-byte Anchor discriminator.
-/// Layout: owner(32) grai_program(32) …
-const GRINDERS_STATE_GRAI_PROGRAM_OFFSET: usize = 8 + 32;
+/// Layout: owner(32) pending_owner(32) grai_program(32) …
+const GRINDERS_STATE_GRAI_PROGRAM_OFFSET: usize = 8 + 32 + 32;
 
 pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
     // Deposit sink starts as the admin wallet; switch later via `set_grinders`.
@@ -31,6 +31,7 @@ pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
         grai_state.total_voted = 0;
         grai_state.liquidation = false;
         grai_state.liquidation_at = 0;
+        grai_state.grai_mint = ctx.accounts.grai_mint.key();
         grai_state.config = default_protocol_config();
         grai_state.royalty_bps = DEFAULT_ROYALTY_BPS;
         grai_state.affiliate_levels = DEFAULT_AFFILIATE_LEVELS;

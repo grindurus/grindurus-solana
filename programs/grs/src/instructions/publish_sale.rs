@@ -32,6 +32,7 @@ pub struct PublishSale<'info> {
     )]
     pub grs_config: Account<'info, GrsConfig>,
     #[account(
+        mut,
         seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
         bump = sale_registry.bump,
         has_one = oft_store
@@ -70,6 +71,7 @@ impl PublishSale<'_> {
         );
 
         let row = ctx.accounts.sale_registry.get(id)?.clone();
+        require!(row.grs_amount > 0 && row.asset_amount > 0, OFTError::SaleClosed);
         require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
         if row.grs_amount > 0 {
             let spent = ctx
@@ -116,6 +118,10 @@ impl PublishSale<'_> {
                 lz_token_fee: 0,
             },
         )?;
+
+        let closed = &mut ctx.accounts.sale_registry.entries[(id as usize) - 1];
+        closed.grs_amount = 0;
+        closed.asset_amount = 0;
 
         emit_cpi!(SalePublished { id, dst_eid, guid: msg_receipt.guid });
         Ok(msg_receipt)

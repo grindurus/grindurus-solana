@@ -518,6 +518,18 @@ describe("GRAI tokenomics", () => {
       .rpc();
   }
 
+  async function restoreGrindersOwner(currentOwner: Keypair) {
+    await grindersProgram.methods
+      .transferOwnership(authority)
+      .accountsPartial({ owner: currentOwner.publicKey, grindersState })
+      .signers([currentOwner])
+      .rpc();
+    await grindersProgram.methods
+      .acceptOwnership()
+      .accountsPartial({ pendingOwner: authority, grindersState })
+      .rpc();
+  }
+
   async function mintUsdcTo(owner: PublicKey, amount: bigint): Promise<PublicKey> {
     const ata = await ensureAta(usdcMint.publicKey, owner);
     await provider.sendAndConfirm!(
@@ -710,6 +722,7 @@ describe("GRAI tokenomics", () => {
     expect(grai.owner.toBase58()).to.equal(authority.toBase58());
     expect(grai.pendingOwner.toBase58()).to.equal(PublicKey.default.toBase58());
     expect(grai.grinders.toBase58()).to.equal(grindersState.toBase58());
+    expect(grai.graiMint.toBase58()).to.equal(graiMint.publicKey.toBase58());
 
     if (!existing) {
       expect(grai.totalValue.toString()).to.equal("0");
@@ -743,6 +756,43 @@ describe("GRAI tokenomics", () => {
     expect(name).to.equal(GRAI_TOKEN_NAME);
     expect(symbol).to.equal(GRAI_TOKEN_SYMBOL);
     expect(uri).to.equal(GRAI_TOKEN_URI);
+  });
+
+  it("C-01: pinning rejects a clone mint even when mint_authority is GraiState", async () => {
+    const cloneMint = Keypair.generate();
+    const lamports = await provider.connection.getMinimumBalanceForRentExemption(
+      MINT_SIZE,
+    );
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        SystemProgram.createAccount({
+          fromPubkey: authority,
+          newAccountPubkey: cloneMint.publicKey,
+          space: MINT_SIZE,
+          lamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+        createInitializeMint2Instruction(
+          cloneMint.publicKey,
+          USD_DECIMALS,
+          graiState,
+          null,
+          TOKEN_PROGRAM_ID,
+        ),
+      ),
+      [cloneMint],
+    );
+
+    await expectTransactionError(
+      program.methods
+        .hasQuorum()
+        .accountsPartial({
+          graiState,
+          graiMint: cloneMint.publicKey,
+        })
+        .view(),
+      "InvalidMint",
+    );
   });
 
   it("Ownable2Step: transfer sets pending, accept hands off, cancel and stranger fail", async () => {
@@ -1875,6 +1925,74 @@ describe("GRAI tokenomics", () => {
     expect(state.owner.toBase58()).to.equal(next.publicKey.toBase58());
 
     await restoreOwner(next);
+  });
+
+  it("Grinders Ownable2Step: transfer sets pending, accept hands off and clears confirmed", async () => {
+    const next = Keypair.generate();
+    const stranger = Keypair.generate();
+    await fundWallet(next);
+    await fundWallet(stranger);
+
+    await expectTransactionError(
+      grindersProgram.methods
+        .transferOwnership(authority)
+        .accountsPartial({ owner: authority, grindersState })
+        .rpc(),
+      "InvalidPendingOwner",
+    );
+
+    await grindersProgram.methods
+      .transferOwnership(next.publicKey)
+      .accountsPartial({ owner: authority, grindersState })
+      .rpc();
+
+    let grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(grinders.owner.toBase58()).to.equal(authority.toBase58());
+    expect(grinders.pendingOwner.toBase58()).to.equal(next.publicKey.toBase58());
+
+    await expectTransactionError(
+      grindersProgram.methods
+        .acceptOwnership()
+        .accountsPartial({ pendingOwner: stranger.publicKey, grindersState })
+        .signers([stranger])
+        .rpc(),
+      "Unauthorized",
+    );
+
+    await grindersProgram.methods
+      .transferOwnership(PublicKey.default)
+      .accountsPartial({ owner: authority, grindersState })
+      .rpc();
+    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(grinders.pendingOwner.toBase58()).to.equal(
+      PublicKey.default.toBase58(),
+    );
+
+    await grindersProgram.methods
+      .confirm()
+      .accountsPartial({ owner: authority, grindersState })
+      .rpc();
+    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(grinders.confirmed).to.be.true;
+
+    await grindersProgram.methods
+      .transferOwnership(next.publicKey)
+      .accountsPartial({ owner: authority, grindersState })
+      .rpc();
+    await grindersProgram.methods
+      .acceptOwnership()
+      .accountsPartial({ pendingOwner: next.publicKey, grindersState })
+      .signers([next])
+      .rpc();
+
+    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(grinders.owner.toBase58()).to.equal(next.publicKey.toBase58());
+    expect(grinders.pendingOwner.toBase58()).to.equal(
+      PublicKey.default.toBase58(),
+    );
+    expect(grinders.confirmed).to.be.false;
+
+    await restoreGrindersOwner(next);
   });
 
   it("lock adds unvoted escrow, which is the dividend base", async () => {

@@ -43,6 +43,7 @@ pub mod grinders {
         {
             let grinders = &mut ctx.accounts.grinders_state;
             grinders.owner = ctx.accounts.owner.key();
+            grinders.pending_owner = Pubkey::default();
             grinders.grai_program = ctx.accounts.grai_program.key();
             grinders.next_custodian_id = 0;
             grinders.collection_mint = ctx.accounts.collection_mint.key();
@@ -83,6 +84,39 @@ pub mod grinders {
         emit!(ConfirmEvent {
             confirmed: grinders.confirmed,
         });
+        Ok(())
+    }
+
+    /// Propose a new owner (EVM `Ownable2Step.transferOwnership`).
+    /// Pass `Pubkey::default()` to cancel; `owner` is unchanged until `accept_ownership`.
+    pub fn transfer_ownership(
+        ctx: Context<TransferOwnership>,
+        new_owner: Pubkey,
+    ) -> Result<()> {
+        require_keys_neq!(
+            new_owner,
+            ctx.accounts.owner.key(),
+            ErrorCode::InvalidPendingOwner
+        );
+        ctx.accounts.grinders_state.pending_owner = new_owner;
+        msg!(
+            "OwnershipTransferStarted owner={} pending={}",
+            ctx.accounts.grinders_state.owner,
+            new_owner
+        );
+        Ok(())
+    }
+
+    /// Pending owner takes over (EVM `Grinders.acceptOwnership`).
+    /// Prior owner's liquidation arm must not survive handoff.
+    pub fn accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
+        let grinders = &mut ctx.accounts.grinders_state;
+        let new_owner = ctx.accounts.pending_owner.key();
+        grinders.owner = new_owner;
+        grinders.pending_owner = Pubkey::default();
+        grinders.confirmed = false;
+        msg!("OwnershipTransferred owner={}", new_owner);
+        emit!(ConfirmEvent { confirmed: false });
         Ok(())
     }
 
@@ -654,6 +688,35 @@ pub struct Confirm<'info> {
         mut,
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+}
+
+/// EVM `transferOwnership` — current owner is the signer.
+#[derive(Accounts)]
+pub struct TransferOwnership<'info> {
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+        has_one = owner @ ErrorCode::Unauthorized,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+}
+
+/// EVM `acceptOwnership` — pending owner is the signer.
+#[derive(Accounts)]
+pub struct AcceptOwnership<'info> {
+    pub pending_owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+        constraint = grinders_state.pending_owner != Pubkey::default() @ ErrorCode::Unauthorized,
+        has_one = pending_owner @ ErrorCode::Unauthorized,
     )]
     pub grinders_state: Account<'info, GrindersState>,
 }

@@ -37,6 +37,8 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 | `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while `confirmed` |
 | `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults while `confirmed` |
 | `confirm` | owner | Toggle Grinders-owner liquidation arm (EVM `confirm`) |
+| `transfer_ownership` | owner | Propose pending owner; `Pubkey::default()` cancels (EVM Ownable2Step) |
+| `accept_ownership` | pending owner | Take over; clears `confirmed` so prior arm dies with the old owner |
 | `revive` | GRAI CPI | Clear `confirmed` when GRAI closes the cycle |
 | `transfer_custodian_nft` | live NFT holder | Transfer NFT and refresh `custodian_state.nft_owner` cache |
 | `withdraw` | owner | Withdraw SOL from grinders PDA |
