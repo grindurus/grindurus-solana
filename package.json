@@ -13,11 +13,11 @@
     "deposit": "tsx migrations/grai/deposit.ts",
     "mintSol": "tsx migrations/grai/depositSol.ts",
     "mint": "tsx migrations/grai/deposit.ts",
-    "allocate": "tsx migrations/allocate.ts",
+    "allocate": "tsx migrations/grinders/allocate.ts",
     "distribute": "tsx migrations/grai/distribute.ts",
     "unwrapSol": "tsx migrations/unwrapSol.ts",
-    "setSettlementAsset": "tsx migrations/setSettlementAsset.ts",
-    "setFeed": "tsx migrations/setFeed.ts",
+    "setSettlementAsset": "tsx migrations/grai/setSettlementAsset.ts",
+    "setFeed": "tsx migrations/grai/setFeed.ts",
     "status": "tsx migrations/status.ts"
   },
   "dependencies": {
