@@ -180,8 +180,9 @@ impl Buy<'_> {
     }
 }
 
+/// View: cost in quote asset for `buy(id, amount_ld)` (EVM `previewBuy`).
 #[derive(Accounts)]
-pub struct QuoteSale<'info> {
+pub struct PreviewBuy<'info> {
     #[account(
         seeds = [OFT_SEED, oft_store.token_escrow.as_ref()],
         bump = oft_store.bump
@@ -195,8 +196,8 @@ pub struct QuoteSale<'info> {
     pub sale_registry: Account<'info, SaleRegistry>,
 }
 
-impl QuoteSale<'_> {
-    pub fn apply(ctx: &Context<QuoteSale>, id: u64, amount_ld: u64) -> Result<u64> {
+impl PreviewBuy<'_> {
+    pub fn apply(ctx: &Context<PreviewBuy>, id: u64, amount_ld: u64) -> Result<u64> {
         let sale = ctx.accounts.sale_registry.get(id)?;
         quote_cost(amount_ld, sale.grs_amount, sale.asset_amount)
     }

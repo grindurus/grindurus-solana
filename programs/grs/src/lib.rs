@@ -73,8 +73,9 @@ pub mod grs {
         GetSales::apply(&ctx, offset, limit)
     }
 
-    pub fn quote_sale(ctx: Context<QuoteSale>, id: u64, amount_ld: u64) -> Result<u64> {
-        QuoteSale::apply(&ctx, id, amount_ld)
+    /// Asset units due for `amount_ld` GRS from sale `id` (EVM `previewBuy`).
+    pub fn preview_buy(ctx: Context<PreviewBuy>, id: u64, amount_ld: u64) -> Result<u64> {
+        PreviewBuy::apply(&ctx, id, amount_ld)
     }
 
     pub fn vesting_count(ctx: Context<GetVestings>) -> Result<u64> {
@@ -119,13 +120,22 @@ pub mod grs {
         mut ctx: Context<SetSale>,
         asset: Pubkey,
         asset_amount: u64,
-        recipient: Pubkey,
         grs_amount: u64,
+        recipient: Pubkey,
     ) -> Result<u64> {
-        SetSale::apply(&mut ctx, asset, asset_amount, recipient, grs_amount)
+        SetSale::apply(&mut ctx, asset, asset_amount, grs_amount, recipient)
     }
 
-    /// LZ-publish an existing home sale so the spoke `lz_receive` writes it.
+    /// Native LZ fee for `publish_sale(dst_eid, id)` (EVM `quoteSale(..., dstEid)`).
+    pub fn quote_sale(
+        ctx: Context<QuoteSale>,
+        dst_eid: u32,
+        id: u64,
+    ) -> Result<MessagingFee> {
+        QuoteSale::apply(&ctx, dst_eid, id)
+    }
+
+    /// LZ-publish an existing home sale: burn from `sale_escrow`, spoke mints that GRS.
     pub fn publish_sale(
         mut ctx: Context<PublishSale>,
         dst_eid: u32,

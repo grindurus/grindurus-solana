@@ -19,7 +19,7 @@ EVM uses 18 local decimals. Conversion is lossless in GRS units: `1 GRS = 10⁶`
 
 LayerZero OFT surface (`init_oft`, `set_peer_config`, `send`, `lz_receive`, quotes, pause, fees) plus:
 
-1. `init_grs({ home })` — record canonical vs spoke; checks 9 local / 6 shared.
+1. `init_grs({ home })` — record canonical vs spoke; checks 9 local / 6 shared. **Spoke** (`home = false`) moves mint authority from admin to the OFT store so inbound `lz_receive` can mint grant / bridge credits. Home keeps admin as mint authority until `mint_genesis`.
 2. `mint_genesis` — **home only**, once: mint 1B to `to`, then set mint authority to the OFT store so only `lz_receive` can mint. Native credits that would exceed 1B revert `CapExceeded`.
 3. `quote_bridge` / `bridge(dst_eid, to, amount_ld, native_fee)` — same as `quote_send` / `send` without an options/compose struct. Enforced peer options still apply.
 4. `get_peers` — list wired `{ eid, peer }` (updated on `set_peer_config` `PeerAddress`).
@@ -43,7 +43,7 @@ Home can be Solana or Ethereum; the other listed chains are spokes (`home = fals
 
 Home **token sales** (150M cap per OFT, no `grant` / other buckets):
 
-9. `sale(asset, asset_amount, recipient, grs_amount)` — **home admin only**. Appends; id is `sale_count + 1`. `asset = Pubkey::default()` is native SOL. `recipient = default` pays `admin` at buy. Inits `sale_escrow`. Local only — EVM folds the LZ hop into `sale(..., dstEid)`.
-10. `publish_sale(dst_eid, id, native_fee)` — **home admin only**. LZ-sends the packed sale row (`keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount`, 192 bytes). Spoke `lz_receive` writes it.
-11. `quote_sale(id, amount_ld)` / `buy(id, amount_ld)` — buying the remainder costs remaining `asset_amount`; a partial fill is `floor(amount_ld * asset_amount / remaining)`.
+9. `sale(asset, asset_amount, grs_amount, recipient)` — **home admin only**. Appends; id is `sale_count + 1`. `asset = Pubkey::default()` is native SOL. `recipient = default` pays `admin` at buy. Inits `sale_escrow`. Local only — EVM folds the LZ hop into `sale(..., dstEid)`.
+10. `quote_sale(dst_eid, id)` / `publish_sale(dst_eid, id, native_fee)` — **home admin only**. Quote is native LZ fee (EVM `quoteSale`). Publish burns `grs_amount` from `sale_escrow` (TokenSales), then LZ-sends the packed sale row (`keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient`, 192 bytes; GRS in shared decimals). Spoke `lz_receive` writes it and mints into `sale_escrow`.
+11. `preview_buy(id, amount_ld)` / `buy(id, amount_ld)` — buying the remainder costs remaining `asset_amount`; a partial fill is `floor(amount_ld * asset_amount / remaining)` (EVM `previewBuy` / `buy`).
 12. `sale_count` / `get_sales(offset, limit)` — same pagination as EVM (`offset` 0-based; id = `offset + 1`).

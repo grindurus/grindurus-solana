@@ -49,17 +49,17 @@ impl SetSale<'_> {
         ctx: &mut Context<SetSale>,
         asset: Pubkey,
         asset_amount: u64,
-        recipient: Pubkey,
         grs_amount: u64,
+        recipient: Pubkey,
     ) -> Result<u64> {
         require!(ctx.accounts.grs_config.home, OFTError::NotHome);
-        let out_id = Self::write(ctx, asset, asset_amount, recipient, grs_amount)?;
+        let out_id = Self::write(ctx, asset, asset_amount, grs_amount, recipient)?;
         emit!(SaleSet {
             id: out_id,
             asset,
             asset_amount,
-            recipient,
             grs_amount,
+            recipient,
         });
         Ok(out_id)
     }
@@ -68,8 +68,8 @@ impl SetSale<'_> {
         ctx: &mut Context<SetSale>,
         asset: Pubkey,
         asset_amount: u64,
-        recipient: Pubkey,
         grs_amount: u64,
+        recipient: Pubkey,
     ) -> Result<u64> {
         require!(recipient != crate::ID, OFTError::InvalidRecipient);
         require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
@@ -78,6 +78,6 @@ impl SetSale<'_> {
             OFTError::InvalidRecipient
         );
 
-        ctx.accounts.sale_registry.upsert(0, asset, asset_amount, recipient, grs_amount, false)
+        ctx.accounts.sale_registry.upsert(0, asset, asset_amount, grs_amount, recipient, false)
     }
 }

@@ -1,7 +1,11 @@
 use crate::*;
-use anchor_spl::token_interface::Mint;
+use anchor_spl::{
+    token_2022::spl_token_2022::{instruction::AuthorityType, solana_program::program_option::COption},
+    token_interface::{self, Mint, SetAuthority, TokenInterface},
+};
 
 /// Record whether this OFT is the canonical GRS mint. Called once after `init_oft`.
+/// On a spoke, moves mint authority to the OFT store so `lz_receive` can mint grant / bridge credits.
 #[derive(Accounts)]
 pub struct InitGrs<'info> {
     #[account(mut)]
@@ -13,6 +17,11 @@ pub struct InitGrs<'info> {
         has_one = token_mint @ OFTError::InvalidMintAuthority
     )]
     pub oft_store: Account<'info, OFTStore>,
+    #[account(
+        mut,
+        address = oft_store.token_mint,
+        mint::token_program = token_program
+    )]
     pub token_mint: InterfaceAccount<'info, Mint>,
     #[account(
         init,
@@ -38,6 +47,7 @@ pub struct InitGrs<'info> {
         bump
     )]
     pub sale_registry: Account<'info, SaleRegistry>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -58,7 +68,33 @@ impl InitGrs<'_> {
 
         ctx.accounts.sale_registry.oft_store = ctx.accounts.oft_store.key();
         ctx.accounts.sale_registry.bump = ctx.bumps.sale_registry;
+
+        if !params.home {
+            Self::handoff_spoke_mint(ctx)?;
+        }
         Ok(())
+    }
+
+    /// Spoke starts at supply 0 (or test inventory minted by admin). Mint authority must be the OFT
+    /// store so native `lz_receive` can sign `mint_to` for grant / bridge credits.
+    fn handoff_spoke_mint(ctx: &mut Context<InitGrs>) -> Result<()> {
+        match ctx.accounts.token_mint.mint_authority {
+            COption::Some(authority) if authority == ctx.accounts.oft_store.key() => Ok(()),
+            COption::Some(authority) if authority == ctx.accounts.admin.key() => {
+                token_interface::set_authority(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        SetAuthority {
+                            current_authority: ctx.accounts.admin.to_account_info(),
+                            account_or_mint: ctx.accounts.token_mint.to_account_info(),
+                        },
+                    ),
+                    AuthorityType::MintTokens,
+                    Some(ctx.accounts.oft_store.key()),
+                )
+            }
+            _ => err!(OFTError::InvalidMintAuthority),
+        }
     }
 }
 

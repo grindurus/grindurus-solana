@@ -57,21 +57,36 @@ mod test_msg_codec {
     fn test_sale_msg_roundtrip_matches_evm_layout() {
         let asset = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
-        let encoded = msg_codec::encode_sale(3, asset, 10_000_000, recipient, 1_000_000_000);
+        let encoded = msg_codec::encode_sale(3, asset, 10_000_000, 1_000_000_000, recipient);
         assert_eq!(encoded.len(), 192);
         assert!(msg_codec::is_sale(&encoded));
         assert_eq!(msg_codec::compose_msg(&encoded), None);
-        let (id, q, asset_amount, r, grs_amount) = msg_codec::decode_sale(&encoded).unwrap();
+        let (id, q, asset_amount, grs_amount, r) = msg_codec::decode_sale(&encoded).unwrap();
         assert_eq!(id, 3);
         assert_eq!(q, asset);
         assert_eq!(asset_amount, 10_000_000);
-        assert_eq!(r, recipient);
         assert_eq!(grs_amount, 1_000_000_000);
+        assert_eq!(r, recipient);
         let expected_magic: [u8; 32] = [
             0x9a, 0xd0, 0x4f, 0x5e, 0x83, 0x38, 0x4a, 0x6d, 0x14, 0x3d, 0xcd, 0xba, 0xb3, 0xe4,
             0x98, 0xbd, 0xe0, 0x25, 0x7b, 0xcd, 0xd7, 0x78, 0x06, 0x84, 0x3b, 0x0c, 0x11, 0x5c,
             0xbe, 0xf6, 0x5b, 0xe9,
         ];
         assert_eq!(&encoded[0..32], &expected_magic);
+        let mut sd = [0u8; 8];
+        sd.copy_from_slice(&encoded[152..160]);
+        assert_eq!(u64::from_be_bytes(sd), 1_000_000);
+    }
+
+    #[test]
+    fn test_oft_credit_is_not_sale_and_sd_matches_solana_ld() {
+        let send_to: [u8; 32] = [0x51; 32];
+        let amount_sd: u64 = 5_000_000; // 5 GRS at 6 shared decimals
+        let encoded = msg_codec::encode(send_to, amount_sd, Pubkey::default(), &None);
+        assert_eq!(encoded.len(), 40);
+        assert!(!msg_codec::is_sale(&encoded));
+        assert_eq!(msg_codec::send_to(&encoded), send_to);
+        assert_eq!(msg_codec::amount_sd(&encoded), amount_sd);
+        assert_eq!(amount_sd * grs::GRS_LD2SD_RATE, 5 * grs::GRS_ONE_LD);
     }
 }

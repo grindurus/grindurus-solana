@@ -37,8 +37,8 @@ pub struct SaleSet {
     pub id: u64,
     pub asset: Pubkey,
     pub asset_amount: u64,
-    pub recipient: Pubkey,
     pub grs_amount: u64,
+    pub recipient: Pubkey,
 }
 
 #[event]
@@ -46,8 +46,8 @@ pub struct SaleAccepted {
     pub id: u64,
     pub asset: Pubkey,
     pub asset_amount: u64,
-    pub recipient: Pubkey,
     pub grs_amount: u64,
+    pub recipient: Pubkey,
 }
 
 #[event]

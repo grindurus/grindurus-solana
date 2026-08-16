@@ -64,7 +64,7 @@ pub struct LzReceive<'info> {
         token::token_program = token_program
     )]
     pub token_escrow: InterfaceAccount<'info, TokenAccount>,
-    /// CHECK: OFT path requires `send_to`. Sale messages use admin as a dummy dest (no mint).
+    /// CHECK: OFT path requires `send_to`. Sale messages mint to `sale_escrow`; this is a dummy dest.
     pub to_address: AccountInfo<'info>,
     #[account(
         init_if_needed,
@@ -116,18 +116,26 @@ impl LzReceive<'_> {
 
         if msg_codec::is_sale(&params.message) {
             require!(!ctx.accounts.grs_config.home, OFTError::NotSpoke);
-            let (id, asset, asset_amount, recipient, grs_amount) = msg_codec::decode_sale(&params.message)?;
+            let (id, asset, asset_amount, grs_amount, recipient) = msg_codec::decode_sale(&params.message)?;
             require!(recipient != crate::ID, OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.sale_escrow.key(), OFTError::InvalidRecipient);
-            let out_id = ctx.accounts.sale_registry.upsert(id, asset, asset_amount, recipient, grs_amount, true)?;
+            let previous = if id > 0 && (id as usize) <= ctx.accounts.sale_registry.entries.len() {
+                ctx.accounts.sale_registry.entries[(id as usize) - 1].grs_amount
+            } else {
+                0
+            };
+            let out_id = ctx.accounts.sale_registry.upsert(id, asset, asset_amount, grs_amount, recipient, true)?;
             emit!(SaleAccepted {
                 id: out_id,
                 asset,
                 asset_amount,
-                recipient,
                 grs_amount,
+                recipient,
             });
+            if grs_amount > 0 && previous == 0 {
+                Self::credit_sale_escrow(ctx, grs_amount)?;
+            }
             return Ok(());
         }
 
@@ -233,6 +241,64 @@ impl LzReceive<'_> {
             to: ctx.accounts.to_address.key(),
             amount_received_ld,
         });
+        Ok(())
+    }
+
+    fn credit_sale_escrow(ctx: &mut Context<LzReceive>, amount_ld: u64) -> Result<()> {
+        let oft_store_seed = ctx.accounts.token_escrow.key();
+        let seeds: &[&[u8]] = &[OFT_SEED, oft_store_seed.as_ref(), &[ctx.accounts.oft_store.bump]];
+
+        if ctx.accounts.oft_store.oft_type == OFTType::Adapter {
+            ctx.accounts.oft_store.tvl_ld = ctx
+                .accounts
+                .oft_store
+                .tvl_ld
+                .checked_sub(amount_ld)
+                .ok_or(OFTError::InvalidFee)?;
+            token_interface::transfer_checked(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.token_escrow.to_account_info(),
+                        mint: ctx.accounts.token_mint.to_account_info(),
+                        to: ctx.accounts.sale_escrow.to_account_info(),
+                        authority: ctx.accounts.oft_store.to_account_info(),
+                    },
+                )
+                .with_signer(&[&seeds]),
+                amount_ld,
+                ctx.accounts.token_mint.decimals,
+            )?;
+        } else if let Some(mint_authority) = &ctx.accounts.mint_authority {
+            let new_supply = ctx
+                .accounts
+                .token_mint
+                .supply
+                .checked_add(amount_ld)
+                .ok_or(OFTError::CapExceeded)?;
+            require!(new_supply <= GRS_MAX_SUPPLY_LD, OFTError::CapExceeded);
+
+            let ix = spl_token_2022::instruction::mint_to(
+                ctx.accounts.token_program.key,
+                &ctx.accounts.token_mint.key(),
+                &ctx.accounts.sale_escrow.key(),
+                mint_authority.key,
+                &[&ctx.accounts.oft_store.key()],
+                amount_ld,
+            )?;
+            solana_program::program::invoke_signed(
+                &ix,
+                &[
+                    ctx.accounts.sale_escrow.to_account_info(),
+                    ctx.accounts.token_mint.to_account_info(),
+                    mint_authority.to_account_info(),
+                    ctx.accounts.oft_store.to_account_info(),
+                ],
+                &[&seeds],
+            )?;
+        } else {
+            return Err(OFTError::InvalidMintAuthority.into());
+        }
         Ok(())
     }
 }

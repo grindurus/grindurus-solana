@@ -5,13 +5,13 @@ pub const GRS_MAX_SALES: usize = 16;
 /// Token-sale row. `asset = Pubkey::default()` is native SOL.
 /// `asset_amount` is remaining `asset` the seller wants for remaining `grs_amount`.
 /// `asset_amount = 0` closes this id.
-/// `recipient = Pubkey::default()` pays `oft_store.admin` at buy time.
+/// `recipient = Pubkey::default()` pays `oft_store.admin` at buy. Same 32 bytes as EVM `bytes32`.
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, InitSpace)]
 pub struct Sale {
     pub asset: Pubkey,
     pub asset_amount: u64,
-    pub recipient: Pubkey,
     pub grs_amount: u64,
+    pub recipient: Pubkey,
 }
 
 #[account]
@@ -38,11 +38,11 @@ impl SaleRegistry {
         id: u64,
         asset: Pubkey,
         asset_amount: u64,
-        recipient: Pubkey,
         grs_amount: u64,
+        recipient: Pubkey,
         pad: bool,
     ) -> Result<u64> {
-        let row = Sale { asset, asset_amount, recipient, grs_amount };
+        let row = Sale { asset, asset_amount, grs_amount, recipient };
         let n = self.entries.len() as u64;
         if id == 0 {
             require!(self.entries.len() < GRS_MAX_SALES, OFTError::TooManySales);
@@ -59,8 +59,8 @@ impl SaleRegistry {
                 self.entries.push(Sale {
                     asset: Pubkey::default(),
                     asset_amount: 0,
-                    recipient: Pubkey::default(),
                     grs_amount: 0,
+                    recipient: Pubkey::default(),
                 });
             }
             self.entries[(id as usize) - 1] = row;

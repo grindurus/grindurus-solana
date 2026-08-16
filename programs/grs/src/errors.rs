@@ -38,7 +38,7 @@ pub enum OFTError {
     PaymentFailed,
     /// `buy` would spend past the 150M TokenSales cap.
     BucketExceeded,
-    /// Packed sale payload is not keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount.
+    /// Packed sale payload is not keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient.
     InvalidSaleMessage,
     /// Sale registry already holds `GRS_MAX_SALES` rows.
     TooManySales,

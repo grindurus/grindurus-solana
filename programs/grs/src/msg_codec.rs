@@ -5,7 +5,8 @@ const SEND_TO_OFFSET: usize = 0;
 const SEND_AMOUNT_SD_OFFSET: usize = 32;
 const COMPOSE_MSG_OFFSET: usize = 40;
 
-/// Packed LZ sale payload: keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount.
+/// Packed LZ sale payload: keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient.
+/// `grsAmount` on the wire is OFT shared decimals; encode/decode convert to Solana local (9).
 pub const SALE_MSG_LEN: usize = 192;
 
 pub fn sale_msg_type() -> [u8; 32] {
@@ -30,29 +31,32 @@ pub fn is_sale(message: &[u8]) -> bool {
     message.len() == SALE_MSG_LEN && message[0..32] == sale_msg_type()
 }
 
-pub fn encode_sale(id: u64, asset: Pubkey, asset_amount: u64, recipient: Pubkey, grs_amount: u64) -> Vec<u8> {
+pub fn encode_sale(id: u64, asset: Pubkey, asset_amount: u64, grs_amount: u64, recipient: Pubkey) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(SALE_MSG_LEN);
     encoded.extend_from_slice(&sale_msg_type());
     encoded.extend_from_slice(&u256_be_from_u64(id));
     encoded.extend_from_slice(asset.as_ref());
     encoded.extend_from_slice(&u256_be_from_u64(asset_amount));
+    encoded.extend_from_slice(&u256_be_from_u64(grs_amount / GRS_LD2SD_RATE));
     encoded.extend_from_slice(recipient.as_ref());
-    encoded.extend_from_slice(&u256_be_from_u64(grs_amount));
     encoded
 }
 
-pub fn decode_sale(message: &[u8]) -> Result<(u64, Pubkey, u64, Pubkey, u64)> {
+pub fn decode_sale(message: &[u8]) -> Result<(u64, Pubkey, u64, u64, Pubkey)> {
     require!(is_sale(message), OFTError::InvalidSaleMessage);
     let id = u64_from_u256_be(&message[32..64])?;
     let mut asset_bytes = [0u8; 32];
     asset_bytes.copy_from_slice(&message[64..96]);
     let asset = Pubkey::from(asset_bytes);
     let asset_amount = u64_from_u256_be(&message[96..128])?;
+    let grs_sd = u64_from_u256_be(&message[128..160])?;
+    let grs_amount = grs_sd
+        .checked_mul(GRS_LD2SD_RATE)
+        .ok_or(error!(OFTError::InvalidSaleMessage))?;
     let mut recipient_bytes = [0u8; 32];
-    recipient_bytes.copy_from_slice(&message[128..160]);
+    recipient_bytes.copy_from_slice(&message[160..192]);
     let recipient = Pubkey::from(recipient_bytes);
-    let grs_amount = u64_from_u256_be(&message[160..192])?;
-    Ok((id, asset, asset_amount, recipient, grs_amount))
+    Ok((id, asset, asset_amount, grs_amount, recipient))
 }
 
 pub fn encode(

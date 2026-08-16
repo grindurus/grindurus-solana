@@ -100,6 +100,7 @@ describe("grs oft", () => {
         [Buffer.from("sales"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     }).rpc();
     return grsConfig;
@@ -136,10 +137,10 @@ describe("grs oft", () => {
 
   it("holder vest and release without cap table", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, false);
     const amount = 10_000_000_000n; // 10 GRS
     const ata = await mintToAdmin(mint, amount);
+    const { oftStore } = await initNativeOft(mint);
+    const grsConfig = await initGrsConfig(oftStore, mint, false);
 
     const id = 1;
     const [vesting] = PublicKey.findProgramAddressSync(
@@ -349,6 +350,7 @@ describe("grs oft", () => {
         [Buffer.from("sales"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     }).rpc();
 
@@ -407,12 +409,14 @@ describe("grs oft", () => {
         [Buffer.from("sales"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     }).rpc();
 
     const store: any = await program.account.oftStore.fetch(oftStore);
     expect((store.ld2SdRate ?? store.ld2sdRate).toString()).to.equal("1000");
     expect(store.tokenMint.toBase58()).to.equal(mint.toBase58());
+    expect((await getMint(provider.connection, mint)).mintAuthority?.toBase58()).to.equal(oftStore.toBase58());
 
     const cfg = await program.account.grsConfig.fetch(grsConfig);
     expect(cfg.home).to.equal(false);
@@ -462,6 +466,7 @@ describe("grs oft", () => {
         [Buffer.from("sales"), oftStore.toBuffer()],
         program.programId,
       )[0],
+      tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     }).rpc();
 
@@ -521,10 +526,10 @@ describe("grs oft", () => {
 
   it("get_vestings pages sequential ids", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, false);
     const unit = 1_000_000_000n;
     const ata = await mintToAdmin(mint, 6n * unit);
+    const { oftStore } = await initNativeOft(mint);
+    const grsConfig = await initGrsConfig(oftStore, mint, false);
     const [vestEscrow] = PublicKey.findProgramAddressSync(
       [Buffer.from("vest_escrow"), oftStore.toBuffer()],
       program.programId,
@@ -608,7 +613,7 @@ describe("grs oft", () => {
 
     const assetAmount = new anchor.BN(100_000_000); // 0.1 SOL for 10 GRS
     await program.methods
-      .sale(PublicKey.default, assetAmount, PublicKey.default, new anchor.BN(inventory.toString()))
+      .sale(PublicKey.default, assetAmount, new anchor.BN(inventory.toString()), PublicKey.default)
       .accounts({
         admin,
         oftStore,
@@ -626,7 +631,7 @@ describe("grs oft", () => {
 
     const amount = 10n * 1_000_000_000n;
     const cost = await program.methods
-      .quoteSale(new anchor.BN(1), new anchor.BN(amount.toString()))
+      .previewBuy(new anchor.BN(1), new anchor.BN(amount.toString()))
       .accounts({ oftStore, saleRegistry })
       .view();
     expect(cost.toNumber()).to.equal(100_000_000);
@@ -686,7 +691,7 @@ describe("grs oft", () => {
     const assetAmount = new anchor.BN(10_000_000); // $10 for 100 GRS (6 dec)
 
     await program.methods
-      .sale(usdc, assetAmount, admin, new anchor.BN(amount.toString()))
+      .sale(usdc, assetAmount, new anchor.BN(amount.toString()), admin)
       .accounts({
         admin,
         oftStore,
@@ -785,7 +790,7 @@ describe("grs oft", () => {
     const spokeSales = salePdas(spokeStore);
     try {
       await program.methods
-        .sale(PublicKey.default, new anchor.BN(1), PublicKey.default, new anchor.BN(1))
+        .sale(PublicKey.default, new anchor.BN(1), new anchor.BN(1), PublicKey.default)
         .accounts({
           admin,
           oftStore: spokeStore,
