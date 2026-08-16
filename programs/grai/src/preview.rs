@@ -51,7 +51,7 @@ fn read_asset_acc_share(
     Ok(asset.acc_share)
 }
 
-fn pending_for_holder(
+pub(crate) fn pending_for_holder(
     asset_info: &AccountInfo,
     position_info: &AccountInfo,
     user: &Pubkey,

@@ -96,7 +96,7 @@ pub struct GraiState {
     pub lockers: Vec<Pubkey>,
     /// Accounts with an open liquidation vote (`escrow.voted > 0`).
     pub voters: Vec<Pubkey>,
-    /// Treasury-bound lockers in mint order (EVM ERC-721 enumerable / `getReferralsData`).
+    /// Treasury-bound lockers in mint order (EVM ERC-721 enumerable / `getLockersData`).
     pub referrers: Vec<Pubkey>,
     pub bump: u8,
 }
@@ -1595,7 +1595,7 @@ pub struct GetVoters<'info> {
 }
 
 #[derive(Accounts)]
-pub struct GetReferrals<'info> {
+pub struct GetLockersData<'info> {
     #[account(
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
@@ -1807,13 +1807,16 @@ pub mod grai {
         views::execute_get_voters(ctx, from_id, to_id)
     }
 
-    /// EVM `getReferralsData(fromId, toId)`. Remaining: `Referrer` PDA per bound locker in mint order.
-    pub fn get_referrals<'info>(
-        ctx: Context<'_, '_, 'info, 'info, GetReferrals<'info>>,
+    /// EVM GRAI `getLockersData(fromId, toId)`: bound lockers plus `previewClaimAll`.
+    /// Remaining: `[referrer] × M`, `[escrow] × M`, `[asset_config] × N`, then
+    /// `[position]` locker-major (`M` in `[from, to)`, `N` listed mints).
+    /// Escrow / position PDAs may be empty.
+    pub fn get_lockers_data<'info>(
+        ctx: Context<'_, '_, 'info, 'info, GetLockersData<'info>>,
         from_id: u32,
         to_id: u32,
     ) -> Result<Vec<LockerDataView>> {
-        views::execute_get_referrals(ctx, from_id, to_id)
+        views::execute_get_lockers_data(ctx, from_id, to_id)
     }
 
     /// EVM `getRedeemables` — redeemable basket while liquidation is open.
@@ -1936,8 +1939,9 @@ pub struct ReferralBookView {
     pub referrer: Pubkey,
 }
 
-/// EVM `ITreasury.ReferralData` (+ `nft_mint` for Metaplex cashflow NFT).
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default)]
+/// EVM GRAI `LockerData` (+ `nft_mint` for Metaplex cashflow NFT).
+/// `assets` / `claimable` match `preview_claim_all` (listed-mint order; amount may be 0).
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
 pub struct LockerDataView {
     pub locker: Pubkey,
     pub referrer: Pubkey,
@@ -1945,4 +1949,6 @@ pub struct LockerDataView {
     pub owner_of: Pubkey,
     pub nft_mint: Pubkey,
     pub book: ReferralBookView,
+    pub assets: Vec<Pubkey>,
+    pub claimable: Vec<u64>,
 }

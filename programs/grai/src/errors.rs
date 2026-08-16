@@ -98,7 +98,7 @@ pub enum ErrorCode {
     InvalidVoterRange,
     #[msg("Sticky referrer / poach target is a protocol sink (GRAI, treasury, WSOL)")]
     InvalidReferrer,
-    #[msg("Invalid get_referrals range")]
+    #[msg("Invalid get_lockers_data range")]
     InvalidReferralRange,
     #[msg("PDA must be system-owned and empty to initialize")]
     InvalidPdaInit,

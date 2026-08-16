@@ -39,7 +39,7 @@ Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ove
 | `redeem` | holder | Burn GRAI for pro-rata basket (books sticky — not reversed) |
 | `revive` | anyone | Close after redeem window; sweep leftovers to Grinders; clear Grinders arm |
 
-**Views / previews:** `get_assets` (listed mints), `get_lockers`, `get_voters`, `get_referrals`, `get_redeemables`, `has_quorum`,
+**Views / previews:** `get_assets` (listed mints), `get_lockers`, `get_voters`, `get_lockers_data` (books + `preview_claim_all`), `get_redeemables`, `has_quorum`,
 `preview_deposit`, `preview_unlock`, `preview_claim`, `preview_claim_all`,
 `preview_redeem`, `preview_bribe`.
 
