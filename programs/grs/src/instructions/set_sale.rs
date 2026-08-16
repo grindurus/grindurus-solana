@@ -1,7 +1,7 @@
 use crate::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-/// Create (`id == 0`) or update a sale. `price == 0` closes that id. Home / admin only.
+/// Originates a sale on home (`sale` appends; id is `sale_count + 1`).
 #[derive(Accounts)]
 pub struct SetSale<'info> {
     #[account(mut)]
@@ -15,8 +15,7 @@ pub struct SetSale<'info> {
     pub oft_store: Account<'info, OFTStore>,
     #[account(
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
-        bump = grs_config.bump,
-        constraint = grs_config.home @ OFTError::NotHome
+        bump = grs_config.bump
     )]
     pub grs_config: Account<'info, GrsConfig>,
     #[account(
@@ -48,10 +47,29 @@ pub struct SetSale<'info> {
 impl SetSale<'_> {
     pub fn apply(
         ctx: &mut Context<SetSale>,
-        id: u64,
-        quote: Pubkey,
-        price: u64,
+        asset: Pubkey,
+        asset_amount: u64,
         recipient: Pubkey,
+        grs_amount: u64,
+    ) -> Result<u64> {
+        require!(ctx.accounts.grs_config.home, OFTError::NotHome);
+        let out_id = Self::write(ctx, asset, asset_amount, recipient, grs_amount)?;
+        emit!(SaleSet {
+            id: out_id,
+            asset,
+            asset_amount,
+            recipient,
+            grs_amount,
+        });
+        Ok(out_id)
+    }
+
+    fn write(
+        ctx: &mut Context<SetSale>,
+        asset: Pubkey,
+        asset_amount: u64,
+        recipient: Pubkey,
+        grs_amount: u64,
     ) -> Result<u64> {
         require!(recipient != crate::ID, OFTError::InvalidRecipient);
         require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
@@ -60,24 +78,6 @@ impl SetSale<'_> {
             OFTError::InvalidRecipient
         );
 
-        let row = Sale { quote, price, recipient };
-        let out_id;
-        let entries = &mut ctx.accounts.sale_registry.entries;
-        if id == 0 {
-            require!(entries.len() < GRS_MAX_SALES, OFTError::TooManySales);
-            entries.push(row);
-            out_id = entries.len() as u64;
-        } else {
-            require!(id <= entries.len() as u64, OFTError::UnknownSale);
-            entries[(id as usize) - 1] = row;
-            out_id = id;
-        }
-        emit!(SaleSet {
-            id: out_id,
-            quote,
-            price,
-            recipient,
-        });
-        Ok(out_id)
+        ctx.accounts.sale_registry.upsert(0, asset, asset_amount, recipient, grs_amount, false)
     }
 }

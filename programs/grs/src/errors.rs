@@ -26,14 +26,20 @@ pub enum OFTError {
     InvalidRecipient,
     InvalidSchedule,
     NothingToRelease,
-    /// Cap-table / sale instructions run only on the canonical GRS mint.
+    /// Cap-table / originate-sale instructions run only on the canonical GRS mint.
     NotHome,
+    /// Sale `lz_receive` runs only on a spoke.
+    NotSpoke,
     UnknownSale,
     SaleClosed,
+    /// `buy` asks for more GRS than this sale id still has.
+    SaleExceeded,
     InvalidPayment,
     PaymentFailed,
-    /// `buy` would spend past the 50M TokenSales cap.
+    /// `buy` would spend past the 150M TokenSales cap.
     BucketExceeded,
+    /// Packed sale payload is not keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount.
+    InvalidSaleMessage,
     /// Sale registry already holds `GRS_MAX_SALES` rows.
     TooManySales,
     /// `vest` id must be `vesting_count + 1` (1-based, same as EVM).

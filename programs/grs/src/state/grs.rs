@@ -1,6 +1,6 @@
 use crate::*;
 
-/// GRS-specific overlay on a LayerZero OFT store (`docs/GRS.md` §2).
+/// GRS-specific overlay on a LayerZero OFT store (`docs/GRS.md` §1).
 ///
 /// Local mint uses **9** decimals (`1 GRS = 10^9`) so `MAX_SUPPLY` fits `u64`.
 /// Shared decimals stay **6** (OFT default): `1 GRS = 10^6` shared units, matching
@@ -13,7 +13,7 @@ pub struct GrsConfig {
     pub bump: u8,
     /// Sequential `vest` ids issued (`id = 1 … vesting_count`).
     pub vesting_count: u64,
-    /// Spent from the 50M TokenSales cap (`buy` only; no `grant` on Solana).
+    /// Spent from this chain's 150M TokenSales cap (`buy`; no `grant` on Solana).
     pub token_sales_spent: u64,
 }
 

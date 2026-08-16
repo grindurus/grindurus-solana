@@ -4,7 +4,7 @@ use anchor_spl::{
     token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked},
 };
 
-/// Buy `amount_ld` GRS from TokenSales via sale `id`. Instant, no vest. Home only.
+/// Buy `amount_ld` GRS from TokenSales via sale `id`. Instant, no vest. Home or spoke.
 #[derive(Accounts)]
 pub struct Buy<'info> {
     #[account(mut)]
@@ -18,11 +18,11 @@ pub struct Buy<'info> {
     #[account(
         mut,
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
-        bump = grs_config.bump,
-        constraint = grs_config.home @ OFTError::NotHome
+        bump = grs_config.bump
     )]
     pub grs_config: Account<'info, GrsConfig>,
     #[account(
+        mut,
         seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
         bump = sale_registry.bump,
         has_one = oft_store
@@ -71,7 +71,7 @@ pub struct Buy<'info> {
 impl Buy<'_> {
     pub fn apply(ctx: &mut Context<Buy>, id: u64, amount_ld: u64) -> Result<u64> {
         let sale = ctx.accounts.sale_registry.get(id)?.clone();
-        let cost = quote_cost(amount_ld, sale.price)?;
+        let cost = quote_cost(amount_ld, sale.grs_amount, sale.asset_amount)?;
         let payee = if sale.recipient == Pubkey::default() {
             ctx.accounts.oft_store.admin
         } else {
@@ -88,7 +88,7 @@ impl Buy<'_> {
         require!(spent <= GRS_TOKEN_SALES_CAP_LD, OFTError::BucketExceeded);
         ctx.accounts.grs_config.token_sales_spent = spent;
 
-        if sale.quote == Pubkey::default() {
+        if sale.asset == Pubkey::default() {
             require!(
                 ctx.accounts.quote_mint.is_none()
                     && ctx.accounts.quote_source.is_none()
@@ -116,9 +116,9 @@ impl Buy<'_> {
                 .quote_token_program
                 .as_ref()
                 .ok_or(error!(OFTError::InvalidPayment))?;
-            require_keys_eq!(quote_mint.key(), sale.quote, OFTError::InvalidPayment);
-            require_keys_eq!(quote_source.mint, sale.quote, OFTError::InvalidPayment);
-            require_keys_eq!(quote_dest.mint, sale.quote, OFTError::InvalidPayment);
+            require_keys_eq!(quote_mint.key(), sale.asset, OFTError::InvalidPayment);
+            require_keys_eq!(quote_source.mint, sale.asset, OFTError::InvalidPayment);
+            require_keys_eq!(quote_dest.mint, sale.asset, OFTError::InvalidPayment);
             require_keys_eq!(quote_source.owner, ctx.accounts.buyer.key(), OFTError::InvalidPayment);
             require_keys_eq!(quote_dest.owner, payee, OFTError::InvalidPayment);
             require_keys_eq!(*quote_mint.to_account_info().owner, quote_program.key(), OFTError::InvalidPayment);
@@ -159,6 +159,16 @@ impl Buy<'_> {
             ctx.accounts.token_mint.decimals,
         )?;
 
+        let row = &mut ctx.accounts.sale_registry.entries[(id as usize) - 1];
+        row.grs_amount = sale
+            .grs_amount
+            .checked_sub(amount_ld)
+            .ok_or(error!(OFTError::SaleExceeded))?;
+        row.asset_amount = sale
+            .asset_amount
+            .checked_sub(cost)
+            .ok_or(error!(OFTError::InvalidPayment))?;
+
         emit!(Bought {
             id,
             buyer: ctx.accounts.buyer.key(),
@@ -188,7 +198,7 @@ pub struct QuoteSale<'info> {
 impl QuoteSale<'_> {
     pub fn apply(ctx: &Context<QuoteSale>, id: u64, amount_ld: u64) -> Result<u64> {
         let sale = ctx.accounts.sale_registry.get(id)?;
-        quote_cost(amount_ld, sale.price)
+        quote_cost(amount_ld, sale.grs_amount, sale.asset_amount)
     }
 }
 

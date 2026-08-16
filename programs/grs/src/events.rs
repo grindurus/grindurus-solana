@@ -35,9 +35,26 @@ pub struct Released {
 #[event]
 pub struct SaleSet {
     pub id: u64,
-    pub quote: Pubkey,
-    pub price: u64,
+    pub asset: Pubkey,
+    pub asset_amount: u64,
     pub recipient: Pubkey,
+    pub grs_amount: u64,
+}
+
+#[event]
+pub struct SaleAccepted {
+    pub id: u64,
+    pub asset: Pubkey,
+    pub asset_amount: u64,
+    pub recipient: Pubkey,
+    pub grs_amount: u64,
+}
+
+#[event]
+pub struct SalePublished {
+    pub id: u64,
+    pub dst_eid: u32,
+    pub guid: [u8; 32],
 }
 
 #[event]

@@ -52,4 +52,26 @@ mod test_msg_codec {
         assert_eq!(compose_msg_codec::amount_ld(&encoded), amount_ld);
         assert_eq!(compose_msg_codec::compose_msg(&encoded), compose_msg);
     }
+
+    #[test]
+    fn test_sale_msg_roundtrip_matches_evm_layout() {
+        let asset = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let encoded = msg_codec::encode_sale(3, asset, 10_000_000, recipient, 1_000_000_000);
+        assert_eq!(encoded.len(), 192);
+        assert!(msg_codec::is_sale(&encoded));
+        assert_eq!(msg_codec::compose_msg(&encoded), None);
+        let (id, q, asset_amount, r, grs_amount) = msg_codec::decode_sale(&encoded).unwrap();
+        assert_eq!(id, 3);
+        assert_eq!(q, asset);
+        assert_eq!(asset_amount, 10_000_000);
+        assert_eq!(r, recipient);
+        assert_eq!(grs_amount, 1_000_000_000);
+        let expected_magic: [u8; 32] = [
+            0x9a, 0xd0, 0x4f, 0x5e, 0x83, 0x38, 0x4a, 0x6d, 0x14, 0x3d, 0xcd, 0xba, 0xb3, 0xe4,
+            0x98, 0xbd, 0xe0, 0x25, 0x7b, 0xcd, 0xd7, 0x78, 0x06, 0x84, 0x3b, 0x0c, 0x11, 0x5c,
+            0xbe, 0xf6, 0x5b, 0xe9,
+        ];
+        assert_eq!(&encoded[0..32], &expected_magic);
+    }
 }

@@ -41,8 +41,9 @@ Home can be Solana or Ethereum; the other listed chains are spokes (`home = fals
 7. `vested(timestamp)` / `releasable` — views on a vest account.
 8. `vesting_count` / `get_vestings(offset, limit)` — paged vestings. Remaining accounts must be the PDAs for ids `offset+1 …` (empty remaining when the page is empty).
 
-Home **token sales** (50M cap, no `grant` / other buckets):
+Home **token sales** (150M cap per OFT, no `grant` / other buckets):
 
-9. `set_sale(id, quote, price, recipient)` — admin, home only. `id = 0` creates; `id > 0` updates. `price = 0` closes that row. `quote = Pubkey::default()` is native SOL. `recipient = default` pays `admin` at buy. Inits `sale_escrow` (admin funds it from genesis GRS).
-10. `quote_sale(id, amount_ld)` / `buy(id, amount_ld)` — cost is `ceil(amount_ld * price / 10^9)`. SOL via system transfer; otherwise SPL `transfer_checked`. `buy` spends `token_sales_spent` against 50M and transfers GRS from `sale_escrow`.
-11. `sale_count` / `get_sales(offset, limit)` — same pagination as EVM (`offset` 0-based; id = `offset + 1`).
+9. `sale(asset, asset_amount, recipient, grs_amount)` — **home admin only**. Appends; id is `sale_count + 1`. `asset = Pubkey::default()` is native SOL. `recipient = default` pays `admin` at buy. Inits `sale_escrow`. Local only — EVM folds the LZ hop into `sale(..., dstEid)`.
+10. `publish_sale(dst_eid, id, native_fee)` — **home admin only**. LZ-sends the packed sale row (`keccak256("GRS.sale") || id || asset || assetAmount || recipient || grsAmount`, 192 bytes). Spoke `lz_receive` writes it.
+11. `quote_sale(id, amount_ld)` / `buy(id, amount_ld)` — buying the remainder costs remaining `asset_amount`; a partial fill is `floor(amount_ld * asset_amount / remaining)`.
+12. `sale_count` / `get_sales(offset, limit)` — same pagination as EVM (`offset` 0-based; id = `offset + 1`).

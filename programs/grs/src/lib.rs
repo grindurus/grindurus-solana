@@ -23,7 +23,7 @@ pub const PEER_SEED: &[u8] = b"Peer";
 pub const ENFORCED_OPTIONS_SEED: &[u8] = b"EnforcedOptions";
 pub const LZ_RECEIVE_TYPES_SEED: &[u8] = oapp::LZ_RECEIVE_TYPES_SEED;
 
-/// Solana local decimals. `1 GRS = 10^9` so the 1B cap fits `u64` (`docs/GRS.md` §2.1).
+/// Solana local decimals. `1 GRS = 10^9` so the 1B cap fits `u64` (`docs/GRS.md` §1).
 pub const GRS_LOCAL_DECIMALS: u8 = 9;
 /// LayerZero OFT shared decimals (same as EVM `OFT.sharedDecimals()`).
 pub const GRS_SHARED_DECIMALS: u8 = 6;
@@ -33,8 +33,8 @@ pub const GRS_LD2SD_RATE: u64 = 1_000;
 pub const GRS_ONE_LD: u64 = 1_000_000_000;
 /// `1_000_000_000 * 10^GRS_LOCAL_DECIMALS`.
 pub const GRS_MAX_SUPPLY_LD: u64 = 1_000_000_000 * GRS_ONE_LD;
-/// Token-sales bucket (`docs/grs.svg` 50M). Home `buy` only; no `grant` on Solana.
-pub const GRS_TOKEN_SALES_CAP_LD: u64 = 50_000_000 * GRS_ONE_LD;
+/// Token-sales bucket (`docs/grs.svg` 150M). `buy` on home or spoke; no `grant` on Solana.
+pub const GRS_TOKEN_SALES_CAP_LD: u64 = 150_000_000 * GRS_ONE_LD;
 /// Max cliff for holder `vest` (365 days). Same as EVM `GRS.MAX_CLIFF`.
 pub const GRS_MAX_CLIFF_SECONDS: u64 = 365 * 24 * 60 * 60;
 /// Max linear unlock for holder `vest` (4 × 365 days). Same as EVM `GRS.MAX_DURATION`.
@@ -113,15 +113,26 @@ pub mod grs {
         WithdrawFee::apply(&mut ctx, &params)
     }
 
-    /// Create (`id == 0`) or update a sale. `price == 0` closes that id. Home / admin only.
-    pub fn set_sale(
+    /// Append a sale. Id is `sale_count + 1`. Home admin only. Local book.
+    /// EVM folds LZ into `sale(..., dstEid)`; here the hop is `publish_sale`.
+    pub fn sale(
         mut ctx: Context<SetSale>,
-        id: u64,
-        quote: Pubkey,
-        price: u64,
+        asset: Pubkey,
+        asset_amount: u64,
         recipient: Pubkey,
+        grs_amount: u64,
     ) -> Result<u64> {
-        SetSale::apply(&mut ctx, id, quote, price, recipient)
+        SetSale::apply(&mut ctx, asset, asset_amount, recipient, grs_amount)
+    }
+
+    /// LZ-publish an existing home sale so the spoke `lz_receive` writes it.
+    pub fn publish_sale(
+        mut ctx: Context<PublishSale>,
+        dst_eid: u32,
+        id: u64,
+        native_fee: u64,
+    ) -> Result<MessagingReceipt> {
+        PublishSale::apply(&mut ctx, dst_eid, id, native_fee)
     }
 
     // ============================== Public ==============================
@@ -196,7 +207,7 @@ pub mod grs {
         LzReceiveTypes::apply(&ctx, &params)
     }
 
-    /// Buy `amount_ld` GRS from the TokenSales escrow via sale `id`. Instant. Home only.
+    /// Buy `amount_ld` GRS from the TokenSales escrow via sale `id`. Instant. Home or spoke.
     pub fn buy(mut ctx: Context<Buy>, id: u64, amount_ld: u64) -> Result<u64> {
         Buy::apply(&mut ctx, id, amount_ld)
     }

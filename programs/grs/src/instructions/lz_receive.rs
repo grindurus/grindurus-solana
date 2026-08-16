@@ -35,6 +35,28 @@ pub struct LzReceive<'info> {
     )]
     pub oft_store: Account<'info, OFTStore>,
     #[account(
+        seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
+        bump = grs_config.bump
+    )]
+    pub grs_config: Account<'info, GrsConfig>,
+    #[account(
+        mut,
+        seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
+        bump = sale_registry.bump,
+        has_one = oft_store
+    )]
+    pub sale_registry: Account<'info, SaleRegistry>,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        seeds = [SaleRegistry::ESCROW_SEED, oft_store.key().as_ref()],
+        bump,
+        token::mint = token_mint,
+        token::authority = grs_config,
+        token::token_program = token_program
+    )]
+    pub sale_escrow: InterfaceAccount<'info, TokenAccount>,
+    #[account(
         mut,
         address = oft_store.token_escrow,
         token::authority = oft_store,
@@ -42,8 +64,7 @@ pub struct LzReceive<'info> {
         token::token_program = token_program
     )]
     pub token_escrow: InterfaceAccount<'info, TokenAccount>,
-    /// CHECK: the wallet address to receive the token
-    #[account(address = Pubkey::from(msg_codec::send_to(&params.message)) @OFTError::InvalidTokenDest)]
+    /// CHECK: OFT path requires `send_to`. Sale messages use admin as a dummy dest (no mint).
     pub to_address: AccountInfo<'info>,
     #[account(
         init_if_needed,
@@ -92,6 +113,28 @@ impl LzReceive<'_> {
                 message: params.message.clone(),
             },
         )?;
+
+        if msg_codec::is_sale(&params.message) {
+            require!(!ctx.accounts.grs_config.home, OFTError::NotSpoke);
+            let (id, asset, asset_amount, recipient, grs_amount) = msg_codec::decode_sale(&params.message)?;
+            require!(recipient != crate::ID, OFTError::InvalidRecipient);
+            require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
+            require!(recipient != ctx.accounts.sale_escrow.key(), OFTError::InvalidRecipient);
+            let out_id = ctx.accounts.sale_registry.upsert(id, asset, asset_amount, recipient, grs_amount, true)?;
+            emit!(SaleAccepted {
+                id: out_id,
+                asset,
+                asset_amount,
+                recipient,
+                grs_amount,
+            });
+            return Ok(());
+        }
+
+        require!(
+            ctx.accounts.to_address.key() == Pubkey::from(msg_codec::send_to(&params.message)),
+            OFTError::InvalidTokenDest
+        );
 
         // Convert the amount from sd to ld
         let amount_sd = msg_codec::amount_sd(&params.message);

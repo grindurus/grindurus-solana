@@ -606,9 +606,9 @@ describe("grs oft", () => {
     const inventory = 10n * 1_000_000_000n;
     const adminAta = await mintToAdmin(mint, inventory);
 
-    const price = new anchor.BN(10_000_000); // 0.01 SOL / GRS
+    const assetAmount = new anchor.BN(100_000_000); // 0.1 SOL for 10 GRS
     await program.methods
-      .setSale(new anchor.BN(0), PublicKey.default, price, PublicKey.default)
+      .sale(PublicKey.default, assetAmount, PublicKey.default, new anchor.BN(inventory.toString()))
       .accounts({
         admin,
         oftStore,
@@ -671,11 +671,11 @@ describe("grs oft", () => {
       .accounts({ oftStore, saleRegistry })
       .view();
     expect(listed).to.have.length(1);
-    expect(listed[0].price.toNumber()).to.equal(10_000_000);
+    expect(listed[0].assetAmount.toNumber()).to.equal(0);
     expect((await program.methods.saleCount().accounts({ oftStore, saleRegistry }).view()).toNumber()).to.equal(1);
   });
 
-  it("buy spl quote, closed sale, spoke cannot sell", async () => {
+  it("buy spl quote, closed sale, spoke owner can sell", async () => {
     const mint = await createMint();
     const { oftStore } = await initNativeOft(mint);
     const grsConfig = await initGrsConfig(oftStore, mint, true);
@@ -683,10 +683,10 @@ describe("grs oft", () => {
     const usdc = await createMint(6);
     const amount = 100n * 1_000_000_000n;
     const adminAta = await mintToAdmin(mint, amount);
-    const price = new anchor.BN(100_000); // $0.10 / GRS (6 dec)
+    const assetAmount = new anchor.BN(10_000_000); // $10 for 100 GRS (6 dec)
 
     await program.methods
-      .setSale(new anchor.BN(0), usdc, price, admin)
+      .sale(usdc, assetAmount, admin, new anchor.BN(amount.toString()))
       .accounts({
         admin,
         oftStore,
@@ -742,22 +742,8 @@ describe("grs oft", () => {
 
     expect((await getAccount(provider.connection, buyerAta)).amount).to.equal(amount);
     expect((await getAccount(provider.connection, adminUsdc)).amount).to.equal(cost);
-
-    await program.methods
-      .setSale(new anchor.BN(1), usdc, new anchor.BN(0), admin)
-      .accounts({
-        admin,
-        oftStore,
-        grsConfig,
-        saleRegistry,
-        saleEscrow,
-        tokenMint: mint,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
     const closed = await program.account.saleRegistry.fetch(saleRegistry);
-    expect(closed.entries[0].price.toNumber()).to.equal(0);
+    expect(closed.entries[0].assetAmount.toNumber()).to.equal(0);
     try {
       await program.methods
         .buy(new anchor.BN(1), new anchor.BN(1_000_000_000))
@@ -799,7 +785,7 @@ describe("grs oft", () => {
     const spokeSales = salePdas(spokeStore);
     try {
       await program.methods
-        .setSale(new anchor.BN(0), PublicKey.default, new anchor.BN(1), PublicKey.default)
+        .sale(PublicKey.default, new anchor.BN(1), PublicKey.default, new anchor.BN(1))
         .accounts({
           admin,
           oftStore: spokeStore,
@@ -811,7 +797,7 @@ describe("grs oft", () => {
           systemProgram: SystemProgram.programId,
         })
         .rpc();
-      expect.fail("spoke set_sale must revert");
+      expect.fail("spoke sale must revert");
     } catch (e: any) {
       expect(String(e)).to.match(/NotHome/);
     }
