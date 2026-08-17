@@ -835,6 +835,79 @@ describe("Treasury referrals / poach / NFT", () => {
     }
   });
 
+  it("M-08: lock-only locker (no deposit Referrer PDA) can still claim", async () => {
+    const minter = Keypair.generate();
+    const lockOnly = Keypair.generate();
+    await airdrop(minter);
+    await airdrop(lockOnly);
+    await prepareSoleLockerClaim(lockOnly);
+
+    const depositAmount = 100_000_000n;
+    try {
+      await depositUsdc(minter, depositAmount);
+      const minterGrai = await ensureAta(graiMint.publicKey, minter.publicKey);
+      const lockOnlyGrai = await ensureAta(
+        graiMint.publicKey,
+        lockOnly.publicKey,
+      );
+      const graiAmt = await tokenBal(minterGrai);
+      expect(graiAmt > 0n).to.be.true;
+      await provider.sendAndConfirm!(
+        new Transaction().add(
+          createTransferInstruction(
+            minterGrai,
+            lockOnlyGrai,
+            minter.publicKey,
+            graiAmt,
+            [],
+            TOKEN_PROGRAM_ID,
+          ),
+        ),
+        [minter],
+      );
+
+      const lockerBook = referrerPda(lockOnly.publicKey, program.programId)[0];
+      expect(await provider.connection.getAccountInfo(lockerBook)).to.equal(
+        null,
+      );
+
+      await lockAll(lockOnly);
+      expect(await provider.connection.getAccountInfo(lockerBook)).to.equal(
+        null,
+      );
+
+      await distributeYield(YIELD);
+
+      const usdcAta = await ensureAta(usdcMint.publicKey, lockOnly.publicKey);
+      const usdcBefore = await tokenBal(usdcAta);
+      const claimableBefore = BigInt(
+        (
+          await program.account.assetConfig.fetch(usdcAssetConfig)
+        ).totalClaimable.toString(),
+      );
+
+      await claimMax(lockOnly);
+
+      const claimed = (await tokenBal(usdcAta)) - usdcBefore;
+      expect(claimed > 0n).to.be.true;
+      expect(
+        claimableBefore -
+          BigInt(
+            (
+              await program.account.assetConfig.fetch(usdcAssetConfig)
+            ).totalClaimable.toString(),
+          ),
+      ).to.equal(claimed);
+
+      const book = await program.account.referrer.fetch(lockerBook);
+      expect(book.referrer.toBase58()).to.equal(PublicKey.default.toBase58());
+      expect(book.nftMint.toBase58()).to.equal(PublicKey.default.toBase58());
+      expect(BigInt(book.value.toString()) > 0n).to.be.true;
+    } finally {
+      await unlockUser(lockOnly.publicKey, lockOnly);
+    }
+  });
+
   it("three lockers: 2 deposit → distribute → 3rd deposit → distribute → all claim", async () => {
     const aliceLocker = Keypair.generate();
     const bobLocker = Keypair.generate();

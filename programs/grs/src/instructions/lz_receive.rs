@@ -27,25 +27,25 @@ pub struct LzReceive<'info> {
         bump = peer.bump,
         constraint = peer.peer_address == params.sender @OFTError::InvalidSender
     )]
-    pub peer: Account<'info, PeerConfig>,
+    pub peer: Box<Account<'info, PeerConfig>>,
     #[account(
         mut,
         seeds = [OFT_SEED, oft_store.token_escrow.as_ref()],
         bump = oft_store.bump
     )]
-    pub oft_store: Account<'info, OFTStore>,
+    pub oft_store: Box<Account<'info, OFTStore>>,
     #[account(
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
         bump = grs_config.bump
     )]
-    pub grs_config: Account<'info, GrsConfig>,
+    pub grs_config: Box<Account<'info, GrsConfig>>,
     #[account(
         mut,
         seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
         bump = sale_registry.bump,
         has_one = oft_store
     )]
-    pub sale_registry: Account<'info, SaleRegistry>,
+    pub sale_registry: Box<Account<'info, SaleRegistry>>,
     #[account(
         init_if_needed,
         payer = payer,
@@ -120,6 +120,13 @@ impl LzReceive<'_> {
             require!(recipient != crate::ID, OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.sale_escrow.key(), OFTError::InvalidRecipient);
+            let n = SaleRegistry::len_after_upsert(ctx.accounts.sale_registry.entries.len(), id, true)?;
+            SaleRegistry::realloc_for(
+                &ctx.accounts.sale_registry.to_account_info(),
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                n,
+            )?;
             let previous = if id > 0 && (id as usize) <= ctx.accounts.sale_registry.entries.len() {
                 ctx.accounts.sale_registry.entries[(id as usize) - 1].grs_amount
             } else {

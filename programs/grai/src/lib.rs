@@ -36,7 +36,7 @@ declare_id!("3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh");
 ///
 /// Mirrors the EVM `Config`. `dividend_cut_bps + treasury_cut_bps` MUST sum to `BPS` (10_000).
 /// Yield cuts are immutable after `initialize`.
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, Default, InitSpace)]
 pub struct Config {
     /// Share of distributed yield / bribe cut pool paid as dividends on unvoted locked GRAI, in bps.
     pub dividend_cut_bps: u16,
@@ -60,7 +60,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub const LEN: usize = 2 * 7 + 4 * 2;
+    pub const LEN: usize = Self::INIT_SPACE;
 }
 
 #[account]
@@ -106,12 +106,9 @@ impl GraiState {
     /// Matches EVM `USD_DECIMALS`.
     pub const DECIMALS: u8 = 6;
 
-    /// Fixed fields excluding vec payloads.
-    pub const FIXED_LEN: usize = 32
-        + 32
-        + 32
-        + 32
-        + 32
+    /// Fixed fields excluding vec payloads. `bump` is serialized after the four vecs; it is still
+    /// counted here so `space()` totals match Borsh (same 1 byte either side of the vec block).
+    pub const FIXED_LEN: usize = 32 * 5
         + 16
         + 8
         + 8
@@ -143,6 +140,7 @@ impl GraiState {
 }
 
 #[account]
+#[derive(InitSpace)]
 pub struct AssetConfig {
     pub asset_mint: Pubkey,
     pub price_feed: Pubkey,
@@ -160,11 +158,12 @@ pub struct AssetConfig {
 impl AssetConfig {
     pub const SEED: &'static [u8] = b"asset";
     pub const VAULT_SEED: &'static [u8] = b"vault";
-    pub const LEN: usize = 32 + 32 + 1 + 4 + 16 + 8 + 1 + 32;
+    pub const LEN: usize = Self::INIT_SPACE;
 }
 
 /// Per-user lock + liquidation vote escrow (GRAI held by the GRAI vault while locked).
 #[account]
+#[derive(InitSpace)]
 pub struct Escrow {
     /// Actively locked GRAI (max voting capacity; `amount - voted` earns dividends).
     pub amount: u64,
@@ -181,7 +180,7 @@ pub struct Escrow {
 
 impl Escrow {
     pub const SEED: &'static [u8] = b"escrow";
-    pub const LEN: usize = 8 + 8 + 8 + 4 + 4 + 1;
+    pub const LEN: usize = Self::INIT_SPACE;
 
     /// Dividend base: only unvoted escrow earns dividends (EVM `_unvoted`).
     pub fn unvoted(&self) -> u64 {
@@ -194,6 +193,7 @@ impl Escrow {
 /// Locker dividends use `debt` / `claimable` vs `AssetConfig.acc_share`.
 /// Custodian `distribute` increments `yielded`.
 #[account]
+#[derive(InitSpace)]
 pub struct Position {
     /// Debt vs the asset dividend index (MasterChef checkpoint).
     pub debt: u128,
@@ -206,7 +206,7 @@ pub struct Position {
 
 impl Position {
     pub const SEED: &'static [u8] = b"position";
-    pub const LEN: usize = 16 + 8 + 8 + 1;
+    pub const LEN: usize = Self::INIT_SPACE;
 }
 
 /// Sticky referrer tree + Metaplex cashflow NFT for a locker (EVM Treasury three-layer slot).
@@ -215,6 +215,7 @@ impl Position {
 /// - `nft_mint` = Metaplex 1/1 cashflow NFT (`ownerOf`); OTC via ordinary NFT transfer.
 /// - `value` / `l1_value` / `l2_value` = deposit books keyed by locker identity.
 #[account]
+#[derive(InitSpace)]
 pub struct Referrer {
     /// Sticky referrer locker (EVM `ReferralBook.referrer`); `Pubkey::default()` means unbound.
     pub referrer: Pubkey,
@@ -231,7 +232,7 @@ pub struct Referrer {
 
 impl Referrer {
     pub const SEED: &'static [u8] = b"referrer";
-    pub const LEN: usize = 32 + 32 + 16 + 16 + 16 + 1;
+    pub const LEN: usize = Self::INIT_SPACE;
 }
 
 #[derive(Accounts)]
@@ -1058,6 +1059,7 @@ pub struct Claim<'info> {
     pub beneficiar_ata: UncheckedAccount<'info>,
 
     /// CHECK: Locker ReferralBook — credited with `claimedValue` before treasury payouts.
+    /// Created unbound on first claim if `lock` never deposited (M-08).
     #[account(
         mut,
         seeds = [Referrer::SEED, holder.key().as_ref()],

@@ -315,3 +315,105 @@ pub fn perform_vote<'info>(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod account_sizes {
+    use super::*;
+    use crate::{treasury, AssetConfig, Config, Escrow, GraiState, Position, Referrer};
+    use anchor_lang::AccountSerialize;
+
+    fn empty_grai() -> GraiState {
+        GraiState {
+            owner: Pubkey::default(),
+            pending_owner: Pubkey::default(),
+            beneficiar: Pubkey::default(),
+            grinders: Pubkey::default(),
+            settlement_asset: Pubkey::default(),
+            total_value: 0,
+            total_locked: 0,
+            total_voted: 0,
+            liquidation: false,
+            liquidation_at: 0,
+            grai_mint: Pubkey::default(),
+            config: Config::default(),
+            royalty_bps: 0,
+            affiliate_levels: 0,
+            affiliate_share_bps: [0; treasury::MAX_AFFILIATE_LEVELS],
+            asset_mints: vec![],
+            lockers: vec![],
+            voters: vec![],
+            referrers: vec![],
+            bump: 255,
+        }
+    }
+
+    fn assert_account_len<T: AccountSerialize>(value: &T, body: usize) {
+        let mut buf = Vec::new();
+        value.try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), 8 + body);
+    }
+
+    #[test]
+    fn grai_pda_lens_match_borsh() {
+        let mut grai = empty_grai();
+        let mut buf = Vec::new();
+        grai.try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), GraiState::space(0, 0, 0, 0));
+
+        grai.asset_mints.push(Pubkey::new_unique());
+        grai.lockers.push(Pubkey::new_unique());
+        grai.voters.push(Pubkey::new_unique());
+        grai.referrers
+            .extend([Pubkey::new_unique(), Pubkey::new_unique()]);
+        buf.clear();
+        grai.try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), GraiState::space(1, 1, 1, 2));
+
+        assert_account_len(
+            &AssetConfig {
+                asset_mint: Pubkey::default(),
+                price_feed: Pubkey::default(),
+                paused: false,
+                id: 0,
+                acc_share: 0,
+                total_claimable: 0,
+                bump: 0,
+                pyth_feed_id: [0; 32],
+            },
+            AssetConfig::LEN,
+        );
+        assert_account_len(
+            &Escrow {
+                amount: 0,
+                voted: 0,
+                voted_at: 0,
+                locker_id: 0,
+                voter_id: 0,
+                bump: 0,
+            },
+            Escrow::LEN,
+        );
+        assert_account_len(
+            &Position {
+                debt: 0,
+                claimable: 0,
+                yielded: 0,
+                bump: 0,
+            },
+            Position::LEN,
+        );
+        assert_account_len(
+            &Referrer {
+                referrer: Pubkey::default(),
+                nft_mint: Pubkey::default(),
+                value: 0,
+                l1_value: 0,
+                l2_value: 0,
+                bump: 0,
+            },
+            Referrer::LEN,
+        );
+        assert_eq!(Config::LEN, 2 * 7 + 4 * 2);
+    }
+}
+

@@ -4,6 +4,7 @@ use anchor_lang::prelude::*;
 pub const NATIVE_ASSET: Pubkey = Pubkey::new_from_array([0u8; 32]);
 
 #[account]
+#[derive(InitSpace)]
 pub struct GrindersState {
     pub owner: Pubkey,
     /// Two-step handoff target (EVM `Ownable2Step.pendingOwner`). Default = none.
@@ -21,7 +22,9 @@ pub struct GrindersState {
 
 impl GrindersState {
     pub const SEED: &'static [u8] = b"grinders";
-    pub const LEN: usize = 32 + 32 + 32 + 8 + 32 + 1 + 1;
+    /// Borsh body (no discriminator). `owner + pending + grai + next_id + collection + confirmed + bump`
+    /// = `32*4 + 8 + 1 + 1` = 138. Audit M-10's `32*4 + 8 + 32 + 1 + 1` double-counted `collection_mint`.
+    pub const LEN: usize = Self::INIT_SPACE;
 
     pub fn signer_seeds<'a>(&'a self, bump: &'a [u8; 1]) -> [&'a [u8]; 2] {
         [Self::SEED, bump]
@@ -30,6 +33,7 @@ impl GrindersState {
 
 /// On-chain custodian wallet PDA — custodian authority + registry (former `CustodianRecord`).
 #[account]
+#[derive(InitSpace)]
 pub struct CustodianState {
     pub grinders: Pubkey,
     pub custodian_id: u64,
@@ -46,7 +50,7 @@ pub struct CustodianState {
 
 impl CustodianState {
     pub const SEED: &'static [u8] = b"custodian_wallet";
-    pub const LEN: usize = 32 + 8 + 32 + 32 + 32 + 32 + 32 + 32 + 1;
+    pub const LEN: usize = Self::INIT_SPACE;
 
     pub fn signer_seeds<'a>(
         grinders: &'a [u8],
@@ -83,3 +87,45 @@ pub fn custodian_state_pda(grinders: &Pubkey, custodian_id: u64) -> (Pubkey, u8)
         &crate::ID,
     )
 }
+
+#[cfg(test)]
+mod account_sizes {
+    use super::*;
+    use anchor_lang::AccountSerialize;
+
+    #[test]
+    fn grinders_state_len_matches_borsh() {
+        let state = GrindersState {
+            owner: Pubkey::new_unique(),
+            pending_owner: Pubkey::default(),
+            grai_program: Pubkey::new_unique(),
+            next_custodian_id: 1,
+            collection_mint: Pubkey::new_unique(),
+            confirmed: true,
+            bump: 255,
+        };
+        let mut buf = Vec::new();
+        state.try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), 8 + GrindersState::LEN);
+        assert_eq!(GrindersState::LEN, 32 * 4 + 8 + 1 + 1);
+    }
+
+    #[test]
+    fn custodian_state_len_matches_borsh() {
+        let state = CustodianState {
+            grinders: Pubkey::new_unique(),
+            custodian_id: 0,
+            grai_program: Pubkey::new_unique(),
+            custodian_kind: [0; 32],
+            base_mint: Pubkey::default(),
+            quote_mint: Pubkey::default(),
+            nft_mint: Pubkey::new_unique(),
+            nft_owner: Pubkey::new_unique(),
+            bump: 1,
+        };
+        let mut buf = Vec::new();
+        state.try_serialize(&mut buf).unwrap();
+        assert_eq!(buf.len(), 8 + CustodianState::LEN);
+    }
+}
+

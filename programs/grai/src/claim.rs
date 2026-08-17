@@ -20,6 +20,7 @@ use crate::{AssetConfig, Claim, ClaimAll, ErrorCode, Position};
 /// ancestor's Referrer PDA (N levels → N+1 books). First PDA is the locker book (writable).
 /// Sticky upline Referrer PDAs that exist in the tree **must** be present (same as mint) or
 /// the ix reverts — claim must not credit `locker.value` while leaving L1/L2 stale (H-03).
+/// A missing locker book is created unbound (M-08; EVM mapping zero-default).
 pub fn execute_claim<'info>(
     ctx: Context<'_, '_, 'info, 'info, Claim<'info>>,
     amount: u64,
@@ -100,6 +101,8 @@ pub fn execute_claim<'info>(
         &ctx.accounts.grai_state.to_account_info(),
         ctx.remaining_accounts,
         ctx.program_id,
+        &ctx.accounts.payer.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
     )?;
 
     position.claimable = claimable
@@ -290,6 +293,8 @@ pub fn execute_claim_all<'info>(
             &grai_state_info,
             affiliate_remaining,
             &program_id,
+            &payer,
+            &system_program,
         )?;
 
         {

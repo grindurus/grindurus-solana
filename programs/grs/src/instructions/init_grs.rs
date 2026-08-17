@@ -42,7 +42,7 @@ pub struct InitGrs<'info> {
     #[account(
         init,
         payer = admin,
-        space = 8 + SaleRegistry::INIT_SPACE,
+        space = SaleRegistry::EMPTY_SPACE,
         seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
         bump
     )]

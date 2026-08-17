@@ -78,6 +78,13 @@ impl SetSale<'_> {
             OFTError::InvalidRecipient
         );
 
+        let n = SaleRegistry::len_after_upsert(ctx.accounts.sale_registry.entries.len(), 0, false)?;
+        SaleRegistry::realloc_for(
+            &ctx.accounts.sale_registry.to_account_info(),
+            &ctx.accounts.admin.to_account_info(),
+            &ctx.accounts.system_program.to_account_info(),
+            n,
+        )?;
         ctx.accounts.sale_registry.upsert(0, asset, asset_amount, grs_amount, recipient, false)
     }
 }

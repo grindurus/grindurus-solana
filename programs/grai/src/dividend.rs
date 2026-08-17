@@ -32,22 +32,29 @@ pub fn distribute_dividend(asset: &mut AssetConfig, amount: u64, eligible: u64) 
         return Ok(amount);
     }
 
-    // Max this index bump can ever pay (one holder of all `eligible`); if floor-division
-    // yields zero reserved, do not bump `acc_share` (EVM `_distribute` reserved==0 path).
-    let reserved = index_increase
+    // Delayed-whale increment (EVM `_distribute`): floor(E * new / P) − floor(E * old / P).
+    // Per-bump floor(I * E / P) can lag a locker who accrues after N harvests by up to N−1 wei.
+    // Zero reserved increment does not bump `acc_share`.
+    let old_share = asset.acc_share;
+    let new_share = old_share
+        .checked_add(index_increase)
+        .ok_or(ErrorCode::MathOverflow)?;
+    let new_max = new_share
         .checked_mul(eligible as u128)
         .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
         .ok_or(ErrorCode::MathOverflow)?;
+    let old_max = old_share
+        .checked_mul(eligible as u128)
+        .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
+        .ok_or(ErrorCode::MathOverflow)?;
+    let reserved = new_max.saturating_sub(old_max);
     require!(reserved <= u64::MAX as u128, ErrorCode::MathOverflow);
     let reserved = reserved as u64;
     if reserved == 0 {
         return Ok(amount);
     }
 
-    asset.acc_share = asset
-        .acc_share
-        .checked_add(index_increase)
-        .ok_or(ErrorCode::MathOverflow)?;
+    asset.acc_share = new_share;
     asset.total_claimable = asset
         .total_claimable
         .checked_add(reserved)

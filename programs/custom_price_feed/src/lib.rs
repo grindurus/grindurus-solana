@@ -94,6 +94,7 @@ pub mod custom_price_feed {
 }
 
 #[account]
+#[derive(InitSpace)]
 pub struct FeedConfig {
     pub owner: Pubkey,
     pub pending_owner: Pubkey,
@@ -102,7 +103,7 @@ pub struct FeedConfig {
 
 impl FeedConfig {
     pub const SEED: &'static [u8] = b"config";
-    pub const LEN: usize = 32 + 32 + 1;
+    pub const LEN: usize = Self::INIT_SPACE;
 }
 
 #[derive(Accounts)]
@@ -217,6 +218,7 @@ pub struct SetPrice<'info> {
 }
 
 #[account]
+#[derive(InitSpace)]
 pub struct CustomPriceFeed {
     pub oracle: Pubkey,
     pub asset_mint: Pubkey,
@@ -228,7 +230,7 @@ pub struct CustomPriceFeed {
 
 impl CustomPriceFeed {
     pub const SEED: &'static [u8] = b"custom_feed";
-    pub const LEN: usize = 32 + 32 + 32 + 16 + 1 + 8;
+    pub const LEN: usize = Self::INIT_SPACE;
 }
 
 #[error_code]
@@ -245,4 +247,36 @@ pub enum ErrorCode {
     InvalidPendingOwner,
     #[msg("Oracle must be a non-default pubkey")]
     InvalidOracle,
+}
+
+#[cfg(test)]
+mod account_sizes {
+    use super::*;
+    use anchor_lang::AccountSerialize;
+
+    #[test]
+    fn feed_pda_lens_match_borsh() {
+        let mut buf = Vec::new();
+        FeedConfig {
+            owner: Pubkey::default(),
+            pending_owner: Pubkey::default(),
+            bump: 1,
+        }
+        .try_serialize(&mut buf)
+        .unwrap();
+        assert_eq!(buf.len(), 8 + FeedConfig::LEN);
+
+        buf.clear();
+        CustomPriceFeed {
+            oracle: Pubkey::default(),
+            asset_mint: Pubkey::default(),
+            description: [0; 32],
+            price: 1,
+            decimals: 8,
+            updated_at: 0,
+        }
+        .try_serialize(&mut buf)
+        .unwrap();
+        assert_eq!(buf.len(), 8 + CustomPriceFeed::LEN);
+    }
 }

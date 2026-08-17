@@ -355,7 +355,8 @@ pub fn credit_books(
     );
 
     if locker_referrer.owner != program_id || locker_referrer.data_is_empty() {
-        // Claim soft-path: unbound locker has nothing to credit. Mint path always has a book.
+        // Mint always has a book. Claim now `ensure`s one (M-08) before this call; leftover
+        // `require_ancestors = false` callers may still skip an absent locker PDA.
         require!(!require_ancestors, ErrorCode::InvalidRemainingAccounts);
         return Ok(());
     }
@@ -970,6 +971,8 @@ pub fn distribute_claim_treasury<'info>(
     grai_state_info: &AccountInfo<'info>,
     remaining: &[AccountInfo<'info>],
     program_id: &Pubkey,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
 ) -> Result<()> {
     let levels = grai_state.affiliate_levels as usize;
     // Same remaining pool for payout and `credit_books` (H-04: N levels → N+1 books).
@@ -977,6 +980,23 @@ pub fn distribute_claim_treasury<'info>(
         remaining.len() >= affiliate_claim_remaining_len(levels),
         ErrorCode::InvalidRemainingAccounts
     );
+
+    // M-08 / EVM `lockerBooks` zero-default: `lock` does not mint a Referrer PDA. Init an unbound
+    // book (`referrer = default`) so claim pays the locker and credits `value`. A later deposit
+    // can still sticky-bind (`mint_referrer` only writes referrer while it is default).
+    let (_, book_bump) =
+        Pubkey::find_program_address(&[Referrer::SEED, locker.as_ref()], program_id);
+    let (book, is_new) = ensure_referrer_account(
+        locker_referrer,
+        locker,
+        payer,
+        system_program,
+        program_id,
+        book_bump,
+    )?;
+    if is_new {
+        store_referrer(locker_referrer, &book)?;
+    }
 
     // EVM: book credit always runs before payout underfund check (poach ask tracks realized yield).
     // Claim requires the same ancestor books as mint (H-03) — incomplete remaining reverts so

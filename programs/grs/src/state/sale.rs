@@ -1,6 +1,10 @@
 use crate::*;
+use anchor_lang::system_program::{self, Transfer};
 
-pub const GRS_MAX_SALES: usize = 16;
+/// Hard cap on registry rows. EVM `_sales` is unbounded; Solana stores them in one PDA.
+/// 256 × 80 B ≈ 20 KB — well under the 10 MB account limit. Grow the account on upsert
+/// (`realloc_for`) so an older 16-slot PDA can still accept more rows after upgrade.
+pub const GRS_MAX_SALES: usize = 256;
 
 /// Token-sale row. `asset = Pubkey::default()` is native SOL.
 /// `asset_amount` is remaining `asset` the seller wants for remaining `grs_amount`.
@@ -26,6 +30,58 @@ pub struct SaleRegistry {
 impl SaleRegistry {
     pub const SEED: &'static [u8] = b"sales";
     pub const ESCROW_SEED: &'static [u8] = b"sale_escrow";
+    /// Discriminator + `oft_store` + `bump` + vec length prefix (0 rows).
+    pub const EMPTY_SPACE: usize = 8 + 32 + 1 + 4;
+
+    pub fn packed_len(n: usize) -> usize {
+        Self::EMPTY_SPACE + n * Sale::INIT_SPACE
+    }
+
+    /// Grow the sales PDA so `n` rows fit. No-op when already large enough.
+    pub fn realloc_for<'info>(
+        info: &AccountInfo<'info>,
+        payer: &AccountInfo<'info>,
+        system_program: &AccountInfo<'info>,
+        n: usize,
+    ) -> Result<()> {
+        require!(n <= GRS_MAX_SALES, OFTError::TooManySales);
+        let needed = Self::packed_len(n);
+        if info.data_len() >= needed {
+            return Ok(());
+        }
+        let rent = Rent::get()?;
+        let new_lamports = rent.minimum_balance(needed);
+        let have = info.lamports();
+        if new_lamports > have {
+            system_program::transfer(
+                CpiContext::new(
+                    system_program.clone(),
+                    Transfer {
+                        from: payer.clone(),
+                        to: info.clone(),
+                    },
+                ),
+                new_lamports.saturating_sub(have),
+            )?;
+        }
+        info.realloc(needed, false)?;
+        Ok(())
+    }
+
+    /// Rows after `upsert(id, …, pad)` would write, before the push.
+    pub fn len_after_upsert(current_len: usize, id: u64, pad: bool) -> Result<usize> {
+        if id == 0 {
+            current_len
+                .checked_add(1)
+                .ok_or(error!(OFTError::TooManySales))
+        } else if (id as usize) <= current_len {
+            Ok(current_len)
+        } else {
+            require!(pad, OFTError::UnknownSale);
+            require!((id as usize) <= GRS_MAX_SALES, OFTError::TooManySales);
+            Ok(id as usize)
+        }
+    }
 
     pub fn get(&self, id: u64) -> Result<&Sale> {
         require!(id > 0 && (id as usize) <= self.entries.len(), OFTError::UnknownSale);
@@ -100,5 +156,19 @@ mod tests {
         assert_eq!(quote_cost(1, 1, 1).unwrap(), 1);
         assert_eq!(quote_cost(GRS_ONE_LD, 3 * GRS_ONE_LD, 10).unwrap(), 3);
         assert_eq!(quote_cost(3 * GRS_ONE_LD, 3 * GRS_ONE_LD, 10).unwrap(), 10);
+    }
+
+    #[test]
+    fn packed_len_grows_by_sale_row() {
+        assert_eq!(SaleRegistry::EMPTY_SPACE, 8 + 32 + 1 + 4);
+        assert_eq!(
+            SaleRegistry::packed_len(1),
+            SaleRegistry::EMPTY_SPACE + Sale::INIT_SPACE
+        );
+        assert!(SaleRegistry::packed_len(GRS_MAX_SALES) < 10 * 1024 * 1024);
+        assert_eq!(SaleRegistry::len_after_upsert(0, 0, false).unwrap(), 1);
+        assert_eq!(SaleRegistry::len_after_upsert(3, 2, true).unwrap(), 3);
+        assert_eq!(SaleRegistry::len_after_upsert(3, 10, true).unwrap(), 10);
+        assert!(SaleRegistry::len_after_upsert(3, 10, false).is_err());
     }
 }
