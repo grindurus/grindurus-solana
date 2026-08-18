@@ -2,7 +2,7 @@
 
 On-chain Grinders for Solana — mirrors [`Grinders.sol`](../../../grindurus-evm/src/Grinders.sol) with per-`custodian_kind` swap modules.
 
-**Program ID:** `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa`
+**Program ID:** `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v`
 
 ## What it does
 

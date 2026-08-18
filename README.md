@@ -33,8 +33,8 @@ liquidate → redeem → revive  →  scoop dead GRAI, open window, burn for pro
 
 | Program             | Role                                                                                      | Devnet / localnet ID                           |
 | ------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `grai`              | GRAI mint, oracles, deposits, lock/vote/bribe/liquidation                                 | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` |
-| `grinders`          | Metaplex custodian NFT collection, allocate/deallocate, swap CPI, liquidateIdle/Custodian | `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa` |
+| `grai`              | GRAI mint, oracles, deposits, lock/vote/bribe/liquidation                                 | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` |
+| `grinders`          | Metaplex custodian NFT collection, allocate/deallocate, swap CPI, liquidateIdle/Custodian | `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v` |
 | `custom_price_feed` | Test/dev SPL price feed account (Chainlink/Pyth also supported on `add_asset`)            | `BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1` |
 | `grs`               | LayerZero OFT for GRS (9 local / 6 shared decimals, 1B home genesis)                       | `39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo` |
 
@@ -226,8 +226,8 @@ Programs are **upgradeable BPF**. Program IDs are in `Anchor.toml` (`[programs.d
 
 | Program             | Devnet ID                                      |
 | ------------------- | ---------------------------------------------- |
-| `grai`              | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` |
-| `grinders`          | `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa` |
+| `grai`              | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` |
+| `grinders`          | `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v` |
 | `custom_price_feed` | `BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1` |
 
 
@@ -254,7 +254,7 @@ For deploy/upgrade, pass `**--provider.cluster devnet**` (or `mainnet`) on every
 ```bash
 export ANCHOR_PROVIDER_URL=https://api.devnet.solana.com
 export ANCHOR_WALLET=~/.config/solana/id.json
-export GRAI_PROGRAM_ID=APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8
+export GRAI_PROGRAM_ID=3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh
 ```
 
 ### 3. Upgrade on-chain bytecode
@@ -263,11 +263,11 @@ Upgrade **all** deployed programs when account layouts change:
 
 ```bash
 anchor upgrade target/deploy/grai.so \
-  --program-id APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8 \
+  --program-id 3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh \
   --provider.cluster devnet
 
 anchor upgrade target/deploy/grinders.so \
-  --program-id HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa \
+  --program-id 7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v \
   --provider.cluster devnet
 
 anchor upgrade target/deploy/custom_price_feed.so \
@@ -295,7 +295,7 @@ Uploads or upgrades the Anchor IDL account and checks it matches `target/idl/gra
 
 ```bash
 npm run status
-solana program show APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8
+solana program show 3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh
 ```
 
 ### Breaking changes

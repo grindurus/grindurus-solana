@@ -4,9 +4,23 @@ On-chain GRAI core for Solana — mirrors [`GRAI.sol`](../../../grindurus-evm/sr
 USD-denominated fund-share mint, deposits, yield distribute, lock/vote/claim,
 bribes, and liquidation redeem.
 
-**Program ID:** `CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z`
+**Program ID:** `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh`
 
 Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/overview/tokenomics)
+
+## Devnet (v2)
+
+| Account | Address |
+| --- | --- |
+| Program | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` |
+| GraiState (`["protocol"]`) | `Hig6qqBHLLCXpMynPv5RDDCLsYhT9MsHARUn7LKLyu7w` |
+| GRAI mint | `YTWRSw6PVK2EFpHKBBzED7nByzvrQ7Cgb6FSmUYgrai` |
+| Authority / owner | `ESQJJhS9r19ddW9276dUz9GYGhgtNLWC7tRV1uDogtNK` |
+| USDC (Circle devnet) | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+| USDC feed (Pyth) | `Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX` |
+| SOL | `So11111111111111111111111111111111111111112` |
+| SOL feed (Chainlink) | `99B2bTijsU6f1GCT73HmdR7HCFFjGMBcPZY6jZ96ynrR` |
+| Settlement asset | USDC (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`) |
 
 ## What it does
 

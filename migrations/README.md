@@ -16,8 +16,8 @@ Scripts use `loadProvider()` from `0_common.ts`:
 | ---------------------- | ---------------------------------------------- | ------------------------------------------- |
 | `ANCHOR_PROVIDER_URL`  | `https://api.devnet.solana.com`                | RPC endpoint                                |
 | `ANCHOR_WALLET`        | `~/.config/solana/id.json`                     | Signer (must match on-chain authority/owner) |
-| `GRAI_PROGRAM_ID`      | `APwEPN6PYrRgEqL2G2CnmhQNouikdKiNdPJ48YX5Y8a8` | Checked against `target/idl/grai.json`      |
-| `GRINDERS_PROGRAM_ID`  | `HLAmxNKz19CFJQYbsJPJHvixt7r9x4NdYjqqUQiiogJa` | Checked against `target/idl/grinders.json`  |
+| `GRAI_PROGRAM_ID`      | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` | Checked against `target/idl/grai.json`      |
+| `GRINDERS_PROGRAM_ID`  | `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v` | Checked against `target/idl/grinders.json`  |
 
 Example — devnet:
 
