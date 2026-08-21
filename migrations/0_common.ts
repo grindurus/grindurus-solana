@@ -2,6 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Grai } from "../target/types/grai";
 import { Grinders } from "../target/types/grinders";
+import { Grs } from "../target/types/grs";
 import {
   Connection,
   Keypair,
@@ -25,11 +26,21 @@ export type RemainingAccountMeta = {
 };
 
 export const GRAI_PROGRAM_ID = new PublicKey(
-  process.env.GRAI_PROGRAM_ID ?? "CodEZVbeWcH97a8vr7PHQVofGPgYGrZpcbUCybrv99z",
+  process.env.GRAI_PROGRAM_ID ?? "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh",
 );
 
 export const GRINDERS_PROGRAM_ID = new PublicKey(
   process.env.GRINDERS_PROGRAM_ID ?? "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v",
+);
+
+export const GRS_PROGRAM_ID = new PublicKey(
+  process.env.GRS_PROGRAM_ID ?? "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo",
+);
+
+/** LayerZero V2 Endpoint on Solana (mainnet + devnet). */
+export const LZ_ENDPOINT_PROGRAM_ID = new PublicKey(
+  process.env.LZ_ENDPOINT_PROGRAM_ID ??
+    "76y77prsiCMvXMjuoZ5VRrhG5qYBrUMYTE5WgHqgjEn6",
 );
 
 export const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
@@ -42,6 +53,23 @@ export const GRAI_MINT_KEYPAIR_PATH = path.join(
   "keys",
   process.env.GRAI_MINT_KEYPAIR_NAME ?? "grai-mint.json",
 );
+
+/** GRS SPL mint keypair (created on INIT if missing). */
+export const GRS_MINT_KEYPAIR_PATH = path.join(
+  __dirname,
+  "keys",
+  process.env.GRS_MINT_KEYPAIR_NAME ?? "grs-mint.json",
+);
+
+/** GRS OFT token_escrow keypair — seeds `oft_store` PDA (`["OFT", escrow]`). */
+export const GRS_ESCROW_KEYPAIR_PATH = path.join(
+  __dirname,
+  "keys",
+  process.env.GRS_ESCROW_KEYPAIR_NAME ?? "grs-escrow.json",
+);
+
+export const GRS_LOCAL_DECIMALS = 9;
+export const GRS_SHARED_DECIMALS = 6;
 
 /** Circle USDC on Solana devnet (6 decimals). */
 export const USDC_MINT_DEVNET = new PublicKey(
@@ -296,6 +324,100 @@ export function graiMetadataPda(mint: PublicKey): PublicKey {
   )[0];
 }
 
+export function grsOftStorePda(
+  tokenEscrow: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("OFT"), tokenEscrow.toBuffer()],
+    programId,
+  )[0];
+}
+
+export function grsConfigPda(
+  oftStore: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("grs"), oftStore.toBuffer()],
+    programId,
+  )[0];
+}
+
+export function grsPeerRegistryPda(
+  oftStore: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("peers"), oftStore.toBuffer()],
+    programId,
+  )[0];
+}
+
+export function grsSaleRegistryPda(
+  oftStore: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("sales"), oftStore.toBuffer()],
+    programId,
+  )[0];
+}
+
+export function grsLzReceiveTypesPda(
+  oftStore: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("LzReceiveTypes"), oftStore.toBuffer()],
+    programId,
+  )[0];
+}
+
+export function lzOappRegistryPda(
+  oapp: PublicKey,
+  endpointProgram: PublicKey = LZ_ENDPOINT_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("OApp"), oapp.toBuffer()],
+    endpointProgram,
+  )[0];
+}
+
+export function lzEventAuthorityPda(
+  endpointProgram: PublicKey = LZ_ENDPOINT_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("__event_authority")],
+    endpointProgram,
+  )[0];
+}
+
+/** Remaining accounts for Endpoint `register_oapp` CPI (see oapp `endpoint_cpi`). */
+export function grsRegisterOappRemainingAccounts(
+  payer: PublicKey,
+  oftStore: PublicKey,
+  endpointProgram: PublicKey = LZ_ENDPOINT_PROGRAM_ID,
+): { pubkey: PublicKey; isWritable: boolean; isSigner: boolean }[] {
+  return [
+    { pubkey: endpointProgram, isWritable: false, isSigner: false },
+    { pubkey: payer, isWritable: true, isSigner: true },
+    { pubkey: oftStore, isWritable: false, isSigner: false },
+    {
+      pubkey: lzOappRegistryPda(oftStore, endpointProgram),
+      isWritable: true,
+      isSigner: false,
+    },
+    { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
+    {
+      pubkey: lzEventAuthorityPda(endpointProgram),
+      isWritable: false,
+      isSigner: false,
+    },
+    { pubkey: endpointProgram, isWritable: false, isSigner: false },
+  ];
+}
+
 export function positionPda(
   account: PublicKey,
   mint: PublicKey,
@@ -453,6 +575,26 @@ export function loadOrCreateGraiMintKeypair(): Keypair {
   return graiMint;
 }
 
+function loadOrCreateKeypair(filePath: string, label: string): Keypair {
+  if (fs.existsSync(filePath)) {
+    const secret = JSON.parse(fs.readFileSync(filePath, "utf8")) as number[];
+    return Keypair.fromSecretKey(Uint8Array.from(secret));
+  }
+  const kp = Keypair.generate();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(Array.from(kp.secretKey)));
+  console.log(`Created ${label} keypair: ${filePath}`);
+  return kp;
+}
+
+export function loadOrCreateGrsMintKeypair(): Keypair {
+  return loadOrCreateKeypair(GRS_MINT_KEYPAIR_PATH, "GRS mint");
+}
+
+export function loadOrCreateGrsEscrowKeypair(): Keypair {
+  return loadOrCreateKeypair(GRS_ESCROW_KEYPAIR_PATH, "GRS escrow");
+}
+
 export function loadProvider(): anchor.AnchorProvider {
   const rpcUrl =
     process.env.ANCHOR_PROVIDER_URL ?? "https://api.devnet.solana.com";
@@ -471,7 +613,7 @@ export function loadProvider(): anchor.AnchorProvider {
   });
 }
 
-function loadIdl(name: "grai" | "grinders"): unknown {
+function loadIdl(name: "grai" | "grinders" | "grs"): unknown {
   const idlPath = path.join(__dirname, "..", "target", "idl", `${name}.json`);
   if (!fs.existsSync(idlPath)) {
     throw new Error(`IDL not found: ${idlPath}. Run anchor build first.`);
@@ -504,6 +646,18 @@ export function loadGrindersProgram(
   if (!program.programId.equals(GRINDERS_PROGRAM_ID)) {
     throw new Error(
       `IDL program id ${program.programId.toBase58()} != expected ${GRINDERS_PROGRAM_ID.toBase58()}`,
+    );
+  }
+
+  return program;
+}
+
+export function loadGrsProgram(provider: anchor.AnchorProvider): Program<Grs> {
+  const program = new Program(loadIdl("grs"), provider) as Program<Grs>;
+
+  if (!program.programId.equals(GRS_PROGRAM_ID)) {
+    throw new Error(
+      `IDL program id ${program.programId.toBase58()} != expected ${GRS_PROGRAM_ID.toBase58()}`,
     );
   }
 

@@ -19,12 +19,81 @@ import { Grs } from "../target/types/grs";
 const GRS_DECIMALS = 9;
 const GRS_SHARED = 6;
 const GRS_MAX = BigInt("1000000000000000000"); // 1e9 * 1e9
+const TOKEN_METADATA_PROGRAM_ID = new PublicKey(
+  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+);
+const GRS_TOKEN_NAME = "GrindURUS Token";
+const GRS_TOKEN_SYMBOL = "GRS";
+
+function metadataPda(mint: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      TOKEN_METADATA_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+    ],
+    TOKEN_METADATA_PROGRAM_ID,
+  )[0];
+}
 
 describe("grs oft", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.Grs as Program<Grs>;
   const admin = provider.wallet.publicKey;
+
+  function initAccounts(escrow: PublicKey, oftStore: PublicKey, mint: PublicKey) {
+    const [lzReceiveTypes] = PublicKey.findProgramAddressSync(
+      [Buffer.from("LzReceiveTypes"), oftStore.toBuffer()],
+      program.programId,
+    );
+    return {
+      payer: admin,
+      oftStore,
+      lzReceiveTypesAccounts: lzReceiveTypes,
+      tokenMint: mint,
+      tokenEscrow: escrow,
+      grsConfig: PublicKey.findProgramAddressSync(
+        [Buffer.from("grs"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
+      peerRegistry: PublicKey.findProgramAddressSync(
+        [Buffer.from("peers"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
+      saleRegistry: PublicKey.findProgramAddressSync(
+        [Buffer.from("sales"), oftStore.toBuffer()],
+        program.programId,
+      )[0],
+      metadata: metadataPda(mint),
+      tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+    };
+  }
+
+  async function initGrs(mint: PublicKey, home: boolean) {
+    const escrow = Keypair.generate();
+    const [oftStore] = PublicKey.findProgramAddressSync(
+      [Buffer.from("OFT"), escrow.publicKey.toBuffer()],
+      program.programId,
+    );
+    const accounts = initAccounts(escrow.publicKey, oftStore, mint);
+
+    await program.methods
+      .init({
+        oftType: { native: {} },
+        sharedDecimals: GRS_SHARED,
+        endpointProgram: null,
+        home,
+      })
+      .accounts(accounts)
+      .signers([escrow])
+      .rpc();
+
+    return { escrow: escrow.publicKey, oftStore, grsConfig: accounts.grsConfig };
+  }
 
   async function createMint(decimals = GRS_DECIMALS): Promise<PublicKey> {
     const mint = Keypair.generate();
@@ -43,67 +112,10 @@ describe("grs oft", () => {
     return mint.publicKey;
   }
 
-  async function initNativeOft(mint: PublicKey) {
-    const escrow = Keypair.generate();
-    const [oftStore] = PublicKey.findProgramAddressSync(
-      [Buffer.from("OFT"), escrow.publicKey.toBuffer()],
-      program.programId,
-    );
-    const [lzReceiveTypes] = PublicKey.findProgramAddressSync(
-      [Buffer.from("LzReceiveTypes"), oftStore.toBuffer()],
-      program.programId,
-    );
-
-    await program.methods
-      .initOft({
-        oftType: { native: {} },
-        admin,
-        sharedDecimals: GRS_SHARED,
-        endpointProgram: null,
-      })
-      .accounts({
-        payer: admin,
-        oftStore,
-        lzReceiveTypesAccounts: lzReceiveTypes,
-        tokenMint: mint,
-        tokenEscrow: escrow.publicKey,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([escrow])
-      .rpc();
-
-    return { escrow: escrow.publicKey, oftStore };
-  }
-
   function idSeed(id: number) {
     const b = Buffer.alloc(8);
     b.writeBigUInt64LE(BigInt(id));
     return b;
-  }
-
-  async function initGrsConfig(oftStore: PublicKey, mint: PublicKey, home: boolean) {
-    const [grsConfig] = PublicKey.findProgramAddressSync(
-      [Buffer.from("grs"), oftStore.toBuffer()],
-      program.programId,
-    );
-    await program.methods.initGrs({ home }).accounts({
-      admin,
-      oftStore,
-      tokenMint: mint,
-      grsConfig,
-      peerRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("peers"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      saleRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("sales"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    }).rpc();
-    return grsConfig;
   }
 
   function salePdas(oftStore: PublicKey) {
@@ -139,8 +151,7 @@ describe("grs oft", () => {
     const mint = await createMint();
     const amount = 10_000_000_000n; // 10 GRS
     const ata = await mintToAdmin(mint, amount);
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, false);
+    const { oftStore, grsConfig } = await initGrs(mint, false);
 
     const id = 1;
     const [vesting] = PublicKey.findProgramAddressSync(
@@ -273,8 +284,7 @@ describe("grs oft", () => {
 
   it("release before cliff is empty", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, true);
+    const { oftStore, grsConfig } = await initGrs(mint, true);
     const amount = 1_000_000_000n;
     const ata = await mintToAdmin(mint, amount);
     const id = 1;
@@ -329,30 +339,29 @@ describe("grs oft", () => {
     }
   });
 
+  it("init writes Metaplex name and symbol", async () => {
+    const mint = await createMint();
+    await initGrs(mint, true);
+
+    const meta = await provider.connection.getAccountInfo(metadataPda(mint));
+    expect(meta).to.not.equal(null);
+    const data = meta!.data;
+    // Metaplex Metadata: key(1) + update_authority(32) + mint(32) + name string
+    let offset = 1 + 32 + 32;
+    const nameLen = data.readUInt32LE(offset);
+    offset += 4;
+    const name = data.subarray(offset, offset + nameLen).toString("utf8").replace(/\0+$/, "");
+    offset += nameLen;
+    const symbolLen = data.readUInt32LE(offset);
+    offset += 4;
+    const symbol = data.subarray(offset, offset + symbolLen).toString("utf8").replace(/\0+$/, "");
+    expect(name).to.equal(GRS_TOKEN_NAME);
+    expect(symbol).to.equal(GRS_TOKEN_SYMBOL);
+  });
+
   it("home genesis mints 1B once", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const [grsConfig] = PublicKey.findProgramAddressSync(
-      [Buffer.from("grs"), oftStore.toBuffer()],
-      program.programId,
-    );
-
-    await program.methods.initGrs({ home: true }).accounts({
-      admin,
-      oftStore,
-      tokenMint: mint,
-      grsConfig,
-      peerRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("peers"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      saleRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("sales"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    }).rpc();
+    const { oftStore, grsConfig } = await initGrs(mint, true);
 
     const ata = getAssociatedTokenAddressSync(mint, admin);
     const ataIx = createAssociatedTokenAccountInstruction(admin, ata, admin, mint);
@@ -390,28 +399,7 @@ describe("grs oft", () => {
 
   it("spoke cannot mint genesis", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const [grsConfig] = PublicKey.findProgramAddressSync(
-      [Buffer.from("grs"), oftStore.toBuffer()],
-      program.programId,
-    );
-
-    await program.methods.initGrs({ home: false }).accounts({
-      admin,
-      oftStore,
-      tokenMint: mint,
-      grsConfig,
-      peerRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("peers"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      saleRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("sales"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    }).rpc();
+    const { oftStore, grsConfig } = await initGrs(mint, false);
 
     const store: any = await program.account.oftStore.fetch(oftStore);
     expect((store.ld2SdRate ?? store.ld2sdRate).toString()).to.equal("1000");
@@ -446,29 +434,11 @@ describe("grs oft", () => {
 
   it("get_peers lists and drops eids", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const [grsConfig] = PublicKey.findProgramAddressSync(
-      [Buffer.from("grs"), oftStore.toBuffer()],
-      program.programId,
-    );
+    const { oftStore } = await initGrs(mint, false);
     const [peerRegistry] = PublicKey.findProgramAddressSync(
       [Buffer.from("peers"), oftStore.toBuffer()],
       program.programId,
     );
-
-    await program.methods.initGrs({ home: false }).accounts({
-      admin,
-      oftStore,
-      tokenMint: mint,
-      grsConfig,
-      peerRegistry,
-      saleRegistry: PublicKey.findProgramAddressSync(
-        [Buffer.from("sales"), oftStore.toBuffer()],
-        program.programId,
-      )[0],
-      tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    }).rpc();
 
     const empty = await program.methods.getPeers().accounts({ oftStore, peerRegistry }).view();
     expect(empty).to.deep.equal([]);
@@ -528,8 +498,7 @@ describe("grs oft", () => {
     const mint = await createMint();
     const unit = 1_000_000_000n;
     const ata = await mintToAdmin(mint, 6n * unit);
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, false);
+    const { oftStore, grsConfig } = await initGrs(mint, false);
     const [vestEscrow] = PublicKey.findProgramAddressSync(
       [Buffer.from("vest_escrow"), oftStore.toBuffer()],
       program.programId,
@@ -605,8 +574,7 @@ describe("grs oft", () => {
 
   it("buy sol from token sales and page get_sales", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, true);
+    const { oftStore, grsConfig } = await initGrs(mint, true);
     const { saleRegistry, saleEscrow } = salePdas(oftStore);
     const inventory = 10n * 1_000_000_000n;
     const adminAta = await mintToAdmin(mint, inventory);
@@ -682,8 +650,7 @@ describe("grs oft", () => {
 
   it("buy spl quote, closed sale, spoke owner can sell", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
-    const grsConfig = await initGrsConfig(oftStore, mint, true);
+    const { oftStore, grsConfig } = await initGrs(mint, true);
     const { saleRegistry, saleEscrow } = salePdas(oftStore);
     const usdc = await createMint(6);
     const amount = 100n * 1_000_000_000n;
@@ -785,8 +752,7 @@ describe("grs oft", () => {
     }
 
     const spokeMint = await createMint();
-    const { oftStore: spokeStore } = await initNativeOft(spokeMint);
-    const spokeCfg = await initGrsConfig(spokeStore, spokeMint, false);
+    const { oftStore: spokeStore, grsConfig: spokeCfg } = await initGrs(spokeMint, false);
     const spokeSales = salePdas(spokeStore);
     try {
       await program.methods
@@ -810,7 +776,7 @@ describe("grs oft", () => {
 
   it("Ownable2Step: transfer sets pending, accept hands off, cancel and stranger fail", async () => {
     const mint = await createMint();
-    const { oftStore } = await initNativeOft(mint);
+    const { oftStore } = await initGrs(mint, true);
     const next = Keypair.generate();
     const stranger = Keypair.generate();
     const air = await provider.connection.requestAirdrop(next.publicKey, 1_000_000_000);

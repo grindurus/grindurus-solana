@@ -1,12 +1,12 @@
 # GRS (Solana)
 
-LayerZero **OFT** for **GRS** (*Grindurus Token*). Same mesh as [`grindurus-evm/src/GRS.sol`](../../grindurus-evm/src/GRS.sol). Spec: [`docs/GRS.md`](../../grindurus-evm/docs/GRS.md).
+LayerZero **OFT** for **GRS** (*GrindURUS Token*). Same mesh as [`grindurus-evm/src/GRS.sol`](../../grindurus-evm/src/GRS.sol). Spec: [GRS mechanics](https://docs.grindurus.xyz/developers/mechanics/grs).
 
 ## Token
 
 | | |
 | --- | --- |
-| Name | Grindurus Token |
+| Name | GrindURUS Token |
 | Symbol | GRS |
 | Local decimals | **9** (`1 GRS = 10⁹`) so 1B supply fits `u64` |
 | Shared decimals | **6** (LayerZero default; matches EVM 18-dec OFT) |
@@ -17,15 +17,13 @@ EVM uses 18 local decimals. Conversion is lossless in GRS units: `1 GRS = 10⁶`
 
 ## Instructions
 
-LayerZero OFT surface (`init_oft`, `set_peer_config`, `send`, `lz_receive`, quotes, pause, fees) plus:
+LayerZero OFT surface (`init`, `set_peer_config`, `send`, `lz_receive`, quotes, pause, fees) plus:
 
-1. `init_grs({ home })` — record canonical vs spoke; checks 9 local / 6 shared. **Spoke** (`home = false`) moves mint authority from admin to the OFT store so inbound `lz_receive` can mint grant / bridge credits. Home keeps admin as mint authority until `mint_genesis`.
+1. `init({ oft_type, shared_decimals, endpoint_program?, home })` — one-shot bootstrap: native OFT store + escrow, GRS registries, Metaplex metadata (`GrindURUS Token` / `GRS` / `https://grindurus.xyz/grs.json`). **Spoke** (`home = false`) moves mint authority to the OFT store for inbound `lz_receive`. Home keeps admin as mint authority until `mint_genesis`. Pass Endpoint remaining accounts to CPI-register the OApp; empty remaining skips that (local tests / staged deploy).
 2. `mint_genesis` — **home only**, once: mint 1B to `to`, then set mint authority to the OFT store so only `lz_receive` can mint. Native credits that would exceed 1B revert `CapExceeded`.
 3. `transfer_ownership(new)` / `accept_ownership` — Ownable2Step for `oft_store.admin` (same as EVM GRS). `set_oft_config(Admin)` also only proposes; it does not flip admin until accept. `Pubkey::default()` cancels.
 4. `quote_bridge` / `bridge(dst_eid, to, amount_ld, native_fee)` — same as `quote_send` / `send` without an options/compose struct. Enforced peer options still apply.
 5. `get_peers` — list wired `{ eid, peer }` (updated on `set_peer_config` `PeerAddress`).
-
-`init_oft` CPI-registers the OApp when Endpoint remaining accounts are passed. Empty remaining accounts skip that CPI (local tests / staged deploy). Production `send` / `lz_receive` still need Endpoint wiring.
 
 ## Wire
 

@@ -1,6 +1,6 @@
 use crate::*;
 
-/// GRS-specific overlay on a LayerZero OFT store (`docs/GRS.md` §1).
+/// GRS-specific overlay on a LayerZero OFT store (GRS mechanics §1).
 ///
 /// Local mint uses **9** decimals (`1 GRS = 10^9`) so `MAX_SUPPLY` fits `u64`.
 /// Shared decimals stay **6** (OFT default): `1 GRS = 10^6` shared units, matching

@@ -6,6 +6,7 @@ pub mod compose_msg_codec;
 pub mod errors;
 pub mod events;
 pub mod instructions;
+pub mod metadata;
 pub mod msg_codec;
 pub mod state;
 
@@ -25,7 +26,7 @@ pub const PEER_SEED: &[u8] = b"Peer";
 pub const ENFORCED_OPTIONS_SEED: &[u8] = b"EnforcedOptions";
 pub const LZ_RECEIVE_TYPES_SEED: &[u8] = oapp::LZ_RECEIVE_TYPES_SEED;
 
-/// Solana local decimals. `1 GRS = 10^9` so the 1B cap fits `u64` (`docs/GRS.md` §1).
+/// Solana local decimals. `1 GRS = 10^9` so the 1B cap fits `u64` (GRS mechanics §1).
 pub const GRS_LOCAL_DECIMALS: u8 = 9;
 /// LayerZero OFT shared decimals (same as EVM `OFT.sharedDecimals()`).
 pub const GRS_SHARED_DECIMALS: u8 = 6;
@@ -35,7 +36,7 @@ pub const GRS_LD2SD_RATE: u64 = 1_000;
 pub const GRS_ONE_LD: u64 = 1_000_000_000;
 /// `1_000_000_000 * 10^GRS_LOCAL_DECIMALS`.
 pub const GRS_MAX_SUPPLY_LD: u64 = 1_000_000_000 * GRS_ONE_LD;
-/// Token-sales bucket (`docs/grs.svg` 150M). `buy` on home or spoke; no `grant` on Solana.
+/// Token-sales bucket (`grs.svg` 150M). `buy` on home or spoke; no `grant` on Solana.
 pub const GRS_TOKEN_SALES_CAP_LD: u64 = 150_000_000 * GRS_ONE_LD;
 /// Max cliff for holder `vest` (365 days). Same as EVM `GRS.MAX_CLIFF`.
 pub const GRS_MAX_CLIFF_SECONDS: u64 = 365 * 24 * 60 * 60;
@@ -50,12 +51,8 @@ pub mod grs {
         Ok(Version { interface: 2, message: 1 })
     }
 
-    pub fn init_oft(mut ctx: Context<InitOFT>, params: InitOFTParams) -> Result<()> {
-        InitOFT::apply(&mut ctx, &params)
-    }
-
-    pub fn init_grs(mut ctx: Context<InitGrs>, params: InitGrsParams) -> Result<()> {
-        InitGrs::apply(&mut ctx, &params)
+    pub fn init(mut ctx: Context<Init>, params: InitParams) -> Result<()> {
+        Init::apply(&mut ctx, &params)
     }
 
     pub fn mint_genesis(mut ctx: Context<MintGenesis>) -> Result<()> {

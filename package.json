@@ -8,6 +8,7 @@
     "deployGrai": "tsx migrations/1_DeployGRAI.ts",
     "deployGrinders": "tsx migrations/2_DeployGrinders.ts",
     "setGrinders": "tsx migrations/3_setGrinders.ts",
+    "deployGrs": "tsx migrations/4_DeployGRS.ts",
     "verify": "tsx migrations/verify.ts",
     "depositSol": "tsx migrations/grai/depositSol.ts",
     "deposit": "tsx migrations/grai/deposit.ts",
