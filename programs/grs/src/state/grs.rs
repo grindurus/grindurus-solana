@@ -13,7 +13,8 @@ pub struct GrsConfig {
     pub bump: u8,
     /// Sequential `vest` ids issued (`id = 1 … vesting_count`).
     pub vesting_count: u64,
-    /// Spent from this chain's 150M TokenSales cap (`buy`; no `grant` on Solana).
+    /// Lifetime TokenSales outflow (`buy` / `publish_sale`). Uncapped — buybacks can re-enter
+    /// `sale_escrow`; this field is accounting only (EVM `spent[TokenSales]`).
     pub token_sales_spent: u64,
 }
 

@@ -85,7 +85,7 @@ impl Buy<'_> {
             .token_sales_spent
             .checked_add(amount_ld)
             .ok_or(error!(OFTError::BucketExceeded))?;
-        require!(spent <= GRS_TOKEN_SALES_CAP_LD, OFTError::BucketExceeded);
+        // Uncapped (EVM TokenSales parity): buybacks can re-enter; spent is accounting only.
         ctx.accounts.grs_config.token_sales_spent = spent;
 
         if sale.asset == Pubkey::default() {

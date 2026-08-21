@@ -22,6 +22,8 @@ use state::*;
 declare_id!("39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo");
 
 pub const OFT_SEED: &[u8] = b"OFT";
+/// PDA token account that seeds `oft_store`: `["OftEscrow", mint]`.
+pub const OFT_TOKEN_ESCROW_SEED: &[u8] = b"OftEscrow";
 pub const PEER_SEED: &[u8] = b"Peer";
 pub const ENFORCED_OPTIONS_SEED: &[u8] = b"EnforcedOptions";
 pub const LZ_RECEIVE_TYPES_SEED: &[u8] = oapp::LZ_RECEIVE_TYPES_SEED;
@@ -36,12 +38,13 @@ pub const GRS_LD2SD_RATE: u64 = 1_000;
 pub const GRS_ONE_LD: u64 = 1_000_000_000;
 /// `1_000_000_000 * 10^GRS_LOCAL_DECIMALS`.
 pub const GRS_MAX_SUPPLY_LD: u64 = 1_000_000_000 * GRS_ONE_LD;
-/// Token-sales bucket (`grs.svg` 150M). `buy` on home or spoke; no `grant` on Solana.
-pub const GRS_TOKEN_SALES_CAP_LD: u64 = 150_000_000 * GRS_ONE_LD;
 /// Max cliff for holder `vest` (365 days). Same as EVM `GRS.MAX_CLIFF`.
 pub const GRS_MAX_CLIFF_SECONDS: u64 = 365 * 24 * 60 * 60;
 /// Max linear unlock for holder `vest` (4 × 365 days). Same as EVM `GRS.MAX_DURATION`.
 pub const GRS_MAX_DURATION_SECONDS: u64 = 4 * 365 * 24 * 60 * 60;
+/// Default executor lzReceive gas/CU when `set_peer_config(PeerAddress)` auto-wires options
+/// (same as EVM `GRS.DEFAULT_LZ_RECEIVE_GAS`). Non-EVM remotes: `LzReceiveBudget`.
+pub const DEFAULT_LZ_RECEIVE_GAS: u128 = 200_000;
 
 #[program]
 pub mod grs {

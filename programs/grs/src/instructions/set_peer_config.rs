@@ -35,6 +35,16 @@ impl SetPeerConfig<'_> {
             PeerConfigParam::PeerAddress(peer_address) => {
                 ctx.accounts.peer.peer_address = peer_address;
                 ctx.accounts.peer_registry.upsert(params.remote_eid, peer_address)?;
+                if peer_address == [0u8; 32] {
+                    ctx.accounts.peer.enforced_options = EnforcedOptions::default();
+                } else if ctx.accounts.peer.enforced_options.send.is_empty() {
+                    // EVM-style default so quote_bridge/bridge with empty options works.
+                    // Aptos / other remotes: LzReceiveBudget or EnforcedOptions.
+                    ctx.accounts
+                        .peer
+                        .enforced_options
+                        .set_lz_receive_budget(DEFAULT_LZ_RECEIVE_GAS, 0);
+                }
             },
             PeerConfigParam::FeeBps(fee_bps) => {
                 if let Some(fee_bps) = fee_bps {
@@ -47,6 +57,10 @@ impl SetPeerConfig<'_> {
                 ctx.accounts.peer.enforced_options.send = send;
                 oapp::options::assert_type_3(&send_and_call)?;
                 ctx.accounts.peer.enforced_options.send_and_call = send_and_call;
+            },
+            PeerConfigParam::LzReceiveBudget { gas, value } => {
+                require!(gas > 0, OFTError::InvalidOptions);
+                ctx.accounts.peer.enforced_options.set_lz_receive_budget(gas, value);
             },
             PeerConfigParam::OutboundRateLimit(rate_limit_params) => {
                 Self::update_rate_limiter(
@@ -98,6 +112,8 @@ pub enum PeerConfigParam {
     EnforcedOptions { send: Vec<u8>, send_and_call: Vec<u8> },
     OutboundRateLimit(Option<RateLimitParams>),
     InboundRateLimit(Option<RateLimitParams>),
+    /// Set Type-3 executor lzReceive options from gas/value (EVM / Aptos / etc.).
+    LzReceiveBudget { gas: u128, value: u128 },
 }
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]

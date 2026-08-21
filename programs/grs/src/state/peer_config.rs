@@ -87,6 +87,35 @@ impl EnforcedOptions {
         let enforced_options = self.get_enforced_options(compose_msg);
         oapp::options::combine_options(enforced_options, extra_options)
     }
+
+    /// Apply the same Type-3 executor lzReceive options to SEND and SEND_AND_CALL.
+    pub fn set_lz_receive_budget(&mut self, gas: u128, value: u128) {
+        let opts = encode_executor_lz_receive_option(gas, value);
+        self.send = opts.clone();
+        self.send_and_call = opts;
+    }
+}
+
+/// LayerZero Type-3 options: executor lzReceive (matches EVM `OptionsBuilder.addExecutorLzReceiveOption`).
+pub fn encode_executor_lz_receive_option(gas: u128, value: u128) -> Vec<u8> {
+    const TYPE_3: u16 = 3;
+    const EXECUTOR_WORKER_ID: u8 = 1;
+    const OPTION_TYPE_LZRECEIVE: u8 = 1;
+
+    let mut option_payload = Vec::with_capacity(32);
+    option_payload.extend_from_slice(&gas.to_be_bytes());
+    if value != 0 {
+        option_payload.extend_from_slice(&value.to_be_bytes());
+    }
+
+    let option_size = (option_payload.len() + 1) as u16; // +1 for option type
+    let mut out = Vec::with_capacity(2 + 1 + 2 + 1 + option_payload.len());
+    out.extend_from_slice(&TYPE_3.to_be_bytes());
+    out.push(EXECUTOR_WORKER_ID);
+    out.extend_from_slice(&option_size.to_be_bytes());
+    out.push(OPTION_TYPE_LZRECEIVE);
+    out.extend_from_slice(&option_payload);
+    out
 }
 
 utils::generate_account_size_test!(EnforcedOptions, enforced_options_test);

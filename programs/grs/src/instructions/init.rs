@@ -11,27 +11,14 @@ use oapp::endpoint::{instructions::RegisterOAppParams, ID as ENDPOINT_ID};
 pub struct Init<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(
-        init,
-        payer = payer,
-        space = 8 + OFTStore::INIT_SPACE,
-        seeds = [OFT_SEED, token_escrow.key().as_ref()],
-        bump
-    )]
-    pub oft_store: Account<'info, OFTStore>,
-    #[account(
-        init,
-        payer = payer,
-        space = 8 + LzReceiveTypesAccounts::INIT_SPACE,
-        seeds = [LZ_RECEIVE_TYPES_SEED, oft_store.key().as_ref()],
-        bump
-    )]
-    pub lz_receive_types_accounts: Account<'info, LzReceiveTypesAccounts>,
     #[account(mut, mint::token_program = token_program)]
     pub token_mint: InterfaceAccount<'info, Mint>,
+    /// OFT TVL / fee vault. PDA from mint — no separate escrow keypair.
     #[account(
         init,
         payer = payer,
+        seeds = [OFT_TOKEN_ESCROW_SEED, token_mint.key().as_ref()],
+        bump,
         token::authority = oft_store,
         token::mint = token_mint,
         token::token_program = token_program,
@@ -40,11 +27,27 @@ pub struct Init<'info> {
     #[account(
         init,
         payer = payer,
+        space = 8 + OFTStore::INIT_SPACE,
+        seeds = [OFT_SEED, token_escrow.key().as_ref()],
+        bump
+    )]
+    pub oft_store: Box<Account<'info, OFTStore>>,
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + LzReceiveTypesAccounts::INIT_SPACE,
+        seeds = [LZ_RECEIVE_TYPES_SEED, oft_store.key().as_ref()],
+        bump
+    )]
+    pub lz_receive_types_accounts: Box<Account<'info, LzReceiveTypesAccounts>>,
+    #[account(
+        init,
+        payer = payer,
         space = 8 + GrsConfig::INIT_SPACE,
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
         bump
     )]
-    pub grs_config: Account<'info, GrsConfig>,
+    pub grs_config: Box<Account<'info, GrsConfig>>,
     #[account(
         init,
         payer = payer,
@@ -52,7 +55,7 @@ pub struct Init<'info> {
         seeds = [PeerRegistry::SEED, oft_store.key().as_ref()],
         bump
     )]
-    pub peer_registry: Account<'info, PeerRegistry>,
+    pub peer_registry: Box<Account<'info, PeerRegistry>>,
     #[account(
         init,
         payer = payer,
@@ -60,7 +63,7 @@ pub struct Init<'info> {
         seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
         bump
     )]
-    pub sale_registry: Account<'info, SaleRegistry>,
+    pub sale_registry: Box<Account<'info, SaleRegistry>>,
     /// CHECK: Metaplex metadata PDA for `token_mint`.
     #[account(
         mut,

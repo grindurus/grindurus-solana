@@ -49,10 +49,10 @@ describe("grs oft", () => {
     );
     return {
       payer: admin,
-      oftStore,
-      lzReceiveTypesAccounts: lzReceiveTypes,
       tokenMint: mint,
       tokenEscrow: escrow,
+      oftStore,
+      lzReceiveTypesAccounts: lzReceiveTypes,
       grsConfig: PublicKey.findProgramAddressSync(
         [Buffer.from("grs"), oftStore.toBuffer()],
         program.programId,
@@ -74,12 +74,15 @@ describe("grs oft", () => {
   }
 
   async function initGrs(mint: PublicKey, home: boolean) {
-    const escrow = Keypair.generate();
-    const [oftStore] = PublicKey.findProgramAddressSync(
-      [Buffer.from("OFT"), escrow.publicKey.toBuffer()],
+    const [escrow] = PublicKey.findProgramAddressSync(
+      [Buffer.from("OftEscrow"), mint.toBuffer()],
       program.programId,
     );
-    const accounts = initAccounts(escrow.publicKey, oftStore, mint);
+    const [oftStore] = PublicKey.findProgramAddressSync(
+      [Buffer.from("OFT"), escrow.toBuffer()],
+      program.programId,
+    );
+    const accounts = initAccounts(escrow, oftStore, mint);
 
     await program.methods
       .init({
@@ -89,10 +92,9 @@ describe("grs oft", () => {
         home,
       })
       .accounts(accounts)
-      .signers([escrow])
       .rpc();
 
-    return { escrow: escrow.publicKey, oftStore, grsConfig: accounts.grsConfig };
+    return { escrow, oftStore, grsConfig: accounts.grsConfig };
   }
 
   async function createMint(decimals = GRS_DECIMALS): Promise<PublicKey> {
@@ -483,10 +485,32 @@ describe("grs oft", () => {
     expect(listed[1].eid).to.equal(eidB);
     expect(Buffer.from(listed[1].peer)).to.deep.equal(peerB);
 
+    const peerAAcc = await program.account.peerConfig.fetch(peerPdaA);
+    expect(peerAAcc.enforcedOptions.send.length).to.be.greaterThan(0);
+    expect(peerAAcc.enforcedOptions.sendAndCall.length).to.be.greaterThan(0);
+
+    await program.methods
+      .setPeerConfig({
+        remoteEid: eidA,
+        config: {
+          lzReceiveBudget: {
+            gas: new anchor.BN(300_000),
+            value: new anchor.BN(1_000_000),
+          },
+        },
+      } as any)
+      .accounts({ admin, peer: peerPdaA, oftStore, peerRegistry, systemProgram: SystemProgram.programId })
+      .rpc();
+    const peerABudget = await program.account.peerConfig.fetch(peerPdaA);
+    expect(peerABudget.enforcedOptions.send.length).to.be.greaterThan(0);
+
     await program.methods
       .setPeerConfig({ remoteEid: eidA, config: peerCfg(Buffer.alloc(32, 0)) })
       .accounts({ admin, peer: peerPdaA, oftStore, peerRegistry, systemProgram: SystemProgram.programId })
       .rpc();
+
+    const peerACleared = await program.account.peerConfig.fetch(peerPdaA);
+    expect(peerACleared.enforcedOptions.send.length).to.equal(0);
 
     listed = await program.methods.getPeers().accounts({ oftStore, peerRegistry }).view();
     expect(listed).to.have.length(1);

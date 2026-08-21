@@ -80,7 +80,7 @@ impl PublishSale<'_> {
                 .token_sales_spent
                 .checked_add(row.grs_amount)
                 .ok_or(error!(OFTError::BucketExceeded))?;
-            require!(spent <= GRS_TOKEN_SALES_CAP_LD, OFTError::BucketExceeded);
+            // Uncapped (EVM TokenSales parity): spent is accounting only.
             ctx.accounts.grs_config.token_sales_spent = spent;
 
             let oft_store_key = ctx.accounts.oft_store.key();

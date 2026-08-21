@@ -9,6 +9,7 @@ pub enum OFTError {
     InvalidTokenDest,
     RateLimitExceeded,
     InvalidFee,
+    InvalidOptions,
     InvalidMintAuthority,
     Paused,
     /// GRS home genesis already ran, or spoke tried to mint the 1B cap.
@@ -36,7 +37,7 @@ pub enum OFTError {
     SaleExceeded,
     InvalidPayment,
     PaymentFailed,
-    /// `buy` would spend past the 150M TokenSales cap.
+    /// Overflow when updating TokenSales spent accounting.
     BucketExceeded,
     /// Packed sale payload is not keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient.
     InvalidSaleMessage,

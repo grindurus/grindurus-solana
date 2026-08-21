@@ -24,6 +24,9 @@ LayerZero OFT surface (`init`, `set_peer_config`, `send`, `lz_receive`, quotes, 
 3. `transfer_ownership(new)` / `accept_ownership` — Ownable2Step for `oft_store.admin` (same as EVM GRS). `set_oft_config(Admin)` also only proposes; it does not flip admin until accept. `Pubkey::default()` cancels.
 4. `quote_bridge` / `bridge(dst_eid, to, amount_ld, native_fee)` — same as `quote_send` / `send` without an options/compose struct. Enforced peer options still apply.
 5. `get_peers` — list wired `{ eid, peer }` (updated on `set_peer_config` `PeerAddress`).
+   `PeerAddress` also auto-sets Type-3 lzReceive enforced options (200k gas) when empty so
+   `quote_bridge` / `bridge` work without a second tx. Override with `LzReceiveBudget` or
+   `EnforcedOptions` (e.g. Aptos native value).
 
 ## Wire
 
@@ -40,9 +43,9 @@ Home can be Solana or Ethereum; the other listed chains are spokes (`home = fals
 8. `vested(timestamp)` / `releasable` — views on a vest account.
 9. `vesting_count` / `get_vestings(offset, limit)` — paged vestings. Remaining accounts must be the PDAs for ids `offset+1 …` (empty remaining when the page is empty).
 
-Home **token sales** (150M cap per OFT, no `grant` / other buckets):
+Home **token sales** (uncapped recycle bucket — buybacks can re-enter `sale_escrow`; no `grant` / other buckets):
 
 10. `sale(asset, asset_amount, grs_amount, recipient)` — **home admin only**. Appends; id is `sale_count + 1`. `asset = Pubkey::default()` is native SOL. `recipient = default` pays `admin` at buy. Inits `sale_escrow`. Local only — EVM folds the LZ hop into `sale(..., dstEid)`.
-11. `quote_sale(dst_eid, id)` / `publish_sale(dst_eid, id, native_fee)` — **home admin only**. Quote is native LZ fee (EVM `quoteSale`). Publish burns `grs_amount` from `sale_escrow` (TokenSales), LZ-sends the packed sale row (`keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient`, 192 bytes; GRS in shared decimals), then zeros remaining on home so local `buy` cannot fill the same lot. Spoke `lz_receive` writes it and mints into `sale_escrow`.
-12. `preview_buy(id, amount_ld)` / `buy(id, amount_ld)` — buying the remainder costs remaining `asset_amount`; a partial fill is `floor(amount_ld * asset_amount / remaining)` (EVM `previewBuy` / `buy`).
+11. `quote_sale(dst_eid, id)` / `publish_sale(dst_eid, id, native_fee)` — **home admin only**. Quote is native LZ fee (EVM `quoteSale`). Publish burns `grs_amount` from `sale_escrow` (TokenSales), LZ-sends the packed sale row (`keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient`, 192 bytes; GRS in shared decimals), then zeros remaining on home so local `buy` cannot fill the same lot. Spoke `lz_receive` writes it and mints into `sale_escrow`. `token_sales_spent` is accounting only (no 150M hard cap).
+12. `preview_buy(id, amount_ld)` / `buy(id, amount_ld)` — buying the remainder costs remaining `asset_amount`; a partial fill is `floor(amount_ld * asset_amount / remaining)` (EVM `previewBuy` / `buy`). Same uncapped TokenSales spent accounting.
 13. `sale_count` / `get_sales(offset, limit)` — same pagination as EVM (`offset` 0-based; id = `offset + 1`). Registry max **256** rows (PDA grows on `sale` / inbound sale `lz_receive`).
