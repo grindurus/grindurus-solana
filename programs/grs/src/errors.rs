@@ -32,6 +32,8 @@ pub enum OFTError {
     /// Sale `lz_receive` runs only on a spoke.
     NotSpoke,
     UnknownSale,
+    /// Paged `get_vestings`: `offset` is past the book (same as EVM `UnknownVesting`).
+    UnknownVesting,
     SaleClosed,
     /// `buy` asks for more GRS than this sale id still has.
     SaleExceeded,
@@ -41,8 +43,10 @@ pub enum OFTError {
     BucketExceeded,
     /// Packed sale payload is not keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient.
     InvalidSaleMessage,
-    /// Sale registry already holds `GRS_MAX_SALES` rows.
-    TooManySales,
+    /// OFT compose is disabled (EVM `ComposeDisabled`) — prevents sale/grant framing collision.
+    ComposeDisabled,
+    /// `sale` id must be `sale_count + 1` (1-based, same as EVM / `vest`).
+    InvalidSaleId,
     /// `vest` id must be `vesting_count + 1` (1-based, same as EVM).
     InvalidVestingId,
     /// Remaining accounts for a paged view do not match the requested slice.

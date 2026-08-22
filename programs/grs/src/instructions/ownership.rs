@@ -1,4 +1,5 @@
 use crate::*;
+use oapp::endpoint::instructions::SetDelegateParams;
 
 /// Propose a new `oft_store.admin` (EVM `Ownable2Step.transferOwnership`).
 /// `Pubkey::default()` cancels a pending handoff; `admin` is unchanged until `accept_ownership`.
@@ -44,16 +45,28 @@ pub struct AcceptOwnership<'info> {
 }
 
 impl AcceptOwnership<'_> {
+    /// Take over `admin` and CPI Endpoint `set_delegate(new_owner)` (EVM `_transferOwnership`).
+    /// Remaining accounts = same Endpoint `SetDelegate` list as `set_oft_config(Delegate)`.
     pub fn apply(ctx: &mut Context<AcceptOwnership>) -> Result<()> {
-        let store = &mut ctx.accounts.oft_store;
-        let previous_owner = store.admin;
+        let previous_owner = ctx.accounts.oft_store.admin;
         let new_owner = ctx.accounts.pending_owner.key();
-        store.admin = new_owner;
-        store.pending_owner = Pubkey::default();
+        ctx.accounts.oft_store.admin = new_owner;
+        ctx.accounts.oft_store.pending_owner = Pubkey::default();
         emit!(OwnershipTransferred {
             previous_owner,
             new_owner,
         });
+
+        let oft_store_seed = ctx.accounts.oft_store.token_escrow.key();
+        let seeds: &[&[u8]] =
+            &[OFT_SEED, oft_store_seed.as_ref(), &[ctx.accounts.oft_store.bump]];
+        oapp::endpoint_cpi::set_delegate(
+            ctx.accounts.oft_store.endpoint_program,
+            ctx.accounts.oft_store.key(),
+            ctx.remaining_accounts,
+            seeds,
+            SetDelegateParams { delegate: new_owner },
+        )?;
         Ok(())
     }
 }

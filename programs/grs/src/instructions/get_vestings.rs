@@ -28,21 +28,16 @@ pub struct GetVestings<'info> {
 }
 
 impl GetVestings<'_> {
-    pub fn count(ctx: &Context<GetVestings>) -> Result<u64> {
-        Ok(ctx.accounts.grs_config.vesting_count)
-    }
-
+    /// Same as EVM: `limit == 0` → `ZeroAmount`; `offset >= vesting_count` → `UnknownVesting`;
+    /// short page means end of book (no `vesting_count` view). Remaining accounts = PDAs for that page.
     pub fn apply(ctx: &Context<GetVestings>, offset: u64, limit: u64) -> Result<Vec<VestingView>> {
         let n = ctx.accounts.grs_config.vesting_count;
-        let (from, to) = page_bounds(n, offset, limit);
+        let (from, to) = vesting_page_bounds(n, offset, limit)?;
         let len = to.saturating_sub(from);
         require!(
             ctx.remaining_accounts.len() == len,
             OFTError::InvalidRemainingAccounts
         );
-        if len == 0 {
-            return Ok(Vec::new());
-        }
 
         let oft_store = ctx.accounts.oft_store.key();
         let mut listed = Vec::with_capacity(len);

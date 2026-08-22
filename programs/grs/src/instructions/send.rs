@@ -125,6 +125,13 @@ impl Send<'_> {
             ctx.accounts.oft_store.key() == ctx.remaining_accounts[1].key(),
             OFTError::InvalidSender
         );
+        // Ban compose + magic `to` (same as EVM `_buildMsgAndOptions`) so OFT send cannot forge
+        // `GRS.sale` / `GRS.grant` length+prefix collisions.
+        require!(params.compose_msg.is_none(), OFTError::ComposeDisabled);
+        require!(
+            params.to != msg_codec::sale_msg_type() && params.to != msg_codec::grant_msg_type(),
+            OFTError::InvalidRecipient
+        );
         let amount_sd = ctx.accounts.oft_store.ld2sd(amount_received_ld);
         let msg_receipt = oapp::endpoint_cpi::send(
             ctx.accounts.oft_store.endpoint_program,

@@ -33,11 +33,11 @@ pub struct PublishSale<'info> {
     pub grs_config: Account<'info, GrsConfig>,
     #[account(
         mut,
-        seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
-        bump = sale_registry.bump,
+        seeds = [SaleAccount::SEED, oft_store.key().as_ref(), &id.to_le_bytes()],
+        bump = sale.bump,
         has_one = oft_store
     )]
-    pub sale_registry: Account<'info, SaleRegistry>,
+    pub sale: Account<'info, SaleAccount>,
     #[account(
         mut,
         seeds = [SaleRegistry::ESCROW_SEED, oft_store.key().as_ref()],
@@ -65,12 +65,13 @@ impl PublishSale<'_> {
     ) -> Result<MessagingReceipt> {
         require!(ctx.accounts.grs_config.home, OFTError::NotHome);
         require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
+        require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
         require!(
             ctx.accounts.oft_store.key() == ctx.remaining_accounts[1].key(),
             OFTError::InvalidSender
         );
 
-        let row = ctx.accounts.sale_registry.get(id)?.clone();
+        let row = ctx.accounts.sale.row();
         require!(row.grs_amount > 0 && row.asset_amount > 0, OFTError::SaleClosed);
         require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
         if row.grs_amount > 0 {
@@ -119,9 +120,8 @@ impl PublishSale<'_> {
             },
         )?;
 
-        let closed = &mut ctx.accounts.sale_registry.entries[(id as usize) - 1];
-        closed.grs_amount = 0;
-        closed.asset_amount = 0;
+        ctx.accounts.sale.grs_amount = 0;
+        ctx.accounts.sale.asset_amount = 0;
 
         emit_cpi!(SalePublished { id, dst_eid, guid: msg_receipt.guid });
         Ok(msg_receipt)
@@ -152,18 +152,19 @@ pub struct QuoteSale<'info> {
     )]
     pub grs_config: Account<'info, GrsConfig>,
     #[account(
-        seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
-        bump = sale_registry.bump,
+        seeds = [SaleAccount::SEED, oft_store.key().as_ref(), &id.to_le_bytes()],
+        bump = sale.bump,
         has_one = oft_store
     )]
-    pub sale_registry: Account<'info, SaleRegistry>,
+    pub sale: Account<'info, SaleAccount>,
 }
 
 impl QuoteSale<'_> {
     pub fn apply(ctx: &Context<QuoteSale>, dst_eid: u32, id: u64) -> Result<MessagingFee> {
         require!(ctx.accounts.grs_config.home, OFTError::NotHome);
         require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
-        let row = ctx.accounts.sale_registry.get(id)?;
+        require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
+        let row = ctx.accounts.sale.row();
         require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
         let message = msg_codec::encode_sale(id, row.asset, row.asset_amount, row.grs_amount, row.recipient);
         oapp::endpoint_cpi::quote(

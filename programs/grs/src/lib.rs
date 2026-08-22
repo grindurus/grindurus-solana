@@ -66,11 +66,9 @@ pub mod grs {
         GetPeers::apply(&ctx)
     }
 
-    pub fn sale_count(ctx: Context<GetSales>) -> Result<u64> {
-        GetSales::sale_count(&ctx)
-    }
-
     /// Page of sales. `offset` is 0-based into the array (id `offset + 1`).
+    /// Reverts `UnknownSale` if offset past book; `ZeroAmount` if `limit == 0`.
+    /// Short page ⇒ end (no `sale_count` view — counters stay in `SaleRegistry` for PDA ids).
     pub fn get_sales(ctx: Context<GetSales>, offset: u64, limit: u64) -> Result<Vec<Sale>> {
         GetSales::apply(&ctx, offset, limit)
     }
@@ -80,11 +78,9 @@ pub mod grs {
         PreviewBuy::apply(&ctx, id, amount_ld)
     }
 
-    pub fn vesting_count(ctx: Context<GetVestings>) -> Result<u64> {
-        GetVestings::count(&ctx)
-    }
-
     /// Page of vestings. Remaining accounts must be PDAs for ids `offset+1 …` (like EVM).
+    /// Reverts `UnknownVesting` if offset past book; `ZeroAmount` if `limit == 0`.
+    /// Short page ⇒ end (no `vesting_count` view — counter stays in `GrsConfig` for PDA ids).
     pub fn get_vestings(
         ctx: Context<GetVestings>,
         offset: u64,
@@ -110,7 +106,8 @@ pub mod grs {
         TransferOwnership::apply(&mut ctx, new_owner)
     }
 
-    /// Pending owner takes over `oft_store.admin` (EVM `acceptOwnership`).
+    /// Pending owner takes over `oft_store.admin` and sets LZ endpoint delegate (EVM `acceptOwnership`).
+    /// Pass Endpoint `SetDelegate` remaining accounts (same as `set_oft_config(Delegate)`).
     pub fn accept_ownership(mut ctx: Context<AcceptOwnership>) -> Result<()> {
         AcceptOwnership::apply(&mut ctx)
     }
@@ -130,16 +127,17 @@ pub mod grs {
         WithdrawFee::apply(&mut ctx, &params)
     }
 
-    /// Append a sale. Id is `sale_count + 1`. Home admin only. Local book.
+    /// Append a sale. `id` must be `sale_count + 1`. Home admin only. Local book.
     /// EVM folds LZ into `sale(..., dstEid)`; here the hop is `publish_sale`.
     pub fn sale(
         mut ctx: Context<SetSale>,
+        id: u64,
         asset: Pubkey,
         asset_amount: u64,
         grs_amount: u64,
         recipient: Pubkey,
     ) -> Result<u64> {
-        SetSale::apply(&mut ctx, asset, asset_amount, grs_amount, recipient)
+        SetSale::apply(&mut ctx, id, asset, asset_amount, grs_amount, recipient)
     }
 
     /// Native LZ fee for `publish_sale(dst_eid, id)` (EVM `quoteSale(..., dstEid)`).

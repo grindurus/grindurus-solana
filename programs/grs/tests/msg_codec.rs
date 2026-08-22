@@ -79,6 +79,24 @@ mod test_msg_codec {
     }
 
     #[test]
+    fn test_grant_msg_roundtrip() {
+        let to = Pubkey::new_unique();
+        let encoded = msg_codec::encode_grant(to, 1_000_000_000, 1_700_000_000, 86_400, 259_200, 4);
+        assert_eq!(encoded.len(), 224);
+        assert!(msg_codec::is_grant(&encoded));
+        assert!(!msg_codec::is_sale(&encoded));
+        assert_eq!(msg_codec::compose_msg(&encoded), None);
+        let (decoded_to, amount, start, cliff, duration, bucket) =
+            msg_codec::decode_grant(&encoded).unwrap();
+        assert_eq!(decoded_to, to);
+        assert_eq!(amount, 1_000_000_000);
+        assert_eq!(start, 1_700_000_000);
+        assert_eq!(cliff, 86_400);
+        assert_eq!(duration, 259_200);
+        assert_eq!(bucket, 4);
+    }
+
+    #[test]
     fn test_oft_credit_is_not_sale_and_sd_matches_solana_ld() {
         let send_to: [u8; 32] = [0x51; 32];
         let amount_sd: u64 = 5_000_000; // 5 GRS at 6 shared decimals

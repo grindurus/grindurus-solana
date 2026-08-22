@@ -1,5 +1,6 @@
 use crate::*;
 use anchor_lang::solana_program;
+use anchor_lang::system_program::{self, CreateAccount};
 use anchor_spl::{
     associated_token::AssociatedToken,
     token_2022::spl_token_2022::{self, solana_program::program_option::COption},
@@ -35,6 +36,7 @@ pub struct LzReceive<'info> {
     )]
     pub oft_store: Box<Account<'info, OFTStore>>,
     #[account(
+        mut,
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
         bump = grs_config.bump
     )]
@@ -46,6 +48,11 @@ pub struct LzReceive<'info> {
         has_one = oft_store
     )]
     pub sale_registry: Box<Account<'info, SaleRegistry>>,
+    /// Sale row PDA for sale messages, or vest PDA for grant messages (`["vest", oft_store, id]`).
+    /// OFT messages pass `sale_registry` as a placeholder.
+    /// CHECK: seeds + init/overwrite validated in the sale / grant branch.
+    #[account(mut)]
+    pub sale: UncheckedAccount<'info>,
     #[account(
         init_if_needed,
         payer = payer,
@@ -55,7 +62,11 @@ pub struct LzReceive<'info> {
         token::authority = grs_config,
         token::token_program = token_program
     )]
-    pub sale_escrow: InterfaceAccount<'info, TokenAccount>,
+    pub sale_escrow: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// Vest escrow PDA (`["vest_escrow", oft_store]`). Grant path inits if empty; OFT/sale ignore it.
+    /// CHECK: seeds validated in grant branch.
+    #[account(mut)]
+    pub vest_escrow: UncheckedAccount<'info>,
     #[account(
         mut,
         address = oft_store.token_escrow,
@@ -120,21 +131,23 @@ impl LzReceive<'_> {
             require!(recipient != crate::ID, OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.sale_escrow.key(), OFTError::InvalidRecipient);
-            let n = SaleRegistry::len_after_upsert(ctx.accounts.sale_registry.entries.len(), id, true)?;
-            SaleRegistry::realloc_for(
-                &ctx.accounts.sale_registry.to_account_info(),
+            let previous = upsert_sale_account(
+                &ctx.accounts.sale.to_account_info(),
                 &ctx.accounts.payer.to_account_info(),
                 &ctx.accounts.system_program.to_account_info(),
-                n,
+                ctx.program_id,
+                ctx.accounts.oft_store.key(),
+                id,
+                asset,
+                asset_amount,
+                grs_amount,
+                recipient,
             )?;
-            let previous = if id > 0 && (id as usize) <= ctx.accounts.sale_registry.entries.len() {
-                ctx.accounts.sale_registry.entries[(id as usize) - 1].grs_amount
-            } else {
-                0
-            };
-            let out_id = ctx.accounts.sale_registry.upsert(id, asset, asset_amount, grs_amount, recipient, true)?;
+            if id > ctx.accounts.sale_registry.sale_count {
+                ctx.accounts.sale_registry.sale_count = id;
+            }
             emit!(SaleAccepted {
-                id: out_id,
+                id,
                 asset,
                 asset_amount,
                 grs_amount,
@@ -143,6 +156,66 @@ impl LzReceive<'_> {
             if grs_amount > 0 && previous == 0 {
                 Self::credit_sale_escrow(ctx, grs_amount)?;
             }
+            return Ok(());
+        }
+
+        if msg_codec::is_grant(&params.message) {
+            require!(!ctx.accounts.grs_config.home, OFTError::NotSpoke);
+            let (to, amount_ld, start, cliff_seconds, duration_seconds, _bucket) =
+                msg_codec::decode_grant(&params.message)?;
+            require!(to != Pubkey::default(), OFTError::InvalidRecipient);
+            require!(
+                !(cliff_seconds == 0 && duration_seconds == 0),
+                OFTError::InvalidSchedule
+            );
+            require!(cliff_seconds <= GRS_MAX_CLIFF_SECONDS, OFTError::InvalidSchedule);
+            require!(
+                duration_seconds <= GRS_MAX_DURATION_SECONDS,
+                OFTError::InvalidSchedule
+            );
+            let id = ctx
+                .accounts
+                .grs_config
+                .vesting_count
+                .checked_add(1)
+                .ok_or(error!(OFTError::InvalidVestingId))?;
+            init_grant_vesting(
+                &ctx.accounts.sale.to_account_info(),
+                &ctx.accounts.payer.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                ctx.program_id,
+                ctx.accounts.oft_store.key(),
+                id,
+                ctx.accounts.oft_store.key(),
+                to,
+                amount_ld,
+                start,
+                cliff_seconds,
+                duration_seconds,
+            )?;
+            ctx.accounts.grs_config.vesting_count = id;
+            if amount_ld > 0 {
+                ensure_vest_escrow(
+                    &ctx.accounts.vest_escrow.to_account_info(),
+                    &ctx.accounts.payer.to_account_info(),
+                    &ctx.accounts.system_program.to_account_info(),
+                    &ctx.accounts.token_mint.to_account_info(),
+                    &ctx.accounts.token_program.to_account_info(),
+                    &ctx.accounts.grs_config.to_account_info(),
+                    ctx.program_id,
+                    ctx.accounts.oft_store.key(),
+                    ctx.accounts.grs_config.key(),
+                    ctx.accounts.token_mint.key(),
+                    ctx.accounts.token_mint.decimals,
+                )?;
+                Self::credit_vest_escrow(ctx, amount_ld)?;
+            }
+            emit!(Vested {
+                id,
+                from: ctx.accounts.oft_store.key(),
+                to,
+                amount_ld,
+            });
             return Ok(());
         }
 
@@ -308,4 +381,178 @@ impl LzReceive<'_> {
         }
         Ok(())
     }
+
+    fn credit_vest_escrow(ctx: &mut Context<LzReceive>, amount_ld: u64) -> Result<()> {
+        let oft_store_seed = ctx.accounts.token_escrow.key();
+        let seeds: &[&[u8]] = &[OFT_SEED, oft_store_seed.as_ref(), &[ctx.accounts.oft_store.bump]];
+
+        if ctx.accounts.oft_store.oft_type == OFTType::Adapter {
+            ctx.accounts.oft_store.tvl_ld = ctx
+                .accounts
+                .oft_store
+                .tvl_ld
+                .checked_sub(amount_ld)
+                .ok_or(OFTError::InvalidFee)?;
+            token_interface::transfer_checked(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.token_escrow.to_account_info(),
+                        mint: ctx.accounts.token_mint.to_account_info(),
+                        to: ctx.accounts.vest_escrow.to_account_info(),
+                        authority: ctx.accounts.oft_store.to_account_info(),
+                    },
+                )
+                .with_signer(&[&seeds]),
+                amount_ld,
+                ctx.accounts.token_mint.decimals,
+            )?;
+        } else if let Some(mint_authority) = &ctx.accounts.mint_authority {
+            let new_supply = ctx
+                .accounts
+                .token_mint
+                .supply
+                .checked_add(amount_ld)
+                .ok_or(OFTError::CapExceeded)?;
+            require!(new_supply <= GRS_MAX_SUPPLY_LD, OFTError::CapExceeded);
+
+            let ix = spl_token_2022::instruction::mint_to(
+                ctx.accounts.token_program.key,
+                &ctx.accounts.token_mint.key(),
+                &ctx.accounts.vest_escrow.key(),
+                mint_authority.key,
+                &[&ctx.accounts.oft_store.key()],
+                amount_ld,
+            )?;
+            solana_program::program::invoke_signed(
+                &ix,
+                &[
+                    ctx.accounts.vest_escrow.to_account_info(),
+                    ctx.accounts.token_mint.to_account_info(),
+                    mint_authority.to_account_info(),
+                    ctx.accounts.oft_store.to_account_info(),
+                ],
+                &[&seeds],
+            )?;
+        } else {
+            return Err(OFTError::InvalidMintAuthority.into());
+        }
+        Ok(())
+    }
+}
+
+pub fn ensure_vest_escrow<'info>(
+    vest_escrow: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    token_mint: &AccountInfo<'info>,
+    token_program: &AccountInfo<'info>,
+    _grs_config_ai: &AccountInfo<'info>,
+    program_id: &Pubkey,
+    oft_store: Pubkey,
+    authority: Pubkey,
+    mint: Pubkey,
+    _decimals: u8,
+) -> Result<()> {
+    let (expected, bump) =
+        Pubkey::find_program_address(&[Vesting::ESCROW_SEED, oft_store.as_ref()], program_id);
+    require_keys_eq!(vest_escrow.key(), expected, OFTError::InvalidRemainingAccounts);
+    if !vest_escrow.data_is_empty() {
+        require_keys_eq!(
+            *vest_escrow.owner,
+            *token_program.key,
+            OFTError::InvalidRemainingAccounts
+        );
+        return Ok(());
+    }
+
+    let space = 165; // spl-token / token-2022 base TokenAccount size
+    let lamports = Rent::get()?.minimum_balance(space);
+    let seeds: &[&[u8]] = &[Vesting::ESCROW_SEED, oft_store.as_ref(), &[bump]];
+    system_program::create_account(
+        CpiContext::new_with_signer(
+            system_program.clone(),
+            CreateAccount {
+                from: payer.clone(),
+                to: vest_escrow.clone(),
+            },
+            &[seeds],
+        ),
+        lamports,
+        space as u64,
+        token_program.key,
+    )?;
+    let ix = spl_token_2022::instruction::initialize_account3(
+        token_program.key,
+        vest_escrow.key,
+        &mint,
+        &authority,
+    )?;
+    solana_program::program::invoke(&ix, &[vest_escrow.clone(), token_mint.clone()])?;
+    Ok(())
+}
+
+pub fn init_grant_vesting<'info>(
+    vesting_info: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    program_id: &Pubkey,
+    oft_store: Pubkey,
+    id: u64,
+    funder: Pubkey,
+    beneficiary: Pubkey,
+    amount_ld: u64,
+    start: u64,
+    cliff_seconds: u64,
+    duration_seconds: u64,
+) -> Result<()> {
+    require!(id > 0, OFTError::InvalidVestingId);
+    let id_bytes = id.to_le_bytes();
+    let (expected, bump) = Pubkey::find_program_address(
+        &[Vesting::SEED, oft_store.as_ref(), &id_bytes],
+        program_id,
+    );
+    require_keys_eq!(vesting_info.key(), expected, OFTError::InvalidRemainingAccounts);
+    require!(vesting_info.data_is_empty(), OFTError::InvalidVestingId);
+
+    let start_ = if start == 0 { now_ts()? } else { start };
+    let cliff_end = start_
+        .checked_add(cliff_seconds)
+        .ok_or(error!(OFTError::InvalidSchedule))?;
+    let end = cliff_end
+        .checked_add(duration_seconds)
+        .ok_or(error!(OFTError::InvalidSchedule))?;
+
+    let space = 8 + Vesting::INIT_SPACE;
+    let lamports = Rent::get()?.minimum_balance(space);
+    let seeds: &[&[u8]] = &[Vesting::SEED, oft_store.as_ref(), &id_bytes, &[bump]];
+    system_program::create_account(
+        CpiContext::new_with_signer(
+            system_program.clone(),
+            CreateAccount {
+                from: payer.clone(),
+                to: vesting_info.clone(),
+            },
+            &[seeds],
+        ),
+        lamports,
+        space as u64,
+        program_id,
+    )?;
+
+    let mut data = vesting_info.try_borrow_mut_data()?;
+    let account = Vesting {
+        id,
+        oft_store,
+        funder,
+        beneficiary,
+        allocation_ld: amount_ld,
+        released_ld: 0,
+        start: start_,
+        cliff_end,
+        end,
+        bump,
+    };
+    account.try_serialize(&mut &mut data[..])?;
+    Ok(())
 }

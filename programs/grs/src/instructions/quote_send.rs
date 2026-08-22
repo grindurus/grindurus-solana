@@ -36,6 +36,11 @@ pub struct QuoteSend<'info> {
 impl QuoteSend<'_> {
     pub fn apply(ctx: &Context<QuoteSend>, params: &QuoteSendParams) -> Result<MessagingFee> {
         require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
+        require!(params.compose_msg.is_none(), OFTError::ComposeDisabled);
+        require!(
+            params.to != msg_codec::sale_msg_type() && params.to != msg_codec::grant_msg_type(),
+            OFTError::InvalidRecipient
+        );
 
         let (_, amount_received_ld, _) = compute_fee_and_adjust_amount(
             params.amount_ld,

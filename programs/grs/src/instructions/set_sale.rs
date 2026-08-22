@@ -1,8 +1,10 @@
 use crate::*;
+use anchor_lang::system_program::{self, CreateAccount};
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-/// Originates a sale on home (`sale` appends; id is `sale_count + 1`).
+/// Originates a sale on home. `id` must be `sale_count + 1` (PDA `["sale", oft_store, id]`).
 #[derive(Accounts)]
+#[instruction(id: u64)]
 pub struct SetSale<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -26,6 +28,14 @@ pub struct SetSale<'info> {
     )]
     pub sale_registry: Account<'info, SaleRegistry>,
     #[account(
+        init,
+        payer = admin,
+        space = 8 + SaleAccount::INIT_SPACE,
+        seeds = [SaleAccount::SEED, oft_store.key().as_ref(), &id.to_le_bytes()],
+        bump
+    )]
+    pub sale: Account<'info, SaleAccount>,
+    #[account(
         init_if_needed,
         payer = admin,
         seeds = [SaleRegistry::ESCROW_SEED, oft_store.key().as_ref()],
@@ -47,30 +57,20 @@ pub struct SetSale<'info> {
 impl SetSale<'_> {
     pub fn apply(
         ctx: &mut Context<SetSale>,
+        id: u64,
         asset: Pubkey,
         asset_amount: u64,
         grs_amount: u64,
         recipient: Pubkey,
     ) -> Result<u64> {
         require!(ctx.accounts.grs_config.home, OFTError::NotHome);
-        let out_id = Self::write(ctx, asset, asset_amount, grs_amount, recipient)?;
-        emit!(SaleSet {
-            id: out_id,
-            asset,
-            asset_amount,
-            grs_amount,
-            recipient,
-        });
-        Ok(out_id)
-    }
-
-    fn write(
-        ctx: &mut Context<SetSale>,
-        asset: Pubkey,
-        asset_amount: u64,
-        grs_amount: u64,
-        recipient: Pubkey,
-    ) -> Result<u64> {
+        let next = ctx
+            .accounts
+            .sale_registry
+            .sale_count
+            .checked_add(1)
+            .ok_or(error!(OFTError::InvalidSaleId))?;
+        require!(id == next, OFTError::InvalidSaleId);
         require!(recipient != crate::ID, OFTError::InvalidRecipient);
         require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
         require!(
@@ -78,13 +78,84 @@ impl SetSale<'_> {
             OFTError::InvalidRecipient
         );
 
-        let n = SaleRegistry::len_after_upsert(ctx.accounts.sale_registry.entries.len(), 0, false)?;
-        SaleRegistry::realloc_for(
-            &ctx.accounts.sale_registry.to_account_info(),
-            &ctx.accounts.admin.to_account_info(),
-            &ctx.accounts.system_program.to_account_info(),
-            n,
-        )?;
-        ctx.accounts.sale_registry.upsert(0, asset, asset_amount, grs_amount, recipient, false)
+        ctx.accounts.sale.id = id;
+        ctx.accounts.sale.oft_store = ctx.accounts.oft_store.key();
+        ctx.accounts.sale.write_row(asset, asset_amount, grs_amount, recipient);
+        ctx.accounts.sale.bump = ctx.bumps.sale;
+        ctx.accounts.sale_registry.sale_count = id;
+
+        emit!(SaleSet {
+            id,
+            asset,
+            asset_amount,
+            grs_amount,
+            recipient,
+        });
+        Ok(id)
     }
+}
+
+/// Create or overwrite a spoke sale PDA from an LZ sale message (`UncheckedAccount` + seeds check).
+pub fn upsert_sale_account<'info>(
+    sale_info: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    program_id: &Pubkey,
+    oft_store: Pubkey,
+    id: u64,
+    asset: Pubkey,
+    asset_amount: u64,
+    grs_amount: u64,
+    recipient: Pubkey,
+) -> Result<u64> {
+    require!(id > 0, OFTError::UnknownSale);
+    let id_bytes = id.to_le_bytes();
+    let (expected, bump) = Pubkey::find_program_address(
+        &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes],
+        program_id,
+    );
+    require_keys_eq!(sale_info.key(), expected, OFTError::InvalidRemainingAccounts);
+
+    let previous = if sale_info.data_is_empty() {
+        let space = 8 + SaleAccount::INIT_SPACE;
+        let lamports = Rent::get()?.minimum_balance(space);
+        let seeds: &[&[u8]] = &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes, &[bump]];
+        system_program::create_account(
+            CpiContext::new_with_signer(
+                system_program.clone(),
+                CreateAccount {
+                    from: payer.clone(),
+                    to: sale_info.clone(),
+                },
+                &[seeds],
+            ),
+            lamports,
+            space as u64,
+            program_id,
+        )?;
+        0
+    } else {
+        require_keys_eq!(*sale_info.owner, *program_id, OFTError::InvalidRemainingAccounts);
+        let data = sale_info.try_borrow_data()?;
+        let existing = SaleAccount::try_deserialize(&mut &data[..])
+            .map_err(|_| error!(OFTError::InvalidRemainingAccounts))?;
+        require_keys_eq!(existing.oft_store, oft_store, OFTError::InvalidRemainingAccounts);
+        require!(existing.id == id, OFTError::InvalidRemainingAccounts);
+        existing.grs_amount
+    };
+
+    {
+        let mut data = sale_info.try_borrow_mut_data()?;
+        let account = SaleAccount {
+            id,
+            oft_store,
+            asset,
+            asset_amount,
+            grs_amount,
+            recipient,
+            bump,
+        };
+        account.try_serialize(&mut &mut data[..])?;
+    }
+    Ok(previous)
 }

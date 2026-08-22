@@ -6,6 +6,7 @@ use anchor_spl::{
 
 /// Buy `amount_ld` GRS from TokenSales via sale `id`. Instant, no vest. Home or spoke.
 #[derive(Accounts)]
+#[instruction(id: u64)]
 pub struct Buy<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
@@ -23,11 +24,11 @@ pub struct Buy<'info> {
     pub grs_config: Account<'info, GrsConfig>,
     #[account(
         mut,
-        seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
-        bump = sale_registry.bump,
+        seeds = [SaleAccount::SEED, oft_store.key().as_ref(), &id.to_le_bytes()],
+        bump = sale.bump,
         has_one = oft_store
     )]
-    pub sale_registry: Account<'info, SaleRegistry>,
+    pub sale: Account<'info, SaleAccount>,
     /// CHECK: `sale.recipient`, or `oft_store.admin` when recipient is default.
     #[account(mut)]
     pub payee: UncheckedAccount<'info>,
@@ -70,12 +71,13 @@ pub struct Buy<'info> {
 
 impl Buy<'_> {
     pub fn apply(ctx: &mut Context<Buy>, id: u64, amount_ld: u64) -> Result<u64> {
-        let sale = ctx.accounts.sale_registry.get(id)?.clone();
-        let cost = quote_cost(amount_ld, sale.grs_amount, sale.asset_amount)?;
-        let payee = if sale.recipient == Pubkey::default() {
+        require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
+        let row = ctx.accounts.sale.row();
+        let cost = quote_cost(amount_ld, row.grs_amount, row.asset_amount)?;
+        let payee = if row.recipient == Pubkey::default() {
             ctx.accounts.oft_store.admin
         } else {
-            sale.recipient
+            row.recipient
         };
         require_keys_eq!(ctx.accounts.payee.key(), payee, OFTError::InvalidRecipient);
 
@@ -88,7 +90,7 @@ impl Buy<'_> {
         // Uncapped (EVM TokenSales parity): buybacks can re-enter; spent is accounting only.
         ctx.accounts.grs_config.token_sales_spent = spent;
 
-        if sale.asset == Pubkey::default() {
+        if row.asset == Pubkey::default() {
             require!(
                 ctx.accounts.quote_mint.is_none()
                     && ctx.accounts.quote_source.is_none()
@@ -116,9 +118,9 @@ impl Buy<'_> {
                 .quote_token_program
                 .as_ref()
                 .ok_or(error!(OFTError::InvalidPayment))?;
-            require_keys_eq!(quote_mint.key(), sale.asset, OFTError::InvalidPayment);
-            require_keys_eq!(quote_source.mint, sale.asset, OFTError::InvalidPayment);
-            require_keys_eq!(quote_dest.mint, sale.asset, OFTError::InvalidPayment);
+            require_keys_eq!(quote_mint.key(), row.asset, OFTError::InvalidPayment);
+            require_keys_eq!(quote_source.mint, row.asset, OFTError::InvalidPayment);
+            require_keys_eq!(quote_dest.mint, row.asset, OFTError::InvalidPayment);
             require_keys_eq!(quote_source.owner, ctx.accounts.buyer.key(), OFTError::InvalidPayment);
             require_keys_eq!(quote_dest.owner, payee, OFTError::InvalidPayment);
             require_keys_eq!(*quote_mint.to_account_info().owner, quote_program.key(), OFTError::InvalidPayment);
@@ -159,12 +161,11 @@ impl Buy<'_> {
             ctx.accounts.token_mint.decimals,
         )?;
 
-        let row = &mut ctx.accounts.sale_registry.entries[(id as usize) - 1];
-        row.grs_amount = sale
+        ctx.accounts.sale.grs_amount = row
             .grs_amount
             .checked_sub(amount_ld)
             .ok_or(error!(OFTError::SaleExceeded))?;
-        row.asset_amount = sale
+        ctx.accounts.sale.asset_amount = row
             .asset_amount
             .checked_sub(cost)
             .ok_or(error!(OFTError::InvalidPayment))?;
@@ -182,6 +183,7 @@ impl Buy<'_> {
 
 /// View: cost in quote asset for `buy(id, amount_ld)` (EVM `previewBuy`).
 #[derive(Accounts)]
+#[instruction(id: u64)]
 pub struct PreviewBuy<'info> {
     #[account(
         seeds = [OFT_SEED, oft_store.token_escrow.as_ref()],
@@ -189,17 +191,17 @@ pub struct PreviewBuy<'info> {
     )]
     pub oft_store: Account<'info, OFTStore>,
     #[account(
-        seeds = [SaleRegistry::SEED, oft_store.key().as_ref()],
-        bump = sale_registry.bump,
+        seeds = [SaleAccount::SEED, oft_store.key().as_ref(), &id.to_le_bytes()],
+        bump = sale.bump,
         has_one = oft_store
     )]
-    pub sale_registry: Account<'info, SaleRegistry>,
+    pub sale: Account<'info, SaleAccount>,
 }
 
 impl PreviewBuy<'_> {
     pub fn apply(ctx: &Context<PreviewBuy>, id: u64, amount_ld: u64) -> Result<u64> {
-        let sale = ctx.accounts.sale_registry.get(id)?;
-        quote_cost(amount_ld, sale.grs_amount, sale.asset_amount)
+        require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
+        quote_cost(amount_ld, ctx.accounts.sale.grs_amount, ctx.accounts.sale.asset_amount)
     }
 }
 
@@ -219,13 +221,40 @@ pub struct GetSales<'info> {
 }
 
 impl GetSales<'_> {
-    pub fn sale_count(ctx: &Context<GetSales>) -> Result<u64> {
-        Ok(ctx.accounts.sale_registry.entries.len() as u64)
-    }
-
+    /// Page of sales. Remaining accounts must be PDAs for ids `offset+1 …` (like `get_vestings`).
+    /// Missing / empty PDAs (spoke holes) return a closed row.
+    /// Same as EVM: `limit == 0` → `ZeroAmount`; `offset >= sale_count` → `UnknownSale`;
+    /// short page (length `< limit`) means end of book (no `sale_count` view).
     pub fn apply(ctx: &Context<GetSales>, offset: u64, limit: u64) -> Result<Vec<Sale>> {
-        let entries = &ctx.accounts.sale_registry.entries;
-        let (from, to) = page_bounds(entries.len() as u64, offset, limit);
-        Ok(entries[from..to].to_vec())
+        let n = ctx.accounts.sale_registry.sale_count;
+        let (from, to) = sale_page_bounds(n, offset, limit)?;
+        let len = to.saturating_sub(from);
+        require!(
+            ctx.remaining_accounts.len() == len,
+            OFTError::InvalidRemainingAccounts
+        );
+
+        let oft_store = ctx.accounts.oft_store.key();
+        let mut listed = Vec::with_capacity(len);
+        for i in 0..len {
+            let id = (from as u64) + (i as u64) + 1;
+            let info = &ctx.remaining_accounts[i];
+            let (pda, _) = Pubkey::find_program_address(
+                &[SaleAccount::SEED, oft_store.as_ref(), &id.to_le_bytes()],
+                ctx.program_id,
+            );
+            require_keys_eq!(info.key(), pda, OFTError::InvalidRemainingAccounts);
+            if info.data_is_empty() || info.owner != ctx.program_id {
+                listed.push(Sale::closed());
+                continue;
+            }
+            let data = info.try_borrow_data()?;
+            let account = SaleAccount::try_deserialize(&mut &data[..])
+                .map_err(|_| error!(OFTError::InvalidRemainingAccounts))?;
+            require_keys_eq!(account.oft_store, oft_store, OFTError::InvalidRemainingAccounts);
+            require!(account.id == id, OFTError::InvalidRemainingAccounts);
+            listed.push(account.row());
+        }
+        Ok(listed)
     }
 }

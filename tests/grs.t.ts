@@ -120,7 +120,7 @@ describe("grs oft", () => {
     return b;
   }
 
-  function salePdas(oftStore: PublicKey) {
+  function salePdas(oftStore: PublicKey, id = 1) {
     const [saleRegistry] = PublicKey.findProgramAddressSync(
       [Buffer.from("sales"), oftStore.toBuffer()],
       program.programId,
@@ -129,7 +129,13 @@ describe("grs oft", () => {
       [Buffer.from("sale_escrow"), oftStore.toBuffer()],
       program.programId,
     );
-    return { saleRegistry, saleEscrow };
+    const idBuf = Buffer.alloc(8);
+    idBuf.writeBigUInt64LE(BigInt(id));
+    const [sale] = PublicKey.findProgramAddressSync(
+      [Buffer.from("sale"), oftStore.toBuffer(), idBuf],
+      program.programId,
+    );
+    return { saleRegistry, saleEscrow, sale };
   }
 
   function vestingPda(oftStore: PublicKey, id: number) {
@@ -563,8 +569,8 @@ describe("grs oft", () => {
     await vest(2, 2n * unit);
     await vest(3, 3n * unit);
 
-    const count = await program.methods.vestingCount().accounts({ oftStore, grsConfig }).view();
-    expect(count.toNumber()).to.equal(3);
+    const cfg = await program.account.grsConfig.fetch(grsConfig);
+    expect(cfg.vestingCount.toNumber()).to.equal(3);
 
     const meta = (id: number) => ({ pubkey: vestingPda(oftStore, id), isWritable: false, isSigner: false });
     const page = await program.methods
@@ -584,33 +590,42 @@ describe("grs oft", () => {
     expect(tail).to.have.length(1);
     expect(tail[0].id.toNumber()).to.equal(3);
 
-    const empty = await program.methods
-      .getVestings(new anchor.BN(3), new anchor.BN(1))
-      .accounts({ oftStore, grsConfig })
-      .view();
-    expect(empty).to.have.length(0);
-    const none = await program.methods
-      .getVestings(new anchor.BN(0), new anchor.BN(0))
-      .accounts({ oftStore, grsConfig })
-      .view();
-    expect(none).to.have.length(0);
+    try {
+      await program.methods
+        .getVestings(new anchor.BN(3), new anchor.BN(1))
+        .accounts({ oftStore, grsConfig })
+        .view();
+      expect.fail("offset past book");
+    } catch (e: any) {
+      expect(String(e)).to.match(/UnknownVesting/);
+    }
+    try {
+      await program.methods
+        .getVestings(new anchor.BN(0), new anchor.BN(0))
+        .accounts({ oftStore, grsConfig })
+        .view();
+      expect.fail("limit zero");
+    } catch (e: any) {
+      expect(String(e)).to.match(/ZeroAmount/);
+    }
   });
 
   it("buy sol from token sales and page get_sales", async () => {
     const mint = await createMint();
     const { oftStore, grsConfig } = await initGrs(mint, true);
-    const { saleRegistry, saleEscrow } = salePdas(oftStore);
+    const { saleRegistry, saleEscrow, sale } = salePdas(oftStore, 1);
     const inventory = 10n * 1_000_000_000n;
     const adminAta = await mintToAdmin(mint, inventory);
 
     const assetAmount = new anchor.BN(100_000_000); // 0.1 SOL for 10 GRS
     await program.methods
-      .sale(PublicKey.default, assetAmount, new anchor.BN(inventory.toString()), PublicKey.default)
+      .sale(new anchor.BN(1), PublicKey.default, assetAmount, new anchor.BN(inventory.toString()), PublicKey.default)
       .accounts({
         admin,
         oftStore,
         grsConfig,
         saleRegistry,
+        sale,
         saleEscrow,
         tokenMint: mint,
         tokenProgram: TOKEN_PROGRAM_ID,
@@ -624,7 +639,7 @@ describe("grs oft", () => {
     const amount = 10n * 1_000_000_000n;
     const cost = await program.methods
       .previewBuy(new anchor.BN(1), new anchor.BN(amount.toString()))
-      .accounts({ oftStore, saleRegistry })
+      .accounts({ oftStore, sale })
       .view();
     expect(cost.toNumber()).to.equal(100_000_000);
 
@@ -640,7 +655,7 @@ describe("grs oft", () => {
         buyer: buyer.publicKey,
         oftStore,
         grsConfig,
-        saleRegistry,
+        sale,
         payee: admin,
         to: buyer.publicKey,
         saleEscrow,
@@ -666,28 +681,31 @@ describe("grs oft", () => {
     const listed = await program.methods
       .getSales(new anchor.BN(0), new anchor.BN(10))
       .accounts({ oftStore, saleRegistry })
+      .remainingAccounts([{ pubkey: sale, isWritable: false, isSigner: false }])
       .view();
     expect(listed).to.have.length(1);
     expect(listed[0].assetAmount.toNumber()).to.equal(0);
-    expect((await program.methods.saleCount().accounts({ oftStore, saleRegistry }).view()).toNumber()).to.equal(1);
+    const registry = await program.account.saleRegistry.fetch(saleRegistry);
+    expect(registry.saleCount.toNumber()).to.equal(1);
   });
 
   it("buy spl quote, closed sale, spoke owner can sell", async () => {
     const mint = await createMint();
     const { oftStore, grsConfig } = await initGrs(mint, true);
-    const { saleRegistry, saleEscrow } = salePdas(oftStore);
+    const { saleRegistry, saleEscrow, sale } = salePdas(oftStore, 1);
     const usdc = await createMint(6);
     const amount = 100n * 1_000_000_000n;
     const adminAta = await mintToAdmin(mint, amount);
     const assetAmount = new anchor.BN(10_000_000); // $10 for 100 GRS (6 dec)
 
     await program.methods
-      .sale(usdc, assetAmount, new anchor.BN(amount.toString()), admin)
+      .sale(new anchor.BN(1), usdc, assetAmount, new anchor.BN(amount.toString()), admin)
       .accounts({
         admin,
         oftStore,
         grsConfig,
         saleRegistry,
+        sale,
         saleEscrow,
         tokenMint: mint,
         tokenProgram: TOKEN_PROGRAM_ID,
@@ -719,7 +737,7 @@ describe("grs oft", () => {
         buyer: buyer.publicKey,
         oftStore,
         grsConfig,
-        saleRegistry,
+        sale,
         payee: admin,
         to: buyer.publicKey,
         saleEscrow,
@@ -738,8 +756,8 @@ describe("grs oft", () => {
 
     expect((await getAccount(provider.connection, buyerAta)).amount).to.equal(amount);
     expect((await getAccount(provider.connection, adminUsdc)).amount).to.equal(cost);
-    const closed = await program.account.saleRegistry.fetch(saleRegistry);
-    expect(closed.entries[0].assetAmount.toNumber()).to.equal(0);
+    const closed = await program.account.saleAccount.fetch(sale);
+    expect(closed.assetAmount.toNumber()).to.equal(0);
     try {
       await program.methods
         .buy(new anchor.BN(1), new anchor.BN(1_000_000_000))
@@ -747,7 +765,7 @@ describe("grs oft", () => {
           buyer: buyer.publicKey,
           oftStore,
           grsConfig,
-          saleRegistry,
+          sale,
           payee: admin,
           to: buyer.publicKey,
           saleEscrow,
@@ -777,15 +795,16 @@ describe("grs oft", () => {
 
     const spokeMint = await createMint();
     const { oftStore: spokeStore, grsConfig: spokeCfg } = await initGrs(spokeMint, false);
-    const spokeSales = salePdas(spokeStore);
+    const spokeSales = salePdas(spokeStore, 1);
     try {
       await program.methods
-        .sale(PublicKey.default, new anchor.BN(1), new anchor.BN(1), PublicKey.default)
+        .sale(new anchor.BN(1), PublicKey.default, new anchor.BN(1), new anchor.BN(1), PublicKey.default)
         .accounts({
           admin,
           oftStore: spokeStore,
           grsConfig: spokeCfg,
           saleRegistry: spokeSales.saleRegistry,
+          sale: spokeSales.sale,
           saleEscrow: spokeSales.saleEscrow,
           tokenMint: spokeMint,
           tokenProgram: TOKEN_PROGRAM_ID,

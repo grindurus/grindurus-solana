@@ -140,6 +140,7 @@ impl Init<'_> {
 
         ctx.accounts.sale_registry.oft_store = ctx.accounts.oft_store.key();
         ctx.accounts.sale_registry.bump = ctx.bumps.sale_registry;
+        ctx.accounts.sale_registry.sale_count = 0;
 
         Self::create_metadata(ctx)?;
 
