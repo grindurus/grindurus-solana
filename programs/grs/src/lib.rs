@@ -19,7 +19,7 @@ use oapp::{
 };
 use state::*;
 
-declare_id!("39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo");
+declare_id!("BGWdAUzjxAZtFzxRTSy88k6r9iYotkhga449vB2tRNTy");
 
 pub const OFT_SEED: &[u8] = b"OFT";
 /// PDA token account that seeds `oft_store`: `["OftEscrow", mint]`.

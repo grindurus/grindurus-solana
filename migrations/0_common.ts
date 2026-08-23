@@ -34,7 +34,7 @@ export const GRINDERS_PROGRAM_ID = new PublicKey(
 );
 
 export const GRS_PROGRAM_ID = new PublicKey(
-  process.env.GRS_PROGRAM_ID ?? "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo",
+  process.env.GRS_PROGRAM_ID ?? "BGWdAUzjxAZtFzxRTSy88k6r9iYotkhga449vB2tRNTy",
 );
 
 /** LayerZero V2 Endpoint on Solana (mainnet + devnet). */

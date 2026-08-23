@@ -9,18 +9,18 @@ skip-lint = false
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
 grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
-grs = "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo"
+grs = "BGWdAUzjxAZtFzxRTSy88k6r9iYotkhga449vB2tRNTy"
 
 [programs.localnet]
 custom_price_feed = "BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1"
 grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
-grs = "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo"
+grs = "BGWdAUzjxAZtFzxRTSy88k6r9iYotkhga449vB2tRNTy"
 
 [programs.mainnet]
 grai = "3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh"
 grinders = "7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v"
-grs = "39exARvBhXifzj9KMq5CyaHPoP1act8oht9ErJmnovBo"
+grs = "BGWdAUzjxAZtFzxRTSy88k6r9iYotkhga449vB2tRNTy"
 
 [registry]
 url = "https://api.apr.dev"
