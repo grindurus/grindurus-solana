@@ -115,6 +115,7 @@ impl Init<'_> {
 
         ctx.accounts.lz_receive_types_accounts.oft_store = ctx.accounts.oft_store.key();
         ctx.accounts.lz_receive_types_accounts.token_mint = ctx.accounts.token_mint.key();
+        ctx.accounts.lz_receive_types_accounts.grs_config = ctx.accounts.grs_config.key();
 
         if !ctx.remaining_accounts.is_empty() {
             oapp::endpoint_cpi::register_oapp(

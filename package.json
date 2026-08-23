@@ -10,6 +10,9 @@
     "setGrinders": "tsx migrations/grai/setGrinders.ts",
     "deployGrs": "tsx migrations/4_DeployGRS.ts",
     "setPeer": "tsx migrations/grs/setPeer.ts",
+    "wire": "tsx migrations/grs/wire.ts",
+    "wireGrs": "tsx migrations/grs/wire.ts",
+    "patchLzReceiveTypes": "tsx migrations/grs/patchLzReceiveTypes.ts",
     "verify": "tsx migrations/verify.ts",
     "depositSol": "tsx migrations/grai/depositSol.ts",
     "deposit": "tsx migrations/grai/deposit.ts",
@@ -23,7 +26,8 @@
     "status": "tsx migrations/status.ts"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "^0.31.1"
+    "@coral-xyz/anchor": "^0.31.1",
+    "@layerzerolabs/lz-solana-sdk-v2": "^3.0.168"
   },
   "devDependencies": {
     "@chainlink/solana-sdk": "^0.2.2",

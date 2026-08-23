@@ -33,46 +33,89 @@ pub struct QuoteSend<'info> {
     pub token_mint: InterfaceAccount<'info, Mint>,
 }
 
+/// Same accounts as `QuoteSend`, but ix args match `quote_bridge(dst_eid, to, amount_ld)`.
+#[derive(Accounts)]
+#[instruction(dst_eid: u32)]
+pub struct QuoteBridge<'info> {
+    #[account(
+        seeds = [OFT_SEED, oft_store.token_escrow.as_ref()],
+        bump = oft_store.bump
+    )]
+    pub oft_store: Account<'info, OFTStore>,
+    #[account(
+        seeds = [
+            PEER_SEED,
+            oft_store.key().as_ref(),
+            &dst_eid.to_be_bytes()
+        ],
+        bump = peer.bump
+    )]
+    pub peer: Account<'info, PeerConfig>,
+    #[account(address = oft_store.token_mint)]
+    pub token_mint: InterfaceAccount<'info, Mint>,
+}
+
 impl QuoteSend<'_> {
     pub fn apply(ctx: &Context<QuoteSend>, params: &QuoteSendParams) -> Result<MessagingFee> {
-        require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
-        require!(params.compose_msg.is_none(), OFTError::ComposeDisabled);
-        require!(
-            params.to != msg_codec::sale_msg_type() && params.to != msg_codec::grant_msg_type(),
-            OFTError::InvalidRecipient
-        );
-
-        let (_, amount_received_ld, _) = compute_fee_and_adjust_amount(
-            params.amount_ld,
+        quote_send_inner(
             &ctx.accounts.oft_store,
+            &ctx.accounts.peer,
             &ctx.accounts.token_mint,
-            ctx.accounts.peer.fee_bps,
-        )?;
-        require!(amount_received_ld >= params.min_amount_ld, OFTError::SlippageExceeded);
-
-        // calling endpoint cpi
-        oapp::endpoint_cpi::quote(
-            ctx.accounts.oft_store.endpoint_program,
             ctx.remaining_accounts,
-            QuoteParams {
-                sender: ctx.accounts.oft_store.key(),
-                dst_eid: params.dst_eid,
-                receiver: ctx.accounts.peer.peer_address,
-                message: msg_codec::encode(
-                    params.to,
-                    amount_received_ld,
-                    Pubkey::default(),
-                    &params.compose_msg,
-                ),
-                pay_in_lz_token: params.pay_in_lz_token,
-                options: ctx
-                    .accounts
-                    .peer
-                    .enforced_options
-                    .combine_options(&params.compose_msg, &params.options)?,
-            },
+            params,
         )
     }
+}
+
+impl QuoteBridge<'_> {
+    pub fn apply(ctx: &Context<QuoteBridge>, params: &QuoteSendParams) -> Result<MessagingFee> {
+        quote_send_inner(
+            &ctx.accounts.oft_store,
+            &ctx.accounts.peer,
+            &ctx.accounts.token_mint,
+            ctx.remaining_accounts,
+            params,
+        )
+    }
+}
+
+fn quote_send_inner(
+    oft_store: &Account<OFTStore>,
+    peer: &Account<PeerConfig>,
+    token_mint: &InterfaceAccount<Mint>,
+    remaining_accounts: &[AccountInfo],
+    params: &QuoteSendParams,
+) -> Result<MessagingFee> {
+    require!(!oft_store.paused, OFTError::Paused);
+    require!(params.compose_msg.is_none(), OFTError::ComposeDisabled);
+    require!(
+        params.to != msg_codec::sale_msg_type() && params.to != msg_codec::grant_msg_type(),
+        OFTError::InvalidRecipient
+    );
+
+    let (_, amount_received_ld, _) =
+        compute_fee_and_adjust_amount(params.amount_ld, oft_store, token_mint, peer.fee_bps)?;
+    require!(amount_received_ld >= params.min_amount_ld, OFTError::SlippageExceeded);
+
+    oapp::endpoint_cpi::quote(
+        oft_store.endpoint_program,
+        remaining_accounts,
+        QuoteParams {
+            sender: oft_store.key(),
+            dst_eid: params.dst_eid,
+            receiver: peer.peer_address,
+            message: msg_codec::encode(
+                params.to,
+                amount_received_ld,
+                Pubkey::default(),
+                &params.compose_msg,
+            ),
+            pay_in_lz_token: params.pay_in_lz_token,
+            options: peer
+                .enforced_options
+                .combine_options(&params.compose_msg, &params.options)?,
+        },
+    )
 }
 
 pub fn compute_fee_and_adjust_amount(

@@ -42,11 +42,15 @@ impl OFTStore {
     }
 }
 
-/// LzReceiveTypesAccounts includes accounts that are used in the LzReceiveTypes
-/// instruction.
+/// Static accounts the Executor passes into `lz_receive_types`.
+/// Layout is a flat list of pubkeys after the discriminator (SDK reads `n*32+8`).
+///
+/// `grs_config` is required for `GRS.grant` account discovery (`vesting_count`).
+/// Sale / OFT paths only need `oft_store` + `token_mint` (derive the rest).
 #[account]
 #[derive(InitSpace)]
 pub struct LzReceiveTypesAccounts {
     pub oft_store: Pubkey,
     pub token_mint: Pubkey,
+    pub grs_config: Pubkey,
 }

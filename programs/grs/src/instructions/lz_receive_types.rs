@@ -9,6 +9,8 @@ use oapp::endpoint_cpi::LzAccount;
 
 #[derive(Accounts)]
 pub struct LzReceiveTypes<'info> {
+    /// Executor only passes accounts stored in `LzReceiveTypesAccounts` (flat pubkeys).
+    /// Keep this struct aligned with that PDA — extra required accounts → `AccountNotEnoughKeys`.
     #[account(
         seeds = [OFT_SEED, oft_store.token_escrow.as_ref()],
         bump = oft_store.bump
@@ -16,11 +18,6 @@ pub struct LzReceiveTypes<'info> {
     pub oft_store: Account<'info, OFTStore>,
     #[account(address = oft_store.token_mint)]
     pub token_mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
-        bump = grs_config.bump
-    )]
-    pub grs_config: Account<'info, GrsConfig>,
 }
 
 // account structure
@@ -52,7 +49,10 @@ impl LzReceiveTypes<'_> {
             &[PEER_SEED, ctx.accounts.oft_store.key().as_ref(), &params.src_eid.to_be_bytes()],
             ctx.program_id,
         );
-        let grs_config = ctx.accounts.grs_config.key();
+        let (grs_config, _) = Pubkey::find_program_address(
+            &[GrsConfig::SEED, ctx.accounts.oft_store.key().as_ref()],
+            ctx.program_id,
+        );
         let (sale_registry, _) = Pubkey::find_program_address(
             &[SaleRegistry::SEED, ctx.accounts.oft_store.key().as_ref()],
             ctx.program_id,
@@ -80,9 +80,17 @@ impl LzReceiveTypes<'_> {
             )
             .0
         } else if grant {
-            let id = ctx
-                .accounts
-                .grs_config
+            // Optional 3rd pubkey in `LzReceiveTypesAccounts` (see `patch_lz_receive_types_accounts`).
+            require!(
+                !ctx.remaining_accounts.is_empty(),
+                OFTError::InvalidRemainingAccounts
+            );
+            let grs_info = &ctx.remaining_accounts[0];
+            require_keys_eq!(grs_info.key(), grs_config, OFTError::InvalidRemainingAccounts);
+            let data = grs_info.try_borrow_data()?;
+            let mut slice: &[u8] = &data;
+            let grs = GrsConfig::try_deserialize(&mut slice)?;
+            let id = grs
                 .vesting_count
                 .checked_add(1)
                 .ok_or(error!(OFTError::InvalidVestingId))?;
@@ -121,7 +129,8 @@ impl LzReceiveTypes<'_> {
             LzAccount { pubkey: Pubkey::default(), is_signer: true, is_writable: true }, // 0
             LzAccount { pubkey: peer, is_signer: false, is_writable: true },             // 1
             LzAccount { pubkey: ctx.accounts.oft_store.key(), is_signer: false, is_writable: true }, // 2
-            LzAccount { pubkey: grs_config, is_signer: false, is_writable: grant },      // 3
+            // Always writable: `LzReceive.grs_config` is `mut` for OFT/sale/grant.
+            LzAccount { pubkey: grs_config, is_signer: false, is_writable: true }, // 3
             LzAccount { pubkey: sale_registry, is_signer: false, is_writable: true },    // 4
             LzAccount { pubkey: row, is_signer: false, is_writable: true },              // 5
             LzAccount { pubkey: sale_escrow, is_signer: false, is_writable: true },      // 6

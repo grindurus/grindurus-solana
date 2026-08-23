@@ -119,6 +119,14 @@ pub mod grs {
         SetPeerConfig::apply(&mut ctx, &params)
     }
 
+    /// One-shot: append `grs_config` to `LzReceiveTypesAccounts` so the Executor can discover
+    /// grant vest PDAs. Sale / OFT receive only need `oft_store` + `token_mint`.
+    pub fn patch_lz_receive_types_accounts(
+        ctx: Context<PatchLzReceiveTypesAccounts>,
+    ) -> Result<()> {
+        PatchLzReceiveTypesAccounts::apply(&ctx)
+    }
+
     pub fn set_pause(mut ctx: Context<SetPause>, params: SetPauseParams) -> Result<()> {
         SetPause::apply(&mut ctx, &params)
     }
@@ -172,12 +180,12 @@ pub mod grs {
 
     /// Same hop as `quote_send` with empty options / no compose / no LZ token fee.
     pub fn quote_bridge(
-        ctx: Context<QuoteSend>,
+        ctx: Context<QuoteBridge>,
         dst_eid: u32,
         to: [u8; 32],
         amount_ld: u64,
     ) -> Result<MessagingFee> {
-        QuoteSend::apply(
+        QuoteBridge::apply(
             &ctx,
             &QuoteSendParams {
                 dst_eid,
