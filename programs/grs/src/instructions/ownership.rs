@@ -57,16 +57,20 @@ impl AcceptOwnership<'_> {
             new_owner,
         });
 
-        let oft_store_seed = ctx.accounts.oft_store.token_escrow.key();
-        let seeds: &[&[u8]] =
-            &[OFT_SEED, oft_store_seed.as_ref(), &[ctx.accounts.oft_store.bump]];
-        oapp::endpoint_cpi::set_delegate(
-            ctx.accounts.oft_store.endpoint_program,
-            ctx.accounts.oft_store.key(),
-            ctx.remaining_accounts,
-            seeds,
-            SetDelegateParams { delegate: new_owner },
-        )?;
+        // Same as `init` register_oapp: empty remaining = local/staged (no Endpoint CPI).
+        // Production handoff must pass Endpoint `SetDelegate` accounts (see `set_oft_config(Delegate)`).
+        if !ctx.remaining_accounts.is_empty() {
+            let oft_store_seed = ctx.accounts.oft_store.token_escrow.key();
+            let seeds: &[&[u8]] =
+                &[OFT_SEED, oft_store_seed.as_ref(), &[ctx.accounts.oft_store.bump]];
+            oapp::endpoint_cpi::set_delegate(
+                ctx.accounts.oft_store.endpoint_program,
+                ctx.accounts.oft_store.key(),
+                ctx.remaining_accounts,
+                seeds,
+                SetDelegateParams { delegate: new_owner },
+            )?;
+        }
         Ok(())
     }
 }

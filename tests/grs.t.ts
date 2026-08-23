@@ -591,22 +591,23 @@ describe("grs oft", () => {
     expect(tail[0].id.toNumber()).to.equal(3);
 
     try {
+      // Prefer `.rpc()` over `.view()` so AnchorError carries `errorCode` (treasury.t.ts pattern).
       await program.methods
         .getVestings(new anchor.BN(3), new anchor.BN(1))
         .accounts({ oftStore, grsConfig })
-        .view();
+        .rpc();
       expect.fail("offset past book");
     } catch (e: any) {
-      expect(String(e)).to.match(/UnknownVesting/);
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e}`).to.match(/UnknownVesting/);
     }
     try {
       await program.methods
         .getVestings(new anchor.BN(0), new anchor.BN(0))
         .accounts({ oftStore, grsConfig })
-        .view();
+        .rpc();
       expect.fail("limit zero");
     } catch (e: any) {
-      expect(String(e)).to.match(/ZeroAmount/);
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e}`).to.match(/ZeroAmount/);
     }
   });
 

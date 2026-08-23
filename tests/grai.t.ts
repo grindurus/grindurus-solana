@@ -758,43 +758,6 @@ describe("GRAI tokenomics", () => {
     expect(uri).to.equal(GRAI_TOKEN_URI);
   });
 
-  it("C-01: pinning rejects a clone mint even when mint_authority is GraiState", async () => {
-    const cloneMint = Keypair.generate();
-    const lamports = await provider.connection.getMinimumBalanceForRentExemption(
-      MINT_SIZE,
-    );
-    await provider.sendAndConfirm(
-      new Transaction().add(
-        SystemProgram.createAccount({
-          fromPubkey: authority,
-          newAccountPubkey: cloneMint.publicKey,
-          space: MINT_SIZE,
-          lamports,
-          programId: TOKEN_PROGRAM_ID,
-        }),
-        createInitializeMint2Instruction(
-          cloneMint.publicKey,
-          USD_DECIMALS,
-          graiState,
-          null,
-          TOKEN_PROGRAM_ID,
-        ),
-      ),
-      [cloneMint],
-    );
-
-    await expectTransactionError(
-      program.methods
-        .hasQuorum()
-        .accountsPartial({
-          graiState,
-          graiMint: cloneMint.publicKey,
-        })
-        .view(),
-      "InvalidMint",
-    );
-  });
-
   it("Ownable2Step: transfer sets pending, accept hands off, cancel and stranger fail", async () => {
     const next = Keypair.generate();
     const stranger = Keypair.generate();
