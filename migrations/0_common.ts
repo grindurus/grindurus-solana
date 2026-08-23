@@ -61,13 +61,6 @@ export const GRS_MINT_KEYPAIR_PATH = path.join(
   process.env.GRS_MINT_KEYPAIR_NAME ?? "grs-mint.json",
 );
 
-/** GRS OFT token_escrow keypair — seeds `oft_store` PDA (`["OFT", escrow]`). */
-export const GRS_ESCROW_KEYPAIR_PATH = path.join(
-  __dirname,
-  "keys",
-  process.env.GRS_ESCROW_KEYPAIR_NAME ?? "grs-escrow.json",
-);
-
 export const GRS_LOCAL_DECIMALS = 9;
 export const GRS_SHARED_DECIMALS = 6;
 
@@ -324,6 +317,17 @@ export function graiMetadataPda(mint: PublicKey): PublicKey {
   )[0];
 }
 
+/** GRS OFT token_escrow PDA — `["OftEscrow", mint]` (no separate keypair). */
+export function grsOftTokenEscrowPda(
+  mint: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("OftEscrow"), mint.toBuffer()],
+    programId,
+  )[0];
+}
+
 export function grsOftStorePda(
   tokenEscrow: PublicKey,
   programId: PublicKey = GRS_PROGRAM_ID,
@@ -332,6 +336,15 @@ export function grsOftStorePda(
     [Buffer.from("OFT"), tokenEscrow.toBuffer()],
     programId,
   )[0];
+}
+
+/** `oft_store` from mint: escrow PDA → OFT PDA. */
+export function grsOftStorePdaFromMint(
+  mint: PublicKey,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): { escrow: PublicKey; oftStore: PublicKey } {
+  const escrow = grsOftTokenEscrowPda(mint, programId);
+  return { escrow, oftStore: grsOftStorePda(escrow, programId) };
 }
 
 export function grsConfigPda(
@@ -350,6 +363,20 @@ export function grsPeerRegistryPda(
 ): PublicKey {
   return PublicKey.findProgramAddressSync(
     [Buffer.from("peers"), oftStore.toBuffer()],
+    programId,
+  )[0];
+}
+
+/** LayerZero `Peer` PDA: `["Peer", oft_store, remote_eid_be]`. */
+export function grsPeerPda(
+  oftStore: PublicKey,
+  remoteEid: number,
+  programId: PublicKey = GRS_PROGRAM_ID,
+): PublicKey {
+  const eidBe = Buffer.alloc(4);
+  eidBe.writeUInt32BE(remoteEid);
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("Peer"), oftStore.toBuffer(), eidBe],
     programId,
   )[0];
 }
@@ -589,10 +616,6 @@ function loadOrCreateKeypair(filePath: string, label: string): Keypair {
 
 export function loadOrCreateGrsMintKeypair(): Keypair {
   return loadOrCreateKeypair(GRS_MINT_KEYPAIR_PATH, "GRS mint");
-}
-
-export function loadOrCreateGrsEscrowKeypair(): Keypair {
-  return loadOrCreateKeypair(GRS_ESCROW_KEYPAIR_PATH, "GRS escrow");
 }
 
 export function loadProvider(): anchor.AnchorProvider {
