@@ -276,18 +276,30 @@ pub fn settle_all_quads<'info>(
         settle(asset.acc_share, effective_old, new_unvoted, &mut pos)?;
 
         if pay && pos.claimable > 0 {
-            let claimed = pos.claimable;
-            transfer_from_vault(
-                token_program,
-                vault_info,
-                holder_info,
-                grai_state,
-                grai_state_bump,
-                claimed,
-            )?;
-            pos.claimable = 0;
-            asset.total_claimable = asset.total_claimable.saturating_sub(claimed);
-            store_asset_config(asset_info, &asset)?;
+            let vault_data = vault_info.try_borrow_data()?;
+            require!(vault_data.len() >= 72, ErrorCode::InvalidDestination);
+            let vault_bal = u64::from_le_bytes(vault_data[64..72].try_into().unwrap());
+            drop(vault_data);
+            let claimed = pos
+                .claimable
+                .min(vault_bal)
+                .min(asset.total_claimable);
+            if claimed > 0 {
+                transfer_from_vault(
+                    token_program,
+                    vault_info,
+                    holder_info,
+                    grai_state,
+                    grai_state_bump,
+                    claimed,
+                )?;
+                pos.claimable = pos
+                    .claimable
+                    .checked_sub(claimed)
+                    .ok_or(ErrorCode::MathOverflow)?;
+                asset.total_claimable = asset.total_claimable.saturating_sub(claimed);
+                store_asset_config(asset_info, &asset)?;
+            }
         }
         store_position(position_info, &pos)?;
     }

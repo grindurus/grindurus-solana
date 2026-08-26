@@ -11,10 +11,12 @@ use crate::{AssetConfig, Claim, ClaimAll, ErrorCode, Position};
 /// Claim yield dividends accrued to the unvoted part of `holder`'s lock for one asset.
 ///
 /// `amount == u64::MAX` claims the full accrued balance (EVM `type(uint256).max`); otherwise
-/// claims `min(amount, claimable)`. Tip (`claim_tip_bps`) goes to `payer`; remainder to `holder`.
-/// Credits referral books with `usd_value(asset, claimed)` before treasury payouts (EVM
-/// `treasury.distribute` / `claimedValue`). Allowed during liquidation: the claim reserve is
-/// carved out of the redeem basket.
+/// claims `min(amount, claimable, vault, total_claimable)`. Cap vs vault / reserve covers
+/// MasterChef floor overhang (Σ per-locker floors can exceed reserved by a few wei). Tip
+/// (`claim_tip_bps`) goes to `payer`; remainder to `holder`. Credits referral books with
+/// `usd_value(asset, claimed)` before treasury payouts (EVM `treasury.distribute` /
+/// `claimedValue`). Allowed during liquidation: the claim reserve is carved out of the
+/// redeem basket.
 ///
 /// Remaining: `[referrer_pda, nft_ata, affiliate_ata]` × `affiliate_levels` plus the last
 /// ancestor's Referrer PDA (N levels → N+1 books). First PDA is the locker book (writable).
@@ -56,7 +58,10 @@ pub fn execute_claim<'info>(
         return Ok(());
     }
 
-    let claimed = preview_claim(amount, claimable);
+    // Cap by vault + reserve so floor overhang cannot overdraw redeemable inventory.
+    let claimed = preview_claim(amount, claimable)
+        .min(ctx.accounts.vault_ata.amount)
+        .min(ctx.accounts.asset_config.total_claimable);
     if claimed == 0 {
         dividend::store_position(&position_info, &position)?;
         return Ok(());
@@ -212,10 +217,17 @@ pub fn execute_claim_all<'info>(
                 settle(acc, unvoted, unvoted, &mut position)?;
             }
             let claimable = position.claimable;
+            let vault_bal = {
+                let vault: Account<anchor_spl::token::TokenAccount> =
+                    Account::try_from(vault_info)?;
+                vault.amount
+            };
             let claimed = if claimable == 0 {
                 0
             } else {
                 preview_claim(u64::MAX, claimable)
+                    .min(vault_bal)
+                    .min(asset.total_claimable)
             };
             {
                 let mut pos_data = position_info.try_borrow_mut_data()?;

@@ -686,10 +686,11 @@ describe("Treasury referrals / poach / NFT", () => {
   }
 
   before(async () => {
-    await ensureGrindersInitialized(grindersProgram, {
+    await ensureGrindersInitialized(
+      grindersProgram,
       authority,
-      graiProgramId: program.programId,
-    });
+      program.programId,
+    );
 
     const asset = await program.account.assetConfig.fetch(usdcAssetConfig);
     usdcUsdFeed = asset.priceFeed;
@@ -1040,8 +1041,12 @@ describe("Treasury referrals / poach / NFT", () => {
       const aliceExpected = accrued(aliceMinted, accFinal, accAtAliceBobLock);
       const bobExpected = accrued(bobMinted, accFinal, accAtAliceBobLock);
       const carolExpected = accrued(carolMinted, accFinal, accAtCarolLock);
-      const claimedTotal = aliceExpected + bobExpected + carolExpected;
-      const indexDust = reserved1 + reserved2 - claimedTotal;
+      const pendingTotal = aliceExpected + bobExpected + carolExpected;
+      const reservedTotal = reserved1 + reserved2;
+      // Floor overhang: Σ pending can exceed reserved by 1 wei — claim pays min(pending, vault/reserve).
+      const paidTotal = pendingTotal < reservedTotal ? pendingTotal : reservedTotal;
+      const carolPaid =
+        carolExpected - (pendingTotal > reservedTotal ? pendingTotal - reservedTotal : 0n);
 
       const aliceUsdc = await ensureAta(
         usdcMint.publicKey,
@@ -1079,14 +1084,13 @@ describe("Treasury referrals / poach / NFT", () => {
         aliceExpected,
       );
       expect((await tokenBal(bobUsdc)) - bobUsdcBefore).to.equal(bobExpected);
-      expect((await tokenBal(carolUsdc)) - carolUsdcBefore).to.equal(
-        carolExpected,
-      );
+      expect((await tokenBal(carolUsdc)) - carolUsdcBefore).to.equal(carolPaid);
       expect(aliceExpected).to.equal(bobExpected);
-      expect(carolExpected > 0n).to.be.true;
+      expect(carolPaid > 0n).to.be.true;
+      expect(carolPaid <= carolExpected).to.be.true;
       expect(carolExpected < aliceExpected).to.be.true;
       // Self-root: gross profit share == claimed → beneficiar.
-      expect((await tokenBal(beneficiarAta)) - benBefore).to.equal(claimedTotal);
+      expect((await tokenBal(beneficiarAta)) - benBefore).to.equal(paidTotal);
       expect(
         (await bookValue(aliceLocker.publicKey)) - aliceBookBefore,
       ).to.equal(aliceExpected);
@@ -1095,15 +1099,15 @@ describe("Treasury referrals / poach / NFT", () => {
       );
       expect(
         (await bookValue(carolLocker.publicKey)) - carolBookBefore,
-      ).to.equal(carolExpected);
-      // Floor dust stays in total_claimable (not paid to these three).
+      ).to.equal(carolPaid);
+      // Unpaid floor overhang (if any) stays on the last locker's claimable; reserve is drained.
       expect(
         BigInt(
           (
             await program.account.assetConfig.fetch(usdcAssetConfig)
           ).totalClaimable.toString(),
         ),
-      ).to.equal(claimableBefore + indexDust);
+      ).to.equal(claimableBefore + reservedTotal - paidTotal);
     } finally {
       await unlockUser(aliceLocker.publicKey, aliceLocker);
       await unlockUser(bobLocker.publicKey, bobLocker);

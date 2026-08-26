@@ -1734,7 +1734,8 @@ pub mod grai {
     }
 
     /// Claim yield dividends for one listed asset.
-    /// `amount == u64::MAX` claims the full accrued balance; otherwise `min(amount, claimable)`.
+    /// `amount == u64::MAX` claims the full accrued balance; otherwise
+    /// `min(amount, claimable, vault, total_claimable)`.
     /// Tip (`claim_tip_bps`) is paid to `payer`; remainder to `holder`.
     pub fn claim<'info>(
         ctx: Context<'_, '_, 'info, 'info, Claim<'info>>,

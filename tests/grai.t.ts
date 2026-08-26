@@ -1849,28 +1849,26 @@ describe("GRAI tokenomics", () => {
     expect(quorum).to.be.false;
   });
 
-  it("grinders confirm arms liquidation; GRAI accept_ownership does not clear it", async () => {
-    await grindersProgram.methods
-      .confirm()
-      .accountsPartial({
-        owner: authority,
-        grindersState,
-      })
-      .rpc();
-
+  it("heartbeat is GRAI-only; GRAI accept_ownership does not reset Grinders heartbeat", async () => {
     let grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.confirmed).to.be.true;
+    expect(Number(grinders.grindingPeriod)).to.be.greaterThan(0);
+    const before = BigInt(grinders.heartbeatAt.toString());
+    expect(before > 0n).to.be.true;
 
-    // Disarm so later tests start clean (and verify toggle).
-    await grindersProgram.methods
-      .confirm()
-      .accountsPartial({
-        owner: authority,
-        grindersState,
-      })
-      .rpc();
+    // Direct call cannot sign as grai_state PDA → NotGrai (EVM `_onlyGrai`).
+    await expectTransactionError(
+      grindersProgram.methods
+        .heartbeat()
+        .accountsPartial({
+          grindersState,
+          graiState,
+        })
+        .rpc(),
+      "NotGrai",
+    );
+
     grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.confirmed).to.be.false;
+    expect(BigInt(grinders.heartbeatAt.toString())).to.equal(before);
 
     const next = Keypair.generate();
     await fundWallet(next);
@@ -1887,10 +1885,16 @@ describe("GRAI tokenomics", () => {
     const state = await program.account.graiState.fetch(graiState);
     expect(state.owner.toBase58()).to.equal(next.publicKey.toBase58());
 
+    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    expect(BigInt(grinders.heartbeatAt.toString())).to.equal(
+      before,
+      "GRAI ownership handoff must not bump or clear Grinders heartbeat",
+    );
+
     await restoreOwner(next);
   });
 
-  it("Grinders Ownable2Step: transfer sets pending, accept hands off and clears confirmed", async () => {
+  it("Grinders Ownable2Step: transfer sets pending, accept hands off and preserves heartbeat", async () => {
     const next = Keypair.generate();
     const stranger = Keypair.generate();
     await fundWallet(next);
@@ -1931,12 +1935,40 @@ describe("GRAI tokenomics", () => {
       PublicKey.default.toBase58(),
     );
 
-    await grindersProgram.methods
-      .confirm()
-      .accountsPartial({ owner: authority, grindersState })
-      .rpc();
+    // Operational allocate bumps heartbeat; ownership handoff must preserve it.
+    const custodian = await getUsdcCustodian();
+    const grindersUsdc = grindersAta(usdcMint.publicKey);
+    const custodianUsdc = getAssociatedTokenAddressSync(
+      usdcMint.publicKey,
+      custodian.custodianState,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+    const reserve = BigInt(
+      (
+        await provider.connection
+          .getTokenAccountBalance(grindersUsdc)
+          .catch(() => ({ value: { amount: "0" } }))
+      ).value.amount,
+    );
+    if (reserve > 0n) {
+      await grindersProgram.methods
+        .allocate(new anchor.BN(1))
+        .accountsPartial({
+          owner: authority,
+          grindersState,
+          custodianState: custodian.custodianState,
+          assetMint: usdcMint.publicKey,
+          grindersAta: grindersUsdc,
+          custodianAta: custodianUsdc,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+    }
     grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.confirmed).to.be.true;
+    const beforeHandoff = BigInt(grinders.heartbeatAt.toString());
+    expect(beforeHandoff > 0n).to.be.true;
 
     await grindersProgram.methods
       .transferOwnership(next.publicKey)
@@ -1953,7 +1985,10 @@ describe("GRAI tokenomics", () => {
     expect(grinders.pendingOwner.toBase58()).to.equal(
       PublicKey.default.toBase58(),
     );
-    expect(grinders.confirmed).to.be.false;
+    expect(BigInt(grinders.heartbeatAt.toString())).to.equal(
+      beforeHandoff,
+      "ownership handoff must not bump or clear heartbeat",
+    );
 
     await restoreGrindersOwner(next);
   });
