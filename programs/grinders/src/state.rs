@@ -13,17 +13,17 @@ pub struct GrindersState {
     pub next_custodian_id: u64,
     /// Metaplex collection parent for all custodian NFTs (mirrors ERC-721 contract).
     pub collection_mint: Pubkey,
-    /// Grinders-owner limb of GRAI 2-of-2 liquidation (EVM `Grinders.confirmed`).
-    /// Armed via `confirm`; required by every sweep; cleared by GRAI on `revive`
-    /// and by `accept_ownership` so a prior arm does not survive handoff.
-    pub confirmed: bool,
+    /// Last successful operational heartbeat (`allocate` / `custodian_deallocate` / `custodian_distribute` / `heartbeat`).
+    pub heartbeat_at: i64,
+    /// Inactivity window in seconds. If `now > heartbeat_at + grinding_period`, Grinders is stale.
+    pub grinding_period: u32,
     pub bump: u8,
 }
 
 impl GrindersState {
     pub const SEED: &'static [u8] = b"grinders";
-    /// Borsh body (no discriminator). `owner + pending + grai + next_id + collection + confirmed + bump`
-    /// = `32*4 + 8 + 1 + 1` = 138. Audit M-10's `32*4 + 8 + 32 + 1 + 1` double-counted `collection_mint`.
+    /// Borsh body (no discriminator). `owner + pending + grai + next_id + collection + heartbeat_at + grinding_period + bump`
+    /// = `32*4 + 8 + 32 + 8 + 4 + 1` = 181.
     pub const LEN: usize = Self::INIT_SPACE;
 
     pub fn signer_seeds<'a>(&'a self, bump: &'a [u8; 1]) -> [&'a [u8]; 2] {
@@ -101,13 +101,14 @@ mod account_sizes {
             grai_program: Pubkey::new_unique(),
             next_custodian_id: 1,
             collection_mint: Pubkey::new_unique(),
-            confirmed: true,
+            heartbeat_at: 1,
+            grinding_period: 604_800,
             bump: 255,
         };
         let mut buf = Vec::new();
         state.try_serialize(&mut buf).unwrap();
         assert_eq!(buf.len(), 8 + GrindersState::LEN);
-        assert_eq!(GrindersState::LEN, 32 * 4 + 8 + 1 + 1);
+        assert_eq!(GrindersState::LEN, 32 * 4 + 8 + 32 + 8 + 4 + 1);
     }
 
     #[test]

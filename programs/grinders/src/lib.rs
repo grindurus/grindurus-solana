@@ -14,6 +14,7 @@ mod custodian;
 mod custodians;
 mod errors;
 mod grinder_art;
+mod heartbeat;
 mod state;
 
 pub use errors::ErrorCode;
@@ -26,6 +27,7 @@ declare_id!("7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v");
 
 /// Per-item NFT symbol; collection name is `collection::COLLECTION_NAME`.
 pub const CUSTODIAN_NFT_SYMBOL: &str = "GRINDERS";
+pub const DEFAULT_GRINDING_PERIOD: u32 = 7 * 24 * 60 * 60;
 
 #[program]
 pub mod grinders {
@@ -47,7 +49,8 @@ pub mod grinders {
             grinders.grai_program = ctx.accounts.grai_program.key();
             grinders.next_custodian_id = 0;
             grinders.collection_mint = ctx.accounts.collection_mint.key();
-            grinders.confirmed = false;
+            grinders.heartbeat_at = Clock::get()?.unix_timestamp;
+            grinders.grinding_period = DEFAULT_GRINDING_PERIOD;
             grinders.bump = grinders_bump;
         }
 
@@ -75,15 +78,14 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Toggle the Grinders-owner limb of GRAI 2-of-2 liquidation (EVM `Grinders.confirm`).
-    /// Arm stays set through open so keeper sweeps keep working; GRAI clears via `revive`.
-    pub fn confirm(ctx: Context<Confirm>) -> Result<()> {
-        let grinders = &mut ctx.accounts.grinders_state;
-        grinders.confirmed = !grinders.confirmed;
-        msg!("grinders confirm={}", grinders.confirmed);
-        emit!(ConfirmEvent {
-            confirmed: grinders.confirmed,
-        });
+    /// Set the inactivity window (`1..=30 days`) for heartbeat-based liquidation gate.
+    pub fn set_grind_period(ctx: Context<SetGrindPeriod>, grind_period: u32) -> Result<()> {
+        require!(
+            grind_period >= 24 * 60 * 60 && grind_period <= 30 * 24 * 60 * 60,
+            ErrorCode::InvalidGrindPeriod
+        );
+        ctx.accounts.grinders_state.grinding_period = grind_period;
+        emit!(GrindPeriodUpdateEvent { grind_period });
         Ok(())
     }
 
@@ -108,28 +110,24 @@ pub mod grinders {
     }
 
     /// Pending owner takes over (EVM `Grinders.acceptOwnership`).
-    /// Prior owner's liquidation arm must not survive handoff.
     pub fn accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
         let grinders = &mut ctx.accounts.grinders_state;
         let new_owner = ctx.accounts.pending_owner.key();
         grinders.owner = new_owner;
         grinders.pending_owner = Pubkey::default();
-        grinders.confirmed = false;
         msg!("OwnershipTransferred owner={}", new_owner);
-        emit!(ConfirmEvent { confirmed: false });
         Ok(())
     }
 
-    /// Clear the liquidation arm when GRAI closes the cycle (EVM `Grinders.revive`).
-    /// Only the linked GRAI protocol PDA may call (via CPI from `grai::revive`).
-    pub fn revive(ctx: Context<ReviveConfirm>) -> Result<()> {
+    /// Refresh heartbeat — only linked GRAI protocol PDA (EVM `Grinders.heartbeat` / `_onlyGrai`).
+    /// Called via CPI from `grai::revive`.
+    pub fn heartbeat(ctx: Context<Heartbeat>) -> Result<()> {
         require!(
             ctx.accounts.grai_state.to_account_info().is_signer,
             ErrorCode::NotGrai
         );
-        ctx.accounts.grinders_state.confirmed = false;
-        msg!("grinders revive confirmed=false");
-        emit!(ConfirmEvent { confirmed: false });
+        heartbeat::heartbeat(&mut ctx.accounts.grinders_state)?;
+        msg!("heartbeat at={}", ctx.accounts.grinders_state.heartbeat_at);
         Ok(())
     }
 
@@ -315,6 +313,7 @@ pub mod grinders {
             custodian: ctx.accounts.custodian_state.key(),
             amount,
         });
+        heartbeat::heartbeat(&mut ctx.accounts.grinders_state)?;
         Ok(())
     }
 
@@ -372,6 +371,7 @@ pub mod grinders {
             custodian: ctx.accounts.custodian_state.key(),
             amount,
         });
+        heartbeat::heartbeat(&mut ctx.accounts.grinders_state)?;
         Ok(())
     }
 
@@ -397,11 +397,13 @@ pub mod grinders {
             &ctx.accounts.token_program,
             &ctx.accounts.system_program.to_account_info(),
             yield_amount,
-        )
+        )?;
+        heartbeat::heartbeat(&mut ctx.accounts.grinders_state)?;
+        Ok(())
     }
 
-    /// Permissionless idle-reserve sweep while Grinders liquidation arm is set
-    /// (EVM `Grinders.liquidate(0,0)` — gated by `confirmed`, not `grai.liquidation`).
+    /// Permissionless idle-reserve sweep while GRAI liquidation is open.
+    /// (EVM `Grinders.liquidate(0,0)` — gated by `grai.liquidation`, not heartbeat).
     /// Remaining accounts: per listed GRAI asset — `[grinders_ata, grai_vault_ata]`.
     /// `grai_vault_ata` must be GRAI `["vault", mint]` (authority = `GraiState`).
     pub fn liquidate_idle<'info>(
@@ -436,10 +438,7 @@ pub mod grinders {
             )?;
         }
 
-        require!(
-            ctx.accounts.grinders_state.confirmed,
-            ErrorCode::LiquidationNotConfirmed
-        );
+        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
 
         let grinders_bump = [ctx.accounts.grinders_state.bump];
         let grinders_signer = ctx
@@ -484,14 +483,11 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Permissionless custodian sweep while Grinders liquidation arm is set
-    /// (EVM `Grinders.liquidate` page — gated by `confirmed`, not `grai.liquidation`).
+    /// Permissionless custodian sweep while GRAI liquidation is open.
+    /// (EVM `Grinders.liquidate` page — gated by `grai.liquidation`, not heartbeat).
     /// Pulls base + quote → Grinders ATAs, then forwards those amounts → GRAI vaults.
     pub fn liquidate_custodian(ctx: Context<LiquidateCustodian>) -> Result<()> {
-        require!(
-            ctx.accounts.grinders_state.confirmed,
-            ErrorCode::LiquidationNotConfirmed
-        );
+        require!(ctx.accounts.grai_state.liquidation, ErrorCode::NoLiquidation);
 
         let custodian_id = ctx.accounts.custodian_state.custodian_id;
         let custodian_id_bytes = custodian_id.to_le_bytes();
@@ -677,7 +673,7 @@ pub mod grinders {
 }
 
 #[derive(Accounts)]
-pub struct Confirm<'info> {
+pub struct SetGrindPeriod<'info> {
     #[account(
         mut,
         constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
@@ -690,6 +686,25 @@ pub struct Confirm<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
+}
+
+/// Only linked GRAI protocol PDA may refresh heartbeat (signer via CPI from `grai::revive`).
+#[derive(Accounts)]
+pub struct Heartbeat<'info> {
+    #[account(
+        mut,
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+        constraint = grai_state.grinders == grinders_state.key() @ ErrorCode::NotGrai,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 }
 
 /// EVM `transferOwnership` — current owner is the signer.
@@ -721,24 +736,6 @@ pub struct AcceptOwnership<'info> {
     pub grinders_state: Account<'info, GrindersState>,
 }
 
-/// Clear `confirmed` — only linked GRAI protocol PDA (signer via CPI from `grai::revive`).
-#[derive(Accounts)]
-pub struct ReviveConfirm<'info> {
-    #[account(
-        mut,
-        seeds = [GrindersState::SEED],
-        bump = grinders_state.bump,
-    )]
-    pub grinders_state: Account<'info, GrindersState>,
-
-    #[account(
-        seeds = [grai::GraiState::SEED],
-        bump = grai_state.bump,
-        seeds::program = grinders_state.grai_program,
-        constraint = grai_state.grinders == grinders_state.key() @ ErrorCode::NotGrai,
-    )]
-    pub grai_state: Account<'info, grai::GraiState>,
-}
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -1011,6 +1008,7 @@ pub struct WithdrawToken<'info> {
     pub owner: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
     )]
@@ -1085,6 +1083,7 @@ pub struct CustodianJupiterGaslessSwap<'info> {
     pub fee_payer: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
     )]
@@ -1132,6 +1131,7 @@ pub struct Allocate<'info> {
     pub owner: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
     )]
@@ -1431,8 +1431,13 @@ pub struct LiquidateCustodian<'info> {
 }
 
 #[event]
-pub struct ConfirmEvent {
-    pub confirmed: bool,
+pub struct HeartbeatEvent {
+    pub heartbeat_at: i64,
+}
+
+#[event]
+pub struct GrindPeriodUpdateEvent {
+    pub grind_period: u32,
 }
 
 #[event]

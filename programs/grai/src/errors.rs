@@ -90,8 +90,8 @@ pub enum ErrorCode {
     InsolventRevive,
     #[msg("Deposit book is zero while shares remain")]
     InsolventBook,
-    #[msg("Liquidation has not been confirmed by the Grinders owner")]
-    LiquidationNotConfirmed,
+    #[msg("Grinders heartbeat is still active")]
+    GrindersGrinding,
     #[msg("Invalid get_lockers range")]
     InvalidLockerRange,
     #[msg("Invalid get_voters range")]

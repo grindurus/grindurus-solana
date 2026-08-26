@@ -7,26 +7,39 @@ use crate::state::{clamp_vote, remove_from_list};
 use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
 use crate::{AssetConfig, ErrorCode, Liquidate, Redeem};
 
-/// Offset of `confirmed: bool` in GrindersState after the 8-byte Anchor discriminator.
-/// Layout: owner(32) + pending_owner(32) + grai_program(32) + next_custodian_id(8)
-/// + collection_mint(32) + confirmed(1) + bump(1).
-const GRINDERS_CONFIRMED_OFFSET: usize = 8 + 32 + 32 + 32 + 8 + 32;
+/// Offsets in `GrindersState` after the 8-byte Anchor discriminator:
+/// owner(32) + pending_owner(32) + grai_program(32) + next_custodian_id(8) + collection_mint(32).
+const GRINDERS_HEARTBEAT_AT_OFFSET: usize = 8 + 32 + 32 + 32 + 8 + 32;
+const GRINDERS_GRINDING_PERIOD_OFFSET: usize = GRINDERS_HEARTBEAT_AT_OFFSET + 8;
 
-/// Read `Grinders.confirmed` (EVM 2-of-2 owner arm) without depending on the grinders crate.
-fn grinders_confirmed(grinders_state: &AccountInfo) -> Result<bool> {
+/// Read `Grinders.grinding()` without depending on the grinders crate.
+fn grinders_grinding(grinders_state: &AccountInfo, now: i64) -> Result<bool> {
     let data = grinders_state.try_borrow_data()?;
     require!(
-        data.len() > GRINDERS_CONFIRMED_OFFSET,
+        data.len() > GRINDERS_GRINDING_PERIOD_OFFSET + 4,
         ErrorCode::InvalidGrinders
     );
-    Ok(data[GRINDERS_CONFIRMED_OFFSET] != 0)
+
+    let mut heartbeat_buf = [0u8; 8];
+    heartbeat_buf.copy_from_slice(
+        &data[GRINDERS_HEARTBEAT_AT_OFFSET..GRINDERS_HEARTBEAT_AT_OFFSET + 8],
+    );
+    let heartbeat_at = i64::from_le_bytes(heartbeat_buf);
+
+    let mut period_buf = [0u8; 4];
+    period_buf.copy_from_slice(
+        &data[GRINDERS_GRINDING_PERIOD_OFFSET..GRINDERS_GRINDING_PERIOD_OFFSET + 4],
+    );
+    let grinding_period = u32::from_le_bytes(period_buf) as i64;
+
+    Ok(now <= heartbeat_at.saturating_add(grinding_period))
 }
 
-/// Open liquidation (EVM `liquidate`): vote quorum **and** `Grinders.confirmed`.
+/// Open liquidation (EVM `liquidate`): vote quorum **and** stale Grinders heartbeat.
 ///
 /// Anyone may call. On open: scoop orphan/dead GRAI (`grai_vault − total_locked`) to the
 /// opener, then start the claim clock. Sweeps stay on Grinders (`liquidate_idle` /
-/// `liquidate_custodian`), gated by the same arm — compose them in this tx for atomic pull.
+/// `liquidate_custodian`), gated by GRAI liquidation flag — compose them in this tx for atomic pull.
 /// Per-asset `paused` flags are left unchanged.
 pub fn execute_liquidate<'info>(
     ctx: Context<'_, '_, 'info, 'info, Liquidate<'info>>,
@@ -42,12 +55,11 @@ pub fn execute_liquidate<'info>(
         ),
         ErrorCode::LiquidationQuorumNotMet
     );
-    require!(
-        grinders_confirmed(&ctx.accounts.grinders_state.to_account_info())?,
-        ErrorCode::LiquidationNotConfirmed
-    );
-
     let clock = Clock::get()?;
+    require!(
+        !grinders_grinding(&ctx.accounts.grinders_state.to_account_info(), clock.unix_timestamp)?,
+        ErrorCode::GrindersGrinding
+    );
     let bump = ctx.accounts.grai_state.bump;
     let dead = dead_grai(
         ctx.accounts.grai_vault_ata.amount,

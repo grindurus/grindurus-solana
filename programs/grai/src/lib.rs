@@ -1433,8 +1433,8 @@ pub struct PreviewRedeem<'info> {
     pub holder_grai_ata: Box<Account<'info, TokenAccount>>,
 }
 
-/// Open liquidation (2-of-2: vote quorum here **and** `Grinders.confirmed`).
-/// Anyone may call; `!confirmed` or missing quorum aborts open (EVM atomic open).
+/// Open liquidation (2-of-2: vote quorum here **and** stale Grinders heartbeat).
+/// Anyone may call; active heartbeat or missing quorum aborts open (EVM atomic open).
 /// On open, orphan vault GRAI (`grai_vault − total_locked`) is sent to `caller`.
 /// Custodian / idle sweeps stay on Grinders (`liquidate_*`), gated by the same arm —
 /// compose them in the same tx as this ix for EVM-style atomic pull.
@@ -1450,7 +1450,7 @@ pub struct Liquidate<'info> {
     )]
     pub grai_state: Account<'info, GraiState>,
 
-    /// Linked Grinders state (`grai_state.grinders`). `confirmed` is the owner arm.
+    /// Linked Grinders state (`grai_state.grinders`) with heartbeat fields.
     /// CHECK: owner program + layout validated in handler.
     #[account(
         constraint = grinders_state.key() == grai_state.grinders @ ErrorCode::InvalidGrinders,
@@ -1487,7 +1487,7 @@ pub struct Liquidate<'info> {
 /// Close liquidation (permissionless). Remaining accounts: quints
 /// `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per listed asset in registry order.
 /// `vault_ata` must be `["vault", mint]`; `asset_config` must be the canonical PDA.
-/// Clears Grinders `confirmed` via CPI (EVM `grinders.revive()`).
+/// Refreshes Grinders heartbeat via CPI (EVM `grinders.heartbeat()`).
 #[derive(Accounts)]
 pub struct Revive<'info> {
     pub caller: Signer<'info>,

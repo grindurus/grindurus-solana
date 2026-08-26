@@ -17,7 +17,7 @@ use crate::{ErrorCode, Revive};
 /// (`asset_config.total_claimable`) stays on the vaults so post-revive `claim` still pays.
 /// Does **not** reprice `total_value` from leftover NAV — book stays at the post-redeem level
 /// (EVM `revive`). If no shares remain, `total_value = 0`. Per-asset `paused` flags are left
-/// untouched. Clears Grinders `confirmed` via CPI (EVM `grinders.revive()`).
+/// untouched. Refreshes Grinders heartbeat via CPI (EVM `grinders.heartbeat()`).
 ///
 /// Remaining accounts: quints `[asset_config, mint, price_feed, vault_ata, grinders_ata]` per
 /// listed asset in registry order. `vault_ata` must be `["vault", mint]`; `asset_config` must
@@ -107,7 +107,7 @@ pub fn execute_revive<'info>(
     grai_state.liquidation = false;
     grai_state.liquidation_at = 0;
 
-    // EVM `grinders.revive()` — clear the Grinders-owner arm (PDA signs as grai_state).
+    // EVM `grinders.heartbeat()` — refresh heartbeat at liquidation close (PDA signs as grai_state).
     let grinders_state_info = ctx.accounts.grinders_state.to_account_info();
     let grinders_program_info = ctx.accounts.grinders_program.to_account_info();
     require!(
@@ -121,7 +121,7 @@ pub fn execute_revive<'info>(
     );
 
     let mut ix_data = [0u8; 8];
-    ix_data.copy_from_slice(&hash(b"global:revive").to_bytes()[..8]);
+    ix_data.copy_from_slice(&hash(b"global:heartbeat").to_bytes()[..8]);
     let ix = Instruction {
         program_id: grinders_program_info.key(),
         accounts: vec![

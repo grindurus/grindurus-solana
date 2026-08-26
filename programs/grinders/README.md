@@ -34,12 +34,12 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 | `custodian_jupiter_gasless_swap` | NFT holder + `fee_payer` | Jupiter gasless kind only (logic stub) |
 | `custodian_deallocate` | protocol owner | Return inventory to grinders (blocked while liquidation open) |
 | `custodian_distribute` | protocol owner | Route yield via GRAI `distribute` (blocked while liquidation open) |
-| `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while `confirmed` |
-| `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults while `confirmed` |
-| `confirm` | owner | Toggle Grinders-owner liquidation arm (EVM `confirm`) |
+| `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while GRAI liquidation is open |
+| `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults while GRAI liquidation is open |
+| `set_grind_period` | owner | Set heartbeat inactivity window (`1..30 days`) |
+| `heartbeat` | GRAI CPI | Refresh `heartbeat_at` (EVM `_onlyGrai`; called from `grai::revive`) |
 | `transfer_ownership` | owner | Propose pending owner; `Pubkey::default()` cancels (EVM Ownable2Step) |
-| `accept_ownership` | pending owner | Take over; clears `confirmed` so prior arm dies with the old owner |
-| `revive` | GRAI CPI | Clear `confirmed` when GRAI closes the cycle |
+| `accept_ownership` | pending owner | Take over owner role (heartbeat state is preserved) |
 | `transfer_custodian_nft` | live NFT holder | Transfer NFT and refresh `custodian_state.nft_owner` cache |
 | `withdraw` | owner | Withdraw SOL from grinders PDA |
 | `withdraw_token` | owner | Withdraw SPL from grinders ATA |
@@ -71,6 +71,13 @@ Add a new kind: constant in `state.rs`, whitelist in `is_known_custodian_kind`, 
 3. `grai.set_beneficiar(wallet)` — set the claim-time treasury payout recipient
 4. `grai.set_settlement_asset` — choose the bribe settlement mint (listed asset + feed)
 5. `mint(custodian_kind, grinder, base_mint, quote_mint)` — kind selects swap module; custodian wallet is a PDA
+
+## Heartbeat liquidation gate
+
+- Grinders tracks `heartbeat_at` and `grinding_period`.
+- GRAI opens liquidation only when vote quorum is met **and** Grinders heartbeat is stale (`now > heartbeat_at + grinding_period`).
+- `allocate`, `custodian_deallocate`, and `custodian_distribute` refresh `heartbeat_at`; GRAI refreshes it via `heartbeat` on `revive`.
+- `liquidate_idle` / `liquidate_custodian` are permissionless sweeps once GRAI liquidation is open.
 
 ## Build
 
