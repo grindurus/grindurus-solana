@@ -144,7 +144,6 @@ impl Init<'_> {
 
         // --- GRS registries + Metaplex metadata (EVM constructor homeEid / homeAddress) ---
         ctx.accounts.grs_config.home_eid = params.home_eid;
-        ctx.accounts.grs_config.home_address = params.home_address;
         ctx.accounts.grs_config.genesis_minted = false;
         ctx.accounts.grs_config.bump = ctx.bumps.grs_config;
 
@@ -157,9 +156,12 @@ impl Init<'_> {
 
         Self::create_metadata(ctx)?;
 
+        // EVM: `homeAddress_ == 0` → store `address(this)`; else store param + `setPeer`.
+        // Solana peer identity is the OFT store PDA.
         if params.home_address == Pubkey::default() {
             require!(params.home_eid == 0, OFTError::InvalidRecipient);
             require!(ctx.accounts.peer.is_none(), OFTError::InvalidRecipient);
+            ctx.accounts.grs_config.home_address = ctx.accounts.oft_store.key();
         } else {
             require!(params.home_eid != 0, OFTError::InvalidRecipient);
             let peer = ctx
@@ -177,6 +179,7 @@ impl Init<'_> {
             ctx.accounts
                 .peer_registry
                 .upsert(params.home_eid, peer_bytes)?;
+            ctx.accounts.grs_config.home_address = params.home_address;
             Self::handoff_spoke_mint(ctx)?;
         }
         Ok(())
@@ -252,6 +255,7 @@ pub struct InitParams {
     pub endpoint_program: Option<Pubkey>,
     /// Home chain LZ eid. `0` on home; required non-zero on spoke (EVM `homeEid`).
     pub home_eid: u32,
-    /// `Pubkey::default()` = this chain is home; else spoke with canonical home identity.
+    /// `Pubkey::default()` = deploy as home (store `oft_store` as identity). Else spoke:
+    /// canonical home identity (EVM left-padded address or Solana oft_store pubkey).
     pub home_address: Pubkey,
 }

@@ -19,7 +19,7 @@ EVM uses 18 local decimals. Conversion is lossless in GRS units: `1 GRS = 10⁶`
 
 LayerZero OFT surface (`init`, `set_peer_config`, `send`, `lz_receive`, quotes, pause, fees) plus:
 
-1. `init({ oft_type, shared_decimals, endpoint_program?, home_eid, home_address })` — one-shot bootstrap: native OFT store + escrow, GRS registries, Metaplex metadata. **`home_address = default` + `home_eid = 0`** = home; else spoke — wires `Peer` PDA to `home_address` at `home_eid` (EVM constructor `setPeer` parity) and moves mint authority to the OFT store. Pass Endpoint remaining accounts to CPI-register the OApp; empty remaining skips that (local tests / staged deploy).
+1. `init({ oft_type, shared_decimals, endpoint_program?, home_eid, home_address })` — one-shot bootstrap: native OFT store + escrow, GRS registries, Metaplex metadata. **`home_address = default` + `home_eid = 0`** = home (stores `oft_store` as `home_address`, EVM `address(this)` parity); else spoke — wires `Peer` PDA to `home_address` at `home_eid` (EVM constructor `setPeer` parity) and moves mint authority to the OFT store. Pass Endpoint remaining accounts to CPI-register the OApp; empty remaining skips that (local tests / staged deploy).
 2. `mint_genesis` — **home only**, once: mint 1B to `to`, then set mint authority to the OFT store so only `lz_receive` can mint. Native credits that would exceed 1B revert `CapExceeded`.
 3. `transfer_ownership(new)` / `accept_ownership` — Ownable2Step for `oft_store.admin` (same as EVM GRS). `accept_ownership` CPI-sets the LZ endpoint delegate when Endpoint remaining accounts are passed (same list as `set_oft_config(Delegate)`; empty skips like `init` register — local/staged). Production handoff should always pass them. `set_oft_config(Admin)` only proposes; it does not flip admin until accept. `Pubkey::default()` cancels.
 4. `quote_bridge` / `bridge(dst_eid, to, amount_ld, native_fee)` — same as `quote_send` / `send` without an options/compose struct. Enforced peer options still apply.
@@ -36,7 +36,7 @@ Peers are LayerZero `Peer` PDAs (`set_peer_config`). After both OFTs exist:
 npx hardhat lz:oapp:wire --oapp-config layerzero.config.ts
 ```
 
-Home can be Solana or Ethereum; the other listed chains are spokes (`home_address ≠ default`, supply 0 until inbound OFT credits).
+Home can be Solana or Ethereum; the other listed chains are spokes (`home_eid ≠ 0`, supply 0 until inbound OFT credits).
 
 6. `vest(id, to, amount_ld, start, cliff_seconds, duration_seconds)` — anyone with GRS locks into PDA `["vest", oft_store, id]` + shared `vest_escrow`. `id` must be `vesting_count + 1` (1-based, same as EVM). Instant (`cliff` = `duration` = 0) reverts. Cliff ≤ 365 days, linear ≤ 4 × 365 days. `start = 0` means now. Home EVM `grant(..., dstEid)` with a schedule LZ-publishes `GRS.grant`; spoke `lz_receive` opens the next vest and mints into `vest_escrow`.
 7. `release` — anyone pulls currently vested tokens to the beneficiary ATA.

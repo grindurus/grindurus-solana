@@ -10,9 +10,9 @@ use crate::*;
 pub struct GrsConfig {
     /// Home chain LZ eid. `0` on home; on spoke set at `init` with `home_address` (EVM `homeEid`).
     pub home_eid: u32,
-    /// Canonical home identity. `Pubkey::default()` ⇒ **this** deployment is home (genesis).
-    /// Non-default ⇒ spoke; value is the home OFT / GRS identity (EVM left-padded address or
-    /// Solana oft_store pubkey).
+    /// Canonical home identity. On home = this OFT store (`oft_store` pubkey). On spoke = the
+    /// home peer wired at `init` (EVM left-padded address or Solana oft_store). Role gate uses
+    /// `home_eid == 0` (EVM `_requireHome`).
     pub home_address: Pubkey,
     pub genesis_minted: bool,
     pub bump: u8,
@@ -31,7 +31,7 @@ impl GrsConfig {
 
     #[inline(always)]
     pub fn is_home(&self) -> bool {
-        self.home_address == Pubkey::default()
+        self.home_eid == 0
     }
 
     /// Unreserved GRS sitting in `sale_escrow` (EVM `_freeInventory` for TokenSales float).

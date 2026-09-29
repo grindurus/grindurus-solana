@@ -82,7 +82,8 @@ describe("grs oft", () => {
       program.programId,
     );
     const accounts = initAccounts(escrow, oftStore, mint);
-    // EVM constructor parity: homeEid=0 + default address = home; else wire Peer PDA.
+    // EVM constructor parity: homeEid=0 + default address = home (stores oft_store);
+    // else wire Peer PDA to home_address.
     const homeEid = home ? 0 : 30101;
     const homeAddress = home ? PublicKey.default : new PublicKey(Buffer.alloc(32, 1));
     const eidBuf = Buffer.alloc(4);
@@ -383,6 +384,10 @@ describe("grs oft", () => {
     const mint = await createMint();
     const { oftStore, grsConfig } = await initGrs(mint, true);
 
+    const cfg0 = await program.account.grsConfig.fetch(grsConfig);
+    expect(cfg0.homeEid).to.equal(0);
+    expect(cfg0.homeAddress.toBase58()).to.equal(oftStore.toBase58());
+
     const ata = getAssociatedTokenAddressSync(mint, admin);
     const ataIx = createAssociatedTokenAccountInstruction(admin, ata, admin, mint);
     await provider.sendAndConfirm(new Transaction().add(ataIx));
@@ -427,6 +432,7 @@ describe("grs oft", () => {
     expect((await getMint(provider.connection, mint)).mintAuthority?.toBase58()).to.equal(oftStore.toBase58());
 
     const cfg = await program.account.grsConfig.fetch(grsConfig);
+    expect(cfg.homeEid).to.not.equal(0);
     expect(cfg.homeAddress.equals(PublicKey.default)).to.equal(false);
     expect(cfg.genesisMinted).to.equal(false);
 
