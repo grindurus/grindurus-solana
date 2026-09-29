@@ -126,7 +126,7 @@ impl LzReceive<'_> {
         )?;
 
         if msg_codec::is_sale(&params.message) {
-            require!(!ctx.accounts.grs_config.home, OFTError::NotSpoke);
+            require!(!ctx.accounts.grs_config.is_home(), OFTError::NotSpoke);
             let (id, asset, asset_amount, grs_amount, recipient) = msg_codec::decode_sale(&params.message)?;
             require!(recipient != crate::ID, OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
@@ -153,14 +153,39 @@ impl LzReceive<'_> {
                 grs_amount,
                 recipient,
             });
-            if grs_amount > 0 && previous == 0 {
-                Self::credit_sale_escrow(ctx, grs_amount)?;
+            if previous == 0 {
+                if grs_amount > 0 {
+                    Self::credit_sale_escrow(ctx, grs_amount)?;
+                    ctx.accounts.grs_config.sales_reserved = ctx
+                        .accounts
+                        .grs_config
+                        .sales_reserved
+                        .checked_add(grs_amount)
+                        .ok_or(error!(OFTError::InsufficientInventory))?;
+                }
+            } else if grs_amount != previous {
+                // Republish adjusts earmark; escrow is not reminted on this path (EVM parity).
+                if grs_amount > previous {
+                    ctx.accounts.grs_config.sales_reserved = ctx
+                        .accounts
+                        .grs_config
+                        .sales_reserved
+                        .checked_add(grs_amount - previous)
+                        .ok_or(error!(OFTError::InsufficientInventory))?;
+                } else {
+                    ctx.accounts.grs_config.sales_reserved = ctx
+                        .accounts
+                        .grs_config
+                        .sales_reserved
+                        .checked_sub(previous - grs_amount)
+                        .ok_or(error!(OFTError::InsufficientInventory))?;
+                }
             }
             return Ok(());
         }
 
         if msg_codec::is_grant(&params.message) {
-            require!(!ctx.accounts.grs_config.home, OFTError::NotSpoke);
+            require!(!ctx.accounts.grs_config.is_home(), OFTError::NotSpoke);
             let (to, amount_ld, start, cliff_seconds, duration_seconds, _bucket) =
                 msg_codec::decode_grant(&params.message)?;
             require!(to != Pubkey::default(), OFTError::InvalidRecipient);
@@ -210,7 +235,7 @@ impl LzReceive<'_> {
                 )?;
                 Self::credit_vest_escrow(ctx, amount_ld)?;
             }
-            emit!(Vested {
+            emit!(crate::events::Vest {
                 id,
                 from: ctx.accounts.oft_store.key(),
                 to,

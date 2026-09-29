@@ -70,6 +70,7 @@ pub struct Buy<'info> {
 }
 
 impl Buy<'_> {
+    /// CEI: release reserve + transfer GRS before paying `payee` (EVM `buy` parity).
     pub fn apply(ctx: &mut Context<Buy>, id: u64, amount_ld: u64) -> Result<u64> {
         require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
         let row = ctx.accounts.sale.row();
@@ -89,6 +90,41 @@ impl Buy<'_> {
             .ok_or(error!(OFTError::BucketExceeded))?;
         // Uncapped (EVM TokenSales parity): buybacks can re-enter; spent is accounting only.
         ctx.accounts.grs_config.token_sales_spent = spent;
+        ctx.accounts.grs_config.sales_reserved = ctx
+            .accounts
+            .grs_config
+            .sales_reserved
+            .checked_sub(amount_ld)
+            .ok_or(error!(OFTError::InsufficientInventory))?;
+        ctx.accounts.sale.grs_amount = row
+            .grs_amount
+            .checked_sub(amount_ld)
+            .ok_or(error!(OFTError::SaleExceeded))?;
+        ctx.accounts.sale.asset_amount = row
+            .asset_amount
+            .checked_sub(cost)
+            .ok_or(error!(OFTError::InvalidPayment))?;
+
+        let oft_store_key = ctx.accounts.oft_store.key();
+        let seeds: &[&[u8]] = &[
+            GrsConfig::SEED,
+            oft_store_key.as_ref(),
+            &[ctx.accounts.grs_config.bump],
+        ];
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.sale_escrow.to_account_info(),
+                    mint: ctx.accounts.token_mint.to_account_info(),
+                    to: ctx.accounts.token_dest.to_account_info(),
+                    authority: ctx.accounts.grs_config.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount_ld,
+            ctx.accounts.token_mint.decimals,
+        )?;
 
         if row.asset == Pubkey::default() {
             require!(
@@ -140,37 +176,7 @@ impl Buy<'_> {
             )?;
         }
 
-        let oft_store_key = ctx.accounts.oft_store.key();
-        let seeds: &[&[u8]] = &[
-            GrsConfig::SEED,
-            oft_store_key.as_ref(),
-            &[ctx.accounts.grs_config.bump],
-        ];
-        token_interface::transfer_checked(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.sale_escrow.to_account_info(),
-                    mint: ctx.accounts.token_mint.to_account_info(),
-                    to: ctx.accounts.token_dest.to_account_info(),
-                    authority: ctx.accounts.grs_config.to_account_info(),
-                },
-                &[seeds],
-            ),
-            amount_ld,
-            ctx.accounts.token_mint.decimals,
-        )?;
-
-        ctx.accounts.sale.grs_amount = row
-            .grs_amount
-            .checked_sub(amount_ld)
-            .ok_or(error!(OFTError::SaleExceeded))?;
-        ctx.accounts.sale.asset_amount = row
-            .asset_amount
-            .checked_sub(cost)
-            .ok_or(error!(OFTError::InvalidPayment))?;
-
-        emit!(Bought {
+        emit!(crate::events::Buy {
             id,
             buyer: ctx.accounts.buyer.key(),
             to: ctx.accounts.to.key(),
@@ -181,10 +187,10 @@ impl Buy<'_> {
     }
 }
 
-/// View: cost in quote asset for `buy(id, amount_ld)` (EVM `previewBuy`).
+/// View: cost in quote asset for `buy(id, amount_ld)` (EVM `quoteBuy`).
 #[derive(Accounts)]
 #[instruction(id: u64)]
-pub struct PreviewBuy<'info> {
+pub struct QuoteBuy<'info> {
     #[account(
         seeds = [OFT_SEED, oft_store.token_escrow.as_ref()],
         bump = oft_store.bump
@@ -198,8 +204,8 @@ pub struct PreviewBuy<'info> {
     pub sale: Account<'info, SaleAccount>,
 }
 
-impl PreviewBuy<'_> {
-    pub fn apply(ctx: &Context<PreviewBuy>, id: u64, amount_ld: u64) -> Result<u64> {
+impl QuoteBuy<'_> {
+    pub fn apply(ctx: &Context<QuoteBuy>, id: u64, amount_ld: u64) -> Result<u64> {
         require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
         quote_cost(amount_ld, ctx.accounts.sale.grs_amount, ctx.accounts.sale.asset_amount)
     }

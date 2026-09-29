@@ -63,7 +63,7 @@ impl PublishSale<'_> {
         id: u64,
         native_fee: u64,
     ) -> Result<MessagingReceipt> {
-        require!(ctx.accounts.grs_config.home, OFTError::NotHome);
+        require!(ctx.accounts.grs_config.is_home(), OFTError::NotHome);
         require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
         require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
         require!(
@@ -83,6 +83,12 @@ impl PublishSale<'_> {
                 .ok_or(error!(OFTError::BucketExceeded))?;
             // Uncapped (EVM TokenSales parity): spent is accounting only.
             ctx.accounts.grs_config.token_sales_spent = spent;
+            ctx.accounts.grs_config.sales_reserved = ctx
+                .accounts
+                .grs_config
+                .sales_reserved
+                .checked_sub(row.grs_amount)
+                .ok_or(error!(OFTError::InsufficientInventory))?;
 
             let oft_store_key = ctx.accounts.oft_store.key();
             let seeds: &[&[u8]] = &[
@@ -161,7 +167,7 @@ pub struct QuoteSale<'info> {
 
 impl QuoteSale<'_> {
     pub fn apply(ctx: &Context<QuoteSale>, dst_eid: u32, id: u64) -> Result<MessagingFee> {
-        require!(ctx.accounts.grs_config.home, OFTError::NotHome);
+        require!(ctx.accounts.grs_config.is_home(), OFTError::NotHome);
         require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
         require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
         let row = ctx.accounts.sale.row();

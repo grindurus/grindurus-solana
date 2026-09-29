@@ -7,7 +7,9 @@ use anchor_spl::{
 use oapp::endpoint::{instructions::RegisterOAppParams, ID as ENDPOINT_ID};
 
 /// One-shot GRS + LayerZero native OFT bootstrap (replaces separate `init_oft` + `init_grs`).
+/// Spoke parity with EVM constructor: `home_eid` + `home_address` wires the home peer.
 #[derive(Accounts)]
+#[instruction(params: InitParams)]
 pub struct Init<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -64,6 +66,15 @@ pub struct Init<'info> {
         bump
     )]
     pub sale_registry: Box<Account<'info, SaleRegistry>>,
+    /// Home peer PDA — required for spoke (`home_address ≠ default`); omit on home.
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + PeerConfig::INIT_SPACE,
+        seeds = [PEER_SEED, oft_store.key().as_ref(), &params.home_eid.to_be_bytes()],
+        bump
+    )]
+    pub peer: Option<Account<'info, PeerConfig>>,
     /// CHECK: Metaplex metadata PDA for `token_mint`.
     #[account(
         mut,
@@ -131,8 +142,9 @@ impl Init<'_> {
             )?;
         }
 
-        // --- GRS registries + Metaplex metadata ---
-        ctx.accounts.grs_config.home = params.home;
+        // --- GRS registries + Metaplex metadata (EVM constructor homeEid / homeAddress) ---
+        ctx.accounts.grs_config.home_eid = params.home_eid;
+        ctx.accounts.grs_config.home_address = params.home_address;
         ctx.accounts.grs_config.genesis_minted = false;
         ctx.accounts.grs_config.bump = ctx.bumps.grs_config;
 
@@ -145,7 +157,26 @@ impl Init<'_> {
 
         Self::create_metadata(ctx)?;
 
-        if !params.home {
+        if params.home_address == Pubkey::default() {
+            require!(params.home_eid == 0, OFTError::InvalidRecipient);
+            require!(ctx.accounts.peer.is_none(), OFTError::InvalidRecipient);
+        } else {
+            require!(params.home_eid != 0, OFTError::InvalidRecipient);
+            let peer = ctx
+                .accounts
+                .peer
+                .as_mut()
+                .ok_or(error!(OFTError::InvalidRecipient))?;
+            let peer_bytes = params.home_address.to_bytes();
+            peer.peer_address = peer_bytes;
+            peer.bump = ctx.bumps.peer.expect("spoke peer bump");
+            if peer.enforced_options.send.is_empty() {
+                peer.enforced_options
+                    .set_lz_receive_budget(DEFAULT_LZ_RECEIVE_GAS, 0);
+            }
+            ctx.accounts
+                .peer_registry
+                .upsert(params.home_eid, peer_bytes)?;
             Self::handoff_spoke_mint(ctx)?;
         }
         Ok(())
@@ -219,5 +250,8 @@ pub struct InitParams {
     pub oft_type: OFTType,
     pub shared_decimals: u8,
     pub endpoint_program: Option<Pubkey>,
-    pub home: bool,
+    /// Home chain LZ eid. `0` on home; required non-zero on spoke (EVM `homeEid`).
+    pub home_eid: u32,
+    /// `Pubkey::default()` = this chain is home; else spoke with canonical home identity.
+    pub home_address: Pubkey,
 }

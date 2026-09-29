@@ -8,7 +8,12 @@ use crate::*;
 #[account]
 #[derive(InitSpace)]
 pub struct GrsConfig {
-    pub home: bool,
+    /// Home chain LZ eid. `0` on home; on spoke set at `init` with `home_address` (EVM `homeEid`).
+    pub home_eid: u32,
+    /// Canonical home identity. `Pubkey::default()` ⇒ **this** deployment is home (genesis).
+    /// Non-default ⇒ spoke; value is the home OFT / GRS identity (EVM left-padded address or
+    /// Solana oft_store pubkey).
+    pub home_address: Pubkey,
     pub genesis_minted: bool,
     pub bump: u8,
     /// Sequential `vest` ids issued (`id = 1 … vesting_count`).
@@ -16,8 +21,21 @@ pub struct GrsConfig {
     /// Lifetime TokenSales outflow (`buy` / `publish_sale`). Uncapped — buybacks can re-enter
     /// `sale_escrow`; this field is accounting only (EVM `spent[TokenSales]`).
     pub token_sales_spent: u64,
+    /// GRS earmarked by open sale lots (EVM `salesReserved`). Unlistable float is
+    /// `sale_escrow.amount.saturating_sub(sales_reserved)`.
+    pub sales_reserved: u64,
 }
 
 impl GrsConfig {
     pub const SEED: &'static [u8] = b"grs";
+
+    #[inline(always)]
+    pub fn is_home(&self) -> bool {
+        self.home_address == Pubkey::default()
+    }
+
+    /// Unreserved GRS sitting in `sale_escrow` (EVM `_freeInventory` for TokenSales float).
+    pub fn free_sale_inventory(&self, escrow_amount: u64) -> u64 {
+        escrow_amount.saturating_sub(self.sales_reserved)
+    }
 }

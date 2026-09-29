@@ -10,7 +10,6 @@ import {
   MINT_SIZE,
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
-  transferChecked,
 } from "@solana/spl-token";
 import { expect } from "chai";
 import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
@@ -83,15 +82,28 @@ describe("grs oft", () => {
       program.programId,
     );
     const accounts = initAccounts(escrow, oftStore, mint);
+    // EVM constructor parity: homeEid=0 + default address = home; else wire Peer PDA.
+    const homeEid = home ? 0 : 30101;
+    const homeAddress = home ? PublicKey.default : new PublicKey(Buffer.alloc(32, 1));
+    const eidBuf = Buffer.alloc(4);
+    eidBuf.writeUInt32BE(homeEid);
+    const [peer] = PublicKey.findProgramAddressSync(
+      [Buffer.from("Peer"), oftStore.toBuffer(), eidBuf],
+      program.programId,
+    );
 
     await program.methods
       .init({
         oftType: { native: {} },
         sharedDecimals: GRS_SHARED,
         endpointProgram: null,
-        home,
+        homeEid,
+        homeAddress,
       })
-      .accounts(accounts)
+      .accounts({
+        ...accounts,
+        peer: home ? null : peer,
+      })
       .rpc();
 
     return { escrow, oftStore, grsConfig: accounts.grsConfig };
@@ -415,7 +427,7 @@ describe("grs oft", () => {
     expect((await getMint(provider.connection, mint)).mintAuthority?.toBase58()).to.equal(oftStore.toBase58());
 
     const cfg = await program.account.grsConfig.fetch(grsConfig);
-    expect(cfg.home).to.equal(false);
+    expect(cfg.homeAddress.equals(PublicKey.default)).to.equal(false);
     expect(cfg.genesisMinted).to.equal(false);
 
     const ata = getAssociatedTokenAddressSync(mint, admin);
@@ -628,18 +640,19 @@ describe("grs oft", () => {
         saleRegistry,
         sale,
         saleEscrow,
+        inventorySource: adminAta,
         tokenMint: mint,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
 
-    const payer = (provider.wallet as anchor.Wallet).payer;
-    await transferChecked(provider.connection, payer, adminAta, mint, saleEscrow, admin, inventory, GRS_DECIMALS);
-
     const amount = 10n * 1_000_000_000n;
+    const cfgAfterSale = await program.account.grsConfig.fetch(grsConfig);
+    expect(cfgAfterSale.salesReserved.toString()).to.equal(inventory.toString());
+    expect((await getAccount(provider.connection, saleEscrow)).amount).to.equal(inventory);
     const cost = await program.methods
-      .previewBuy(new anchor.BN(1), new anchor.BN(amount.toString()))
+      .quoteBuy(new anchor.BN(1), new anchor.BN(amount.toString()))
       .accounts({ oftStore, sale })
       .view();
     expect(cost.toNumber()).to.equal(100_000_000);
@@ -676,6 +689,7 @@ describe("grs oft", () => {
     expect((await getAccount(provider.connection, buyerAta)).amount).to.equal(amount);
     const cfg = await program.account.grsConfig.fetch(grsConfig);
     expect(cfg.tokenSalesSpent.toString()).to.equal(amount.toString());
+    expect(cfg.salesReserved.toString()).to.equal("0");
     const delta = BigInt(await provider.connection.getBalance(admin)) - adminBefore;
     expect(delta >= 90_000_000n && delta <= 100_000_000n).to.equal(true);
 
@@ -708,14 +722,12 @@ describe("grs oft", () => {
         saleRegistry,
         sale,
         saleEscrow,
+        inventorySource: adminAta,
         tokenMint: mint,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
-
-    const payer = (provider.wallet as anchor.Wallet).payer;
-    await transferChecked(provider.connection, payer, adminAta, mint, saleEscrow, admin, amount, GRS_DECIMALS);
 
     const buyer = Keypair.generate();
     const air = await provider.connection.requestAirdrop(buyer.publicKey, 1_000_000_000);
@@ -729,6 +741,7 @@ describe("grs oft", () => {
       ),
     );
     const cost = 10_000_000n;
+    const payer = (provider.wallet as anchor.Wallet).payer;
     await mintTo(provider.connection, payer, usdc, buyerUsdc, admin, cost);
 
     const buyerAta = getAssociatedTokenAddressSync(mint, buyer.publicKey);
@@ -797,6 +810,14 @@ describe("grs oft", () => {
     const spokeMint = await createMint();
     const { oftStore: spokeStore, grsConfig: spokeCfg } = await initGrs(spokeMint, false);
     const spokeSales = salePdas(spokeStore, 1);
+    const spokeAdminAta = getAssociatedTokenAddressSync(spokeMint, admin);
+    const createAta = createAssociatedTokenAccountInstruction(
+      admin,
+      spokeAdminAta,
+      admin,
+      spokeMint,
+    );
+    await provider.sendAndConfirm(new Transaction().add(createAta));
     try {
       await program.methods
         .sale(new anchor.BN(1), PublicKey.default, new anchor.BN(1), new anchor.BN(1), PublicKey.default)
@@ -807,6 +828,7 @@ describe("grs oft", () => {
           saleRegistry: spokeSales.saleRegistry,
           sale: spokeSales.sale,
           saleEscrow: spokeSales.saleEscrow,
+          inventorySource: spokeAdminAta,
           tokenMint: spokeMint,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,

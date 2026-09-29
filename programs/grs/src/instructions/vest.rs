@@ -114,7 +114,7 @@ impl Vest<'_> {
         vesting.bump = ctx.bumps.vesting;
         ctx.accounts.grs_config.vesting_count = next;
 
-        emit!(Vested {
+        emit!(crate::events::Vest {
             id,
             from: vesting.funder,
             to,

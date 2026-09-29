@@ -96,7 +96,7 @@ impl Release<'_> {
             ctx.accounts.token_mint.decimals,
         )?;
 
-        emit!(Released {
+        emit!(crate::events::Release {
             id: ctx.accounts.vesting.id,
             to: ctx.accounts.vesting.beneficiary,
             amount_ld,

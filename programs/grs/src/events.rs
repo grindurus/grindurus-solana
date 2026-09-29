@@ -30,7 +30,7 @@ pub struct OFTReceived {
 }
 
 #[event]
-pub struct Vested {
+pub struct Vest {
     pub id: u64,
     pub from: Pubkey,
     pub to: Pubkey,
@@ -38,7 +38,7 @@ pub struct Vested {
 }
 
 #[event]
-pub struct Released {
+pub struct Release {
     pub id: u64,
     pub to: Pubkey,
     pub amount_ld: u64,
@@ -70,7 +70,7 @@ pub struct SalePublished {
 }
 
 #[event]
-pub struct Bought {
+pub struct Buy {
     pub id: u64,
     pub buyer: Pubkey,
     pub to: Pubkey,

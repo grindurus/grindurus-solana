@@ -1,8 +1,10 @@
 use crate::*;
 use anchor_lang::system_program::{self, CreateAccount};
-use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
+use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
 
 /// Originates a sale on home. `id` must be `sale_count + 1` (PDA `["sale", oft_store, id]`).
+/// Earmarks `grs_amount` against `sale_escrow` (EVM `salesReserved`); tops up from
+/// `inventory_source` when unreserved escrow float is short.
 #[derive(Accounts)]
 #[instruction(id: u64)]
 pub struct SetSale<'info> {
@@ -16,6 +18,7 @@ pub struct SetSale<'info> {
     )]
     pub oft_store: Account<'info, OFTStore>,
     #[account(
+        mut,
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
         bump = grs_config.bump
     )]
@@ -45,6 +48,13 @@ pub struct SetSale<'info> {
         token::token_program = token_program
     )]
     pub sale_escrow: InterfaceAccount<'info, TokenAccount>,
+    /// Admin (or other) ATA used to top up `sale_escrow` when listing `grs_amount > 0`.
+    #[account(
+        mut,
+        token::mint = token_mint,
+        token::token_program = token_program
+    )]
+    pub inventory_source: InterfaceAccount<'info, TokenAccount>,
     #[account(
         address = oft_store.token_mint,
         mint::token_program = token_program
@@ -63,7 +73,7 @@ impl SetSale<'_> {
         grs_amount: u64,
         recipient: Pubkey,
     ) -> Result<u64> {
-        require!(ctx.accounts.grs_config.home, OFTError::NotHome);
+        require!(ctx.accounts.grs_config.is_home(), OFTError::NotHome);
         let next = ctx
             .accounts
             .sale_registry
@@ -77,6 +87,42 @@ impl SetSale<'_> {
             recipient != ctx.accounts.sale_escrow.key(),
             OFTError::InvalidRecipient
         );
+
+        if grs_amount > 0 {
+            let free = ctx
+                .accounts
+                .grs_config
+                .free_sale_inventory(ctx.accounts.sale_escrow.amount);
+            if free < grs_amount {
+                let need = grs_amount
+                    .checked_sub(free)
+                    .ok_or(error!(OFTError::InsufficientInventory))?;
+                require_keys_eq!(
+                    ctx.accounts.inventory_source.owner,
+                    ctx.accounts.admin.key(),
+                    OFTError::Unauthorized
+                );
+                token_interface::transfer_checked(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        TransferChecked {
+                            from: ctx.accounts.inventory_source.to_account_info(),
+                            mint: ctx.accounts.token_mint.to_account_info(),
+                            to: ctx.accounts.sale_escrow.to_account_info(),
+                            authority: ctx.accounts.admin.to_account_info(),
+                        },
+                    ),
+                    need,
+                    ctx.accounts.token_mint.decimals,
+                )?;
+            }
+            ctx.accounts.grs_config.sales_reserved = ctx
+                .accounts
+                .grs_config
+                .sales_reserved
+                .checked_add(grs_amount)
+                .ok_or(error!(OFTError::InsufficientInventory))?;
+        }
 
         ctx.accounts.sale.id = id;
         ctx.accounts.sale.oft_store = ctx.accounts.oft_store.key();

@@ -11,8 +11,12 @@ pub mod msg_codec;
 pub mod state;
 
 use errors::*;
-use events::*;
 use instructions::*;
+// Re-export events that do not collide with instruction account structs (`Buy` / `Vest` / `Release`).
+pub use events::{
+    OFTReceived, OFTSent, OwnershipTransferStarted, OwnershipTransferred, SaleAccepted,
+    SalePublished, SaleSet,
+};
 use oapp::{
     endpoint::{MessagingFee, MessagingReceipt},
     LzReceiveParams,
@@ -73,9 +77,9 @@ pub mod grs {
         GetSales::apply(&ctx, offset, limit)
     }
 
-    /// Asset units due for `amount_ld` GRS from sale `id` (EVM `previewBuy`).
-    pub fn preview_buy(ctx: Context<PreviewBuy>, id: u64, amount_ld: u64) -> Result<u64> {
-        PreviewBuy::apply(&ctx, id, amount_ld)
+    /// Asset units due for `amount_ld` GRS from sale `id` (EVM `quoteBuy`).
+    pub fn quote_buy(ctx: Context<QuoteBuy>, id: u64, amount_ld: u64) -> Result<u64> {
+        QuoteBuy::apply(&ctx, id, amount_ld)
     }
 
     /// Page of vestings. Remaining accounts must be PDAs for ids `offset+1 …` (like EVM).
@@ -136,7 +140,9 @@ pub mod grs {
     }
 
     /// Append a sale. `id` must be `sale_count + 1`. Home admin only. Local book.
-    /// EVM folds LZ into `sale(..., dstEid)`; here the hop is `publish_sale`.
+    /// Earmarks `grs_amount` (`sales_reserved`); tops up `sale_escrow` from `inventory_source`
+    /// when unreserved float is short. EVM folds LZ into `sale(..., dstEid)`; here the hop is
+    /// `publish_sale`.
     pub fn sale(
         mut ctx: Context<SetSale>,
         id: u64,

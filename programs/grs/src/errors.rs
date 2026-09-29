@@ -41,6 +41,8 @@ pub enum OFTError {
     PaymentFailed,
     /// Overflow when updating TokenSales spent accounting.
     BucketExceeded,
+    /// Open sale lots would exceed unreserved `sale_escrow` (EVM `InsufficientInventory`).
+    InsufficientInventory,
     /// Packed sale payload is not keccak256("GRS.sale") || id || asset || assetAmount || grsAmountSD || recipient.
     InvalidSaleMessage,
     /// OFT compose is disabled (EVM `ComposeDisabled`) — prevents sale/grant framing collision.

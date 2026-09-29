@@ -21,7 +21,7 @@ pub struct MintGenesis<'info> {
         mut,
         seeds = [GrsConfig::SEED, oft_store.key().as_ref()],
         bump = grs_config.bump,
-        constraint = grs_config.home @ OFTError::GenesisDisabled,
+        constraint = grs_config.home_address == Pubkey::default() @ OFTError::GenesisDisabled,
         constraint = !grs_config.genesis_minted @ OFTError::GenesisDisabled
     )]
     pub grs_config: Account<'info, GrsConfig>,
