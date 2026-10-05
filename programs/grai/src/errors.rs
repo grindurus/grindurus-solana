@@ -44,10 +44,8 @@ pub enum ErrorCode {
     Paused,
     #[msg("Asset vault balance must be zero to remove")]
     AssetBalanceNonZero,
-    #[msg("Bribe asset is unset")]
-    BribeAssetUnset,
-    #[msg("Settlement asset is unset")]
-    SettlementAssetUnset,
+    #[msg("Asset is not marked bribeable")]
+    NotBribeable,
     #[msg("Yield cuts must sum to 10_000")]
     InvalidCuts,
     #[msg("Cannot change asset while votes are open")]

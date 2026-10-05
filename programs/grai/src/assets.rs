@@ -313,6 +313,7 @@ fn ensure_asset_config<'info>(
         asset_mint: *mint,
         price_feed,
         paused,
+        bribeable: false,
         id,
         acc_share: 0,
         total_claimable: 0,
@@ -380,15 +381,18 @@ fn close_account(info: &AccountInfo, destination: &AccountInfo) -> Result<()> {
     Ok(())
 }
 
-/// Set the settlement asset used for bribe payments (EVM `setSettlementAsset`).
-pub fn execute_set_settlement_asset(ctx: Context<crate::SetSettlementAsset>) -> Result<()> {
-    // EVM `_requireNotGRAI(settlementAsset_)`.
+/// Mark / unmark a listed asset as bribe payment currency (EVM `setConfig(BRIBEABLE)`).
+pub fn execute_set_bribeable(ctx: Context<crate::SetBribeable>, bribeable: bool) -> Result<()> {
+    // EVM `_requireNotGRAI(asset)`.
     require!(
-        ctx.accounts.settlement_mint.mint_authority != COption::Some(ctx.accounts.grai_state.key()),
+        ctx.accounts.asset_mint.mint_authority != COption::Some(ctx.accounts.grai_state.key()),
         ErrorCode::AssetUnknown
     );
-    let new_settlement = ctx.accounts.settlement_mint.key();
-    ctx.accounts.grai_state.settlement_asset = new_settlement;
-    msg!("set_settlement_asset mint={}", new_settlement);
+    ctx.accounts.asset_config.bribeable = bribeable;
+    msg!(
+        "set_bribeable mint={} bribeable={}",
+        ctx.accounts.asset_mint.key(),
+        bribeable
+    );
     Ok(())
 }

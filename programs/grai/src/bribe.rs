@@ -8,11 +8,8 @@ use crate::vault::{transfer_from_signer, transfer_from_vault};
 use crate::{Bribe, BribeQuote, ErrorCode, PreviewBribe};
 
 /// Quote the dynamic bribe ask without mutating state.
+/// Payment mint is `settlement_mint` (must be listed + `bribeable`; EVM `previewBribe(asset, …)`).
 pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Result<BribeQuote> {
-    require!(
-        ctx.accounts.grai_state.settlement_asset != Pubkey::default(),
-        ErrorCode::SettlementAssetUnset
-    );
     require!(
         grai_amount <= ctx.accounts.escrow.voted,
         ErrorCode::InvalidAmount
@@ -43,7 +40,8 @@ pub fn execute_preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Re
     })
 }
 
-/// Buy out `grai_amount` of `voter`'s vote for the dynamic `preview_bribe` ask in `settlement_asset`.
+/// Buy out `grai_amount` of `voter`'s vote for the dynamic `preview_bribe` ask in the payment mint
+/// (`settlement_mint`, must be `bribeable`; EVM `bribe(asset, voter, …)`).
 ///
 /// Scarce votes (below half quorum) carry a premium: the voter keeps book plus half the premium
 /// and the rest funds the cut pool. Excess votes carry a discount: the ask is book minus half the
@@ -56,10 +54,6 @@ pub fn execute_bribe<'info>(
     grai_amount: u64,
 ) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
-    require!(
-        ctx.accounts.grai_state.settlement_asset != Pubkey::default(),
-        ErrorCode::SettlementAssetUnset
-    );
     require!(grai_amount > 0, ErrorCode::AmountZero);
     require!(
         grai_amount <= ctx.accounts.escrow.voted,

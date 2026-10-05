@@ -7,8 +7,7 @@ use crate::tokenomics::preview_unlock;
 use crate::{ErrorCode, Unlock};
 
 /// Return `grai_amount` of the active lock to the wallet, minus the flat unlock penalty.
-/// The penalty stays on the GRAI vault as orphan/dead inventory, scooped to the liquidate opener
-/// (EVM `unlock` — not sent to treasury).
+/// The penalty GRAI is transferred to Grinders (EVM `unlock` → `address(grinders)`).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset in
 /// registry order (needed to settle dividend debts when the unvoted base shrinks).
@@ -78,7 +77,7 @@ pub fn execute_unlock<'info>(
         account_key,
     )?;
 
-    // Penalty is left on the vault (dead GRAI). Only the net unlock returns to the wallet.
+    // Net unlock → wallet; penalty → Grinders GRAI ATA (not left dead on the vault).
     if unlock_amount > 0 {
         transfer_from_vault(
             &ctx.accounts.token_program.to_account_info(),
@@ -87,6 +86,16 @@ pub fn execute_unlock<'info>(
             &ctx.accounts.grai_state.to_account_info(),
             bump,
             unlock_amount,
+        )?;
+    }
+    if penalty > 0 {
+        transfer_from_vault(
+            &ctx.accounts.token_program.to_account_info(),
+            &ctx.accounts.grai_vault_ata.to_account_info(),
+            &ctx.accounts.grinders_grai_ata.to_account_info(),
+            &ctx.accounts.grai_state.to_account_info(),
+            bump,
+            penalty,
         )?;
     }
 

@@ -98,10 +98,11 @@ pub fn mul_div(a: u64, b: u64, d: u64) -> Result<u64> {
 
 /// Split yield/cut pool into treasury / dividend cuts (EVM `_distribute` / bribe).
 /// `treasury = amount * treasuryCutBps / BPS`; `dividend = amount - treasury` (absorbs dust).
+/// Split `amount` into `(treasury, dividend)`. Floors the dividend cut (EVM remainder → treasury).
 pub fn split_cuts(amount: u64, cfg: &Config) -> Result<(u64, u64)> {
-    let treasury = bps_of(amount, cfg.treasury_cut_bps)?;
-    let dividend = amount
-        .checked_sub(treasury)
+    let dividend = bps_of(amount, cfg.dividend_cut_bps)?;
+    let treasury = amount
+        .checked_sub(dividend)
         .ok_or(ErrorCode::MathOverflow)?;
     Ok((treasury, dividend))
 }
@@ -109,7 +110,7 @@ pub fn split_cuts(amount: u64, cfg: &Config) -> Result<(u64, u64)> {
 /// Flat unlock penalty (EVM `previewUnlock`): `penalty = ceil(grai_amount * unlockPenaltyBps / BPS)`.
 ///
 /// Reverts if `grai_amount > escrow_amount`, or while fee > 0 if
-/// `grai_amount < ceil(BPS / unlockPenaltyBps)`. Penalty stays on GRAI as dead inventory.
+/// `grai_amount < ceil(BPS / unlockPenaltyBps)`. Penalty is sent to Grinders (not left dead on GRAI).
 pub fn preview_unlock(
     grai_amount: u64,
     escrow_amount: u64,
@@ -238,7 +239,7 @@ pub fn preview_deposit(value: u128, total_supply: u64, total_value: u128) -> Res
     Ok(grai_out)
 }
 
-/// Dynamic bribe ask in `settlement_asset` units: `(bribe_amount, premium, discount)`.
+/// Dynamic bribe ask in payment-mint units: `(bribe_amount, premium, discount)`.
 ///
 /// The ask scales linearly with vote share vs half quorum:
 /// `adj = bribe_premium_bps * |vote_bps − half_bps| / half_bps`.

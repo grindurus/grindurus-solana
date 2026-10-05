@@ -28,8 +28,8 @@ Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ove
 - Lists assets with price feeds (custom / Chainlink / Pyth) and vault ATAs
 - Mints GRAI on deposit (assets go to Grinders); book NAV in `total_value`
 - Splits custodian yield via `distribute` (50/50 dividend / in-program treasury vault)
-- Escrows GRAI for lock / vote / bribe; dividends accrue to **unvoted** locks
-- Opens liquidation (stale Grinders heartbeat + vote quorum), scoops dead GRAI to the opener, then `redeem` / `revive`
+- Escrows GRAI for lock / vote / bribe; dividends accrue to **unvoted** locks; unlock penalty → Grinders GRAI ATA
+- Opens liquidation (stale Grinders heartbeat + vote quorum), scoops stray vault GRAI to the opener, then `redeem` / `revive`
 
 ## Instructions
 
@@ -41,15 +41,15 @@ Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ove
 | `poach` | poacher | Buy sticky referrer slot for `value + l1_value` GRAI |
 | `set_grinders` | owner | Deposit sink PDA; requires Grinders→this GRAI back-link |
 | `set_config` | owner | Tip, bribe premium, quorum, periods (yield cuts immutable; blocked in liquidation) |
-| `set_settlement_asset` | owner | Listed mint used for bribe payments |
+| `set_bribeable` | owner | Mark listed mint as bribe payment currency (EVM `BRIBEABLE`) |
 | `set_feed` | owner | EVM `setFeed`: list / pause-only / replace-while-paused / delist (`SystemProgram` = FEED_NONE) |
 | `deposit` / `deposit_sol` | depositor | Open deposits → Grinders, mint GRAI, sticky `ReferralBook`; first bind mints Metaplex Treasury NFT (EVM `_ensure`); optional `lock` |
 | `distribute` | custody wallet | Split yield into treasury vault / dividend index |
-| `lock` / `unlock` | locker | Escrow GRAI; unlock applies flat `unlock_penalty_bps` |
+| `lock` / `unlock` | locker | Escrow GRAI; unlock fee → Grinders GRAI ATA (`unlock_penalty_bps`) |
 | `claim` | caller | Claim dividends; tip → caller; books += claimedValue; revenue → cashflow owners / beneficiar |
 | `claim_all` | caller | Claim all listed assets, including the per-mint treasury split |
 | `vote` / `bribe` | voter / briber | Vote toward quorum; buy out votes with dynamic ask |
-| `liquidate` | anyone | Open when Grinders heartbeat is stale + quorum; scoop dead GRAI to caller |
+| `liquidate` | anyone | Open when Grinders heartbeat is stale + quorum; scoop stray vault GRAI to caller |
 | `redeem` | holder | Burn GRAI for pro-rata basket (books sticky — not reversed) |
 | `revive` | anyone | Close after redeem window; sweep leftovers to Grinders; refresh Grinders heartbeat |
 
@@ -105,9 +105,9 @@ self-owned seller or L2 slot.
   the current affiliate `value + l1_value` GRAI and transfers the referral slot
 - **Claim:** tip to `payer`, remainder to locker; the matching treasury share is paid from the
   treasury vault
-- **Unlock:** flat `unlock_penalty_bps` penalty stays as orphan/dead GRAI; scooped to the liquidate opener
+- **Unlock:** flat `unlock_penalty_bps` penalty sent to Grinders GRAI ATA (not left orphan on the vault)
 - **Bribe:** dynamic ask around book vs vote share / half-quorum (`bribe_premium_bps`)
-- **Liquidation:** 2-of-2 (stale Grinders heartbeat + vote quorum) → scoop dead GRAI → redeem basket excludes claim reserve →
+- **Liquidation:** 2-of-2 (stale Grinders heartbeat + vote quorum) → scoop stray vault GRAI → redeem basket excludes claim reserve →
   `revive` returns leftovers to Grinders, refreshes heartbeat, and does **not** raise `total_value` from leftover NAV
   (zeros the book only when supply is zero)
 
@@ -117,7 +117,7 @@ self-owned seller or L2 slot.
 src/
   config.rs       # initialize, grinders, protocol config
   treasury.rs     # per-mint treasury vaults, referrals, affiliate distribution
-  assets.rs       # set_feed / set_settlement_asset
+  assets.rs       # set_feed / set_bribeable
   deposit.rs      # deposit / deposit_sol
   distribute.rs   # yield cuts → treasury / dividend
   vault.rs        # vault transfer + redeemable helpers
@@ -136,7 +136,7 @@ src/
 2. `grai.initialize` — owner + GRAI mint keypair (Metaplex metadata)
 3. `grinders.initialize` with this program id, then `grai.set_grinders(grinders_state)`
 4. `set_beneficiar`, `set_config` (optional; defaults applied at init; cuts fixed)
-5. `set_feed(paused, feed)` per mint (lists asset + treasury vault), then `set_settlement_asset`
+5. `set_feed(paused, feed)` per mint (lists asset + treasury vault), then `set_bribeable(true)` on bribe mints
 6. Users `deposit` / `deposit_sol`; Grinders `custodian_distribute` → `distribute`
 
 ## Build

@@ -73,8 +73,6 @@ pub struct GraiState {
     /// (EVM `Treasury.beneficiar`).
     pub beneficiar: Pubkey,
     pub grinders: Pubkey,
-    /// Asset used for bribe payments (EVM `settlementAsset`). `Pubkey::default()` means unset.
-    pub settlement_asset: Pubkey,
     pub total_value: u128,
     /// Total escrowed GRAI (`total_locked - total_voted` is the dividend base).
     pub total_locked: u64,
@@ -108,7 +106,8 @@ impl GraiState {
 
     /// Fixed fields excluding vec payloads. `bump` is serialized after the four vecs; it is still
     /// counted here so `space()` totals match Borsh (same 1 byte either side of the vec block).
-    pub const FIXED_LEN: usize = 32 * 5
+    /// Pubkeys: owner, pending_owner, beneficiar, grinders, grai_mint.
+    pub const FIXED_LEN: usize = 32 * 4
         + 16
         + 8
         + 8
@@ -145,6 +144,8 @@ pub struct AssetConfig {
     pub asset_mint: Pubkey,
     pub price_feed: Pubkey,
     pub paused: bool,
+    /// When true, mint may be used as bribe payment (EVM `AssetConfig.bribeable`).
+    pub bribeable: bool,
     pub id: u32,
     /// Dividend index per unvoted locked GRAI, scaled by 1e18 (EVM `TotalPosition.accShare`).
     pub acc_share: u128,
@@ -448,34 +449,28 @@ pub struct SetConfig<'info> {
     pub grai_state: Account<'info, GraiState>,
 }
 
-/// Set the settlement asset for bribes (EVM `setSettlementAsset`).
+/// Mark / unmark a listed asset as bribe payment currency (EVM `setConfig(BRIBEABLE)`).
 #[derive(Accounts)]
-pub struct SetSettlementAsset<'info> {
+pub struct SetBribeable<'info> {
     pub owner: Signer<'info>,
 
     #[account(
-        mut,
         seeds = [GraiState::SEED],
         bump = grai_state.bump,
         has_one = owner @ ErrorCode::Unauthorized,
+        constraint = !grai_state.liquidation @ ErrorCode::LiquidationOpen,
     )]
     pub grai_state: Account<'info, GraiState>,
 
-    pub settlement_mint: Account<'info, Mint>,
+    pub asset_mint: Account<'info, Mint>,
 
     #[account(
-        seeds = [AssetConfig::SEED, settlement_mint.key().as_ref()],
-        bump = settlement_asset_config.bump,
-        constraint = settlement_asset_config.asset_mint == settlement_mint.key() @ ErrorCode::AssetUnknown,
+        mut,
+        seeds = [AssetConfig::SEED, asset_mint.key().as_ref()],
+        bump = asset_config.bump,
+        constraint = asset_config.asset_mint == asset_mint.key() @ ErrorCode::AssetUnknown,
     )]
-    pub settlement_asset_config: Account<'info, AssetConfig>,
-
-    /// CHECK: Price feed for the settlement asset (must be listed with a valid feed).
-    #[account(
-        constraint = settlement_price_feed.key() == settlement_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
-        constraint = price_feed::matches_asset_mint(&settlement_price_feed.to_account_info(), settlement_mint.key()) @ ErrorCode::InvalidCustomPriceFeed,
-    )]
-    pub settlement_price_feed: UncheckedAccount<'info>,
+    pub asset_config: Account<'info, AssetConfig>,
 }
 
 #[derive(Accounts)]
@@ -927,7 +922,7 @@ pub struct Lock<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-/// Unlock escrowed GRAI (minus the decaying penalty, which goes to the treasury wallet).
+/// Unlock escrowed GRAI (minus the flat unlock penalty, which is sent to Grinders).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset
 /// (settle dividend debts when the unvoted base shrinks). Yield payouts use `claim`.
@@ -971,7 +966,23 @@ pub struct Unlock<'info> {
     )]
     pub grai_vault_ata: Box<Account<'info, TokenAccount>>,
 
+    /// CHECK: Linked Grinders state (`grai_state.grinders`).
+    #[account(
+        constraint = grinders_state.key() == grai_state.grinders @ ErrorCode::InvalidGrinders,
+    )]
+    pub grinders_state: UncheckedAccount<'info>,
+
+    /// Grinders ATA for the GRAI mint — receives unlock penalty (EVM → `address(grinders)`).
+    #[account(
+        init_if_needed,
+        payer = account,
+        associated_token::mint = grai_mint,
+        associated_token::authority = grinders_state,
+    )]
+    pub grinders_grai_ata: Box<Account<'info, TokenAccount>>,
+
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1182,9 +1193,7 @@ pub struct Bribe<'info> {
     )]
     pub escrow: Box<Account<'info, Escrow>>,
 
-    #[account(
-        constraint = settlement_mint.key() == grai_state.settlement_asset @ ErrorCode::SettlementAssetUnset,
-    )]
+    /// Bribe payment mint (must be listed and `bribeable`; EVM `bribe(asset, …)`).
     pub settlement_mint: Box<Account<'info, Mint>>,
 
     #[account(
@@ -1192,10 +1201,11 @@ pub struct Bribe<'info> {
         seeds = [AssetConfig::SEED, settlement_mint.key().as_ref()],
         bump = settlement_asset_config.bump,
         constraint = settlement_asset_config.asset_mint == settlement_mint.key() @ ErrorCode::AssetUnknown,
+        constraint = settlement_asset_config.bribeable @ ErrorCode::NotBribeable,
     )]
     pub settlement_asset_config: Box<Account<'info, AssetConfig>>,
 
-    /// CHECK: Settlement asset price feed.
+    /// CHECK: Bribe payment asset price feed.
     #[account(
         constraint = settlement_price_feed.key() == settlement_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
@@ -1277,19 +1287,18 @@ pub struct PreviewBribe<'info> {
     )]
     pub escrow: Box<Account<'info, Escrow>>,
 
-    #[account(
-        constraint = settlement_mint.key() == grai_state.settlement_asset @ ErrorCode::SettlementAssetUnset,
-    )]
+    /// Bribe payment mint (must be listed and `bribeable`; EVM `previewBribe(asset, …)`).
     pub settlement_mint: Box<Account<'info, Mint>>,
 
     #[account(
         seeds = [AssetConfig::SEED, settlement_mint.key().as_ref()],
         bump = settlement_asset_config.bump,
         constraint = settlement_asset_config.asset_mint == settlement_mint.key() @ ErrorCode::AssetUnknown,
+        constraint = settlement_asset_config.bribeable @ ErrorCode::NotBribeable,
     )]
     pub settlement_asset_config: Box<Account<'info, AssetConfig>>,
 
-    /// CHECK: Settlement asset price feed.
+    /// CHECK: Bribe payment asset price feed.
     #[account(
         constraint = settlement_price_feed.key() == settlement_asset_config.price_feed @ ErrorCode::InvalidChainlinkFeed,
     )]
@@ -1435,7 +1444,8 @@ pub struct PreviewRedeem<'info> {
 
 /// Open liquidation (2-of-2: vote quorum here **and** stale Grinders heartbeat).
 /// Anyone may call; active heartbeat or missing quorum aborts open (EVM atomic open).
-/// On open, orphan vault GRAI (`grai_vault − total_locked`) is sent to `caller`.
+/// On open, stray/orphan vault GRAI (`grai_vault − total_locked`) is sent to `caller`.
+/// Unlock penalties are already sent to Grinders on `unlock` and are not part of that scoop.
 /// Custodian / idle sweeps stay on Grinders (`liquidate_*`), gated by the same arm —
 /// compose them in the same tx as this ix for EVM-style atomic pull.
 #[derive(Accounts)]
@@ -1679,8 +1689,9 @@ pub mod grai {
         config::execute_set_grinders(ctx, grinders)
     }
 
-    pub fn set_settlement_asset(ctx: Context<SetSettlementAsset>) -> Result<()> {
-        assets::execute_set_settlement_asset(ctx)
+    /// EVM `setConfig(BRIBEABLE, packed)` — toggle `assets[mint].bribeable`.
+    pub fn set_bribeable(ctx: Context<SetBribeable>, bribeable: bool) -> Result<()> {
+        assets::execute_set_bribeable(ctx, bribeable)
     }
 
     pub fn set_config(ctx: Context<SetConfig>, cfg: Config) -> Result<()> {
@@ -1839,7 +1850,7 @@ pub mod grai {
     }
 
     /// Dynamic bribe ask for `grai_amount` of `voter`'s vote: `(bribe_amount, premium, discount)`
-    /// in `settlement_asset` units. Exactly one of `premium` / `discount` is non-zero.
+    /// in the payment mint's units (`settlement_mint`, must be `bribeable`).
     pub fn preview_bribe(ctx: Context<PreviewBribe>, grai_amount: u64) -> Result<BribeQuote> {
         bribe::execute_preview_bribe(ctx, grai_amount)
     }

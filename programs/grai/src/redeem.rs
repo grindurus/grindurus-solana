@@ -37,8 +37,9 @@ fn grinders_grinding(grinders_state: &AccountInfo, now: i64) -> Result<bool> {
 
 /// Open liquidation (EVM `liquidate`): vote quorum **and** stale Grinders heartbeat.
 ///
-/// Anyone may call. On open: scoop orphan/dead GRAI (`grai_vault − total_locked`) to the
-/// opener, then start the claim clock. Sweeps stay on Grinders (`liquidate_idle` /
+/// Anyone may call. On open: scoop stray/orphan GRAI (`grai_vault − total_locked`) to the
+/// opener, then start the claim clock. Unlock penalties are already sent to Grinders on
+/// `unlock` and are not part of that scoop. Sweeps stay on Grinders (`liquidate_idle` /
 /// `liquidate_custodian`), gated by GRAI liquidation flag — compose them in this tx for atomic pull.
 /// Per-asset `paused` flags are left unchanged.
 pub fn execute_liquidate<'info>(

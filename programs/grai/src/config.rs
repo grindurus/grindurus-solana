@@ -25,7 +25,6 @@ pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
         grai_state.pending_owner = Pubkey::default();
         grai_state.beneficiar = owner;
         grai_state.grinders = owner;
-        grai_state.settlement_asset = Pubkey::default();
         grai_state.total_value = 0;
         grai_state.total_locked = 0;
         grai_state.total_voted = 0;

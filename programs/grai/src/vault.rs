@@ -11,8 +11,9 @@ pub fn redeemable_balance(vault_amount: u64, total_claimable: u64) -> u64 {
     vault_amount.saturating_sub(total_claimable)
 }
 
-/// Dead / orphan GRAI on the mint vault: `vault_amount - total_locked`
-/// (EVM `balanceOf(this) - totalLocked`; tokens already here, not via `lock`).
+/// Stray / orphan GRAI on the mint vault: `vault_amount - total_locked`
+/// (EVM `balanceOf(this) - totalLocked`). Unlock penalties are sent to Grinders and are not
+/// counted here once transferred.
 pub fn dead_grai(vault_amount: u64, total_locked: u64) -> u64 {
     vault_amount.saturating_sub(total_locked)
 }
