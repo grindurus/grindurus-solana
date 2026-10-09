@@ -46,9 +46,12 @@ export function collectionMasterEditionPda(collectionMint: PublicKey): PublicKey
   )[0];
 }
 
-/** keccak256("grindurus.custodian.explicit_swap") */
-export const EXPLICIT_SWAP_CUSTODIAN_KIND = Buffer.from(
-  "ed402d39d17fde1cee5497b1836db076721aeed07c6337ad6f981559e69383ad",
+/** CAIP-2 reference used by local validator tests (`initialize("localnet")`). */
+export const LOCALNET_CLUSTER_REF = "localnet";
+
+/** keccak256("grinder.custodian.swap@solana:localnet") */
+export const SWAP_LABEL = Buffer.from(
+  "3464b15032b5be793d52b41659ce9e07f05924178e0d71020e9ee07922d6b934",
   "hex",
 );
 
@@ -78,15 +81,6 @@ export function custodianStatePda(
     [Buffer.from("custodian_wallet"), grindersState.toBuffer(), id],
     programId,
   )[0];
-}
-
-/** Grinders Allocation PDA — removed; issuance is event-only (EVM parity). */
-export function allocationPda(
-  _custodianState: PublicKey,
-  _assetMint: PublicKey,
-  _programId = GRINDERS_PROGRAM_ID,
-): PublicKey {
-  throw new Error("allocation PDA removed; track Allocate/Deallocate off-chain");
 }
 
 function custodianMintPda(
@@ -140,7 +134,7 @@ export async function ensureGrindersInitialized(
       ASSOCIATED_TOKEN_PROGRAM_ID,
     );
     await grindersProgram.methods
-      .initialize()
+      .initialize(LOCALNET_CLUSTER_REF)
       .accountsPartial({
         owner,
         graiProgram: graiProgramId,
@@ -209,10 +203,10 @@ export async function mintExplicitSwapCustodian(
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
 
-  const kind = [...EXPLICIT_SWAP_CUSTODIAN_KIND];
+  const label = [...SWAP_LABEL];
 
   await grindersProgram.methods
-    .mint(kind)
+    .mint(label)
     .accountsPartial({
       owner: params.owner,
       custodianOwner: params.grinder,

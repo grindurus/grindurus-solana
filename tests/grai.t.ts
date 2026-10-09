@@ -61,6 +61,7 @@ const DEFAULT_CLAIM_TIP_BPS = 100; // 1%
 const DEFAULT_BRIBE_PREMIUM_BPS = 200; // 2%
 const DEFAULT_QUORUM_BPS = 6_667;
 const DEFAULT_UNLOCK_PENALTY_BPS = 100; // 1% flat
+const DEFAULT_POACH_FEE_BPS = 100; // 1% of poach ask → Grinders
 const SEVEN_DAYS = 7 * 24 * 60 * 60;
 const ONE_DAY = 24 * 60 * 60;
 const U64_MAX = new anchor.BN("18446744073709551615");
@@ -735,6 +736,7 @@ describe("GRAI tokenomics", () => {
       expect(grai.config.bribePremiumBps).to.equal(DEFAULT_BRIBE_PREMIUM_BPS);
       expect(grai.config.quorumBps).to.equal(DEFAULT_QUORUM_BPS);
       expect(grai.config.unlockPenaltyBps).to.equal(DEFAULT_UNLOCK_PENALTY_BPS);
+      expect(grai.config.poachFeeBps).to.equal(DEFAULT_POACH_FEE_BPS);
       expect(grai.config.liquidationPeriod).to.equal(ONE_DAY);
       expect(grai.config.redeemPeriod).to.equal(SEVEN_DAYS);
     }
@@ -837,7 +839,7 @@ describe("GRAI tokenomics", () => {
     expect(grai.beneficiar.toBase58()).to.equal(treasury.publicKey.toBase58());
   });
 
-  it("set_feed lists USDC and set_settlement_asset selects USDC", async () => {
+  it("set_feed lists USDC and set_bribeable marks USDC", async () => {
     const priceFeed = await setupUsdcWithPriceFeed(
       feedProgram,
       provider,
@@ -945,22 +947,20 @@ describe("GRAI tokenomics", () => {
       (await program.account.assetConfig.fetch(usdcAssetConfig)).priceFeed.toBase58(),
     ).to.equal(usdcUsdFeed.toBase58());
 
-    if (registry.settlementAsset.equals(PublicKey.default)) {
+    if (!asset.bribeable) {
       await program.methods
-        .setSettlementAsset()
-        .accountsPartial({ owner: authority,
+        .setBribeable(true)
+        .accountsPartial({
+          owner: authority,
           graiState,
-          settlementMint: usdcMint.publicKey,
-          settlementAssetConfig: usdcAssetConfig,
-          settlementPriceFeed: usdcUsdFeed,
+          assetMint: usdcMint.publicKey,
+          assetConfig: usdcAssetConfig,
         })
         .rpc();
     }
 
-    const afterSettlement = await program.account.graiState.fetch(graiState);
-    expect(afterSettlement.settlementAsset.toBase58()).to.equal(
-      usdcMint.publicKey.toBase58(),
-    );
+    const after = await program.account.assetConfig.fetch(usdcAssetConfig);
+    expect(after.bribeable).to.be.true;
   });
 
   it("set_feed pauses / unpauses and replaces feed while paused", async () => {
@@ -2396,6 +2396,7 @@ describe("GRAI tokenomics", () => {
       quorumBps: current.quorumBps,
       revenueShareBps: current.revenueShareBps,
       unlockPenaltyBps: current.unlockPenaltyBps,
+      poachFeeBps: current.poachFeeBps,
       liquidationPeriod: current.liquidationPeriod,
       redeemPeriod: current.redeemPeriod,
     };
@@ -2912,6 +2913,7 @@ describe("GRAI tokenomics", () => {
           .custodianSwap(new anchor.BN(0), Buffer.from([]))
           .accountsPartial({
             owner: authority,
+            grindersState,
             custodianState: custodian.custodianState,
             ownerNftAta: sellerAta,
             baseCustodianAta: baseAta,
@@ -2929,6 +2931,7 @@ describe("GRAI tokenomics", () => {
           .custodianSwap(new anchor.BN(0), Buffer.from([]))
           .accountsPartial({
             owner: buyer.publicKey,
+            grindersState,
             custodianState: custodian.custodianState,
             ownerNftAta: buyerAta,
             baseCustodianAta: baseAta,

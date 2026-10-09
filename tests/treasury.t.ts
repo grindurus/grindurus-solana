@@ -606,6 +606,21 @@ describe("Treasury referrals / poach / NFT", () => {
       .view();
   }
 
+  function grindersGraiAta(): PublicKey {
+    return getAssociatedTokenAddressSync(
+      graiMint.publicKey,
+      grindersState,
+      true,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    );
+  }
+
+  /** EVM `ceil(price * poachFeeBps / BPS)` with default 1%. */
+  function poachFee(price: bigint): bigint {
+    return (price * 100n + 10_000n - 1n) / 10_000n;
+  }
+
   async function poach(
     poacher: Keypair,
     locker: PublicKey,
@@ -643,7 +658,10 @@ describe("Treasury referrals / poach / NFT", () => {
         graiMint: graiMint.publicKey,
         poacherGraiAta,
         sellerGraiAta,
+        grindersState,
+        grindersGraiAta: grindersGraiAta(),
         tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .remainingAccounts([
@@ -1882,7 +1900,9 @@ describe("Treasury referrals / poach / NFT", () => {
     const quote = await poach(poacher, locker.publicKey, locker.publicKey);
 
     expect(BigInt(quote.price.toString())).to.equal(100_000_000n);
-    expect((await tokenBal(lockerGrai)) - before).to.equal(100_000_000n);
+    expect((await tokenBal(lockerGrai)) - before).to.equal(
+      100_000_000n - poachFee(100_000_000n),
+    );
 
     const book = await program.account.referrer.fetch(
       referrerPda(locker.publicKey, program.programId)[0],
@@ -1909,7 +1929,9 @@ describe("Treasury referrals / poach / NFT", () => {
 
     const quote = await poach(locker, locker.publicKey, upline.publicKey);
     expect(BigInt(quote.price.toString())).to.equal(90_000_000n);
-    expect((await tokenBal(uplineGrai)) - uplineBefore).to.equal(90_000_000n);
+    expect((await tokenBal(uplineGrai)) - uplineBefore).to.equal(
+      90_000_000n - poachFee(90_000_000n),
+    );
 
     const book = await program.account.referrer.fetch(
       referrerPda(locker.publicKey, program.programId)[0],
@@ -1946,7 +1968,10 @@ describe("Treasury referrals / poach / NFT", () => {
           graiMint: graiMint.publicKey,
           poacherGraiAta: await ensureAta(graiMint.publicKey, locker.publicKey),
           sellerGraiAta: await ensureAta(graiMint.publicKey, locker.publicKey),
+          grindersState,
+          grindersGraiAta: grindersGraiAta(),
           tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
         })
         .signers([locker])
@@ -1980,7 +2005,9 @@ describe("Treasury referrals / poach / NFT", () => {
     const quote = await poach(poacher, mid.publicKey, root.publicKey);
     expect(BigInt(quote.price.toString())).to.equal(65_000_000n); // 40+25
     expect(quote.referrer.toBase58()).to.equal(root.publicKey.toBase58());
-    expect((await tokenBal(rootGrai)) - rootBefore).to.equal(65_000_000n);
+    expect((await tokenBal(rootGrai)) - rootBefore).to.equal(
+      65_000_000n - poachFee(65_000_000n),
+    );
 
     const midBook = await program.account.referrer.fetch(
       referrerPda(mid.publicKey, program.programId)[0],
@@ -2023,7 +2050,10 @@ describe("Treasury referrals / poach / NFT", () => {
           graiMint: graiMint.publicKey,
           poacherGraiAta: await ensureAta(graiMint.publicKey, ref.publicKey),
           sellerGraiAta: await ensureAta(graiMint.publicKey, ref.publicKey),
+          grindersState,
+          grindersGraiAta: grindersGraiAta(),
           tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
         })
         .signers([ref])
@@ -2100,7 +2130,16 @@ describe("Treasury referrals / poach / NFT", () => {
           graiMint: junkMint.publicKey,
           poacherGraiAta: attackerJunkAta,
           sellerGraiAta: sellerJunkAta,
+          grindersState,
+          grindersGraiAta: getAssociatedTokenAddressSync(
+            junkMint.publicKey,
+            grindersState,
+            true,
+            TOKEN_PROGRAM_ID,
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+          ),
           tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
         })
         .remainingAccounts([
