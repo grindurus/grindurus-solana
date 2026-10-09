@@ -1,6 +1,6 @@
 # GRS (Solana)
 
-LayerZero **OFT** for **GRS** (*GrindURUS Token*). Same mesh as [`grindurus-evm/src/GRS.sol`](../../grindurus-evm/src/GRS.sol). Spec: [GRS mechanics](https://docs.grindurus.xyz/developers/mechanics/grs).
+LayerZero **OFT** for **GRS** (*GrindURUS Token*). Same mesh as [`grindurus-evm/src/GRS.sol`](../../grindurus-evm/src/GRS.sol). Spec: [GRS mechanics](https://docs.grindurus.xyz/protocol/grs/mechanics).
 
 ## Token
 

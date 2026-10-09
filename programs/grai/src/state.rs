@@ -413,7 +413,7 @@ mod account_sizes {
             },
             Referrer::LEN,
         );
-        assert_eq!(Config::LEN, 2 * 7 + 4 * 2);
+        assert_eq!(Config::LEN, 2 * 8 + 4 * 2);
     }
 }
 

@@ -1,4 +1,5 @@
-//! `grindurus.custodian.explicit_swap` — router CPI in one tx; grinder pays SOL fees off-chain.
+//! `grinder.custodian.swap@solana:<ref>` — router CPI in one tx; grinder pays SOL fees off-chain.
+//! Label is gated by `CustodianSwap` account constraints.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
@@ -7,9 +8,9 @@ use anchor_lang::solana_program::{
 };
 use anchor_spl::token::{Mint, TokenAccount};
 
-use crate::custodian::{assert_custodian_owner, require_custodian_kind};
+use crate::custodian::assert_custodian_owner;
 use crate::errors::ErrorCode;
-use crate::state::{CustodianState, EXPLICIT_SWAP_CUSTODIAN_KIND};
+use crate::state::CustodianState;
 
 const PRICE_DECIMALS: u128 = 1_000_000_000_000_000_000;
 
@@ -25,7 +26,6 @@ pub fn execute_swap<'info>(
     limit_price: u128,
     ix_data: Vec<u8>,
 ) -> Result<()> {
-    require_custodian_kind(custodian_state, &EXPLICIT_SWAP_CUSTODIAN_KIND)?;
     assert_custodian_owner(owner, custodian_state, owner_nft_ata)?;
 
     require!(!ix_data.is_empty(), ErrorCode::DataEmpty);

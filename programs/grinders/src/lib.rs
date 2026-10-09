@@ -1,4 +1,4 @@
-#![allow(deprecated)]
+#![allow(deprecated)] // Anchor `AccountInfo::realloc` via `init_if_needed`
 
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer as transfer_sol, Transfer as TransferSol};
@@ -19,8 +19,9 @@ mod state;
 
 pub use errors::ErrorCode;
 pub use state::{
-    custodian_state_pda, is_known_custodian_kind, CustodianState, GrindersState,
-    EXPLICIT_SWAP_CUSTODIAN_KIND, JUPITER_GASLESS_CUSTODIAN_KIND, NATIVE_ASSET,
+    custodian_state_pda, encode_cluster_ref, is_known_label, jupiter_gasless_label, label_hash,
+    label_id, swap_label, CustodianState, GrindersState, LABEL_NAME_JUPITER_GASLESS,
+    LABEL_NAME_SWAP, LABEL_NAMESPACE, NATIVE_ASSET,
 };
 
 declare_id!("7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v");
@@ -33,13 +34,14 @@ pub const DEFAULT_GRINDING_PERIOD: u32 = 7 * 24 * 60 * 60;
 pub mod grinders {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, cluster_ref: String) -> Result<()> {
         require_keys_neq!(
             ctx.accounts.grai_program.key(),
             Pubkey::default(),
             ErrorCode::ToZero
         );
 
+        let cluster_ref_bytes = encode_cluster_ref(&cluster_ref)?;
         let grinders_bump = ctx.bumps.grinders_state;
         let grinders_state_info = ctx.accounts.grinders_state.to_account_info();
         {
@@ -52,6 +54,7 @@ pub mod grinders {
             grinders.heartbeat_at = Clock::get()?.unix_timestamp;
             grinders.grinding_period = DEFAULT_GRINDING_PERIOD;
             grinders.bump = grinders_bump;
+            grinders.cluster_ref = cluster_ref_bytes;
         }
 
         collection::create_collection(
@@ -70,10 +73,11 @@ pub mod grinders {
 
         let grinders = &ctx.accounts.grinders_state;
         msg!(
-            "grinders initialized owner={} grai={} collection={}",
+            "grinders initialized owner={} grai={} collection={} cluster={}",
             grinders.owner,
             grinders.grai_program,
-            grinders.collection_mint
+            grinders.collection_mint,
+            grinders.cluster_ref_str()
         );
         Ok(())
     }
@@ -133,7 +137,7 @@ pub mod grinders {
 
     pub fn mint(
         ctx: Context<MintCustodian>,
-        custodian_kind: [u8; 32],
+        label: [u8; 32],
     ) -> Result<()> {
         require_keys_neq!(
             ctx.accounts.base_mint.key(),
@@ -159,7 +163,7 @@ pub mod grinders {
             .ok_or(ErrorCode::MathOverflow)?;
 
         require!(
-            is_known_custodian_kind(&custodian_kind),
+            is_known_label(&label, &ctx.accounts.grinders_state.cluster_ref),
             ErrorCode::UnknownCustodianKind
         );
 
@@ -178,7 +182,7 @@ pub mod grinders {
         custodian.grinders = ctx.accounts.grinders_state.key();
         custodian.custodian_id = custodian_id;
         custodian.grai_program = ctx.accounts.grai_program.key();
-        custodian.custodian_kind = custodian_kind;
+        custodian.label = label;
         custodian.base_mint = ctx.accounts.base_mint.key();
         custodian.quote_mint = ctx.accounts.quote_mint.key();
         custodian.nft_mint = ctx.accounts.custodian_mint.key();
@@ -248,7 +252,7 @@ pub mod grinders {
         )?;
 
         emit!(CustodianDeployed {
-            custodian_kind,
+            label,
             custodian_wallet: derived_custodian_wallet,
             owner: ctx.accounts.custodian_owner.key(),
             base_mint: ctx.accounts.base_mint.key(),
@@ -259,7 +263,7 @@ pub mod grinders {
         Ok(())
     }
 
-    /// `grindurus.custodian.explicit_swap` — router CPI; grinder pays SOL for the transaction off-chain.
+    /// `grinder.custodian.swap@solana:<ref>` — router CPI; grinder pays SOL for the transaction off-chain.
     pub fn custodian_swap<'info>(
         ctx: Context<'_, '_, '_, 'info, CustodianSwap<'info>>,
         limit_price: u128,
@@ -279,7 +283,7 @@ pub mod grinders {
         )
     }
 
-    /// `grindurus.custodian.jupiter_gasless` — Jupiter path; grinders pays SOL (stub).
+    /// `grinder.custodian.jupiter_gasless@solana:<ref>` — Jupiter path; grinders pays SOL (stub).
     pub fn custodian_jupiter_gasless_swap<'info>(
         ctx: Context<'_, '_, '_, 'info, CustodianJupiterGaslessSwap<'info>>,
         min_out_amount: u64,
@@ -810,7 +814,7 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(custodian_kind: [u8; 32])]
+#[instruction(label: [u8; 32])]
 pub struct MintCustodian<'info> {
     #[account(
         mut,
@@ -1040,9 +1044,16 @@ pub struct CustodianSwap<'info> {
     pub owner: Signer<'info>,
 
     #[account(
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
         seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
         bump = custodian_state.bump,
-        constraint = custodian_state.custodian_kind == EXPLICIT_SWAP_CUSTODIAN_KIND @ ErrorCode::CustodianKindMismatch,
+        constraint = custodian_state.grinders == grinders_state.key() @ ErrorCode::NotCustodianWallet,
+        constraint = custodian_state.label == swap_label(&grinders_state.cluster_ref) @ ErrorCode::CustodianKindMismatch,
     )]
     pub custodian_state: Account<'info, CustodianState>,
 
@@ -1093,7 +1104,7 @@ pub struct CustodianJupiterGaslessSwap<'info> {
         seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
         bump = custodian_state.bump,
         constraint = custodian_state.grinders == grinders_state.key() @ ErrorCode::NotCustodianWallet,
-        constraint = custodian_state.custodian_kind == JUPITER_GASLESS_CUSTODIAN_KIND @ ErrorCode::CustodianKindMismatch,
+        constraint = custodian_state.label == jupiter_gasless_label(&grinders_state.cluster_ref) @ ErrorCode::CustodianKindMismatch,
     )]
     pub custodian_state: Account<'info, CustodianState>,
 
@@ -1451,7 +1462,7 @@ pub struct SwapExecuted {
 
 #[event]
 pub struct CustodianDeployed {
-    pub custodian_kind: [u8; 32],
+    pub label: [u8; 32],
     pub custodian_wallet: Pubkey,
     pub owner: Pubkey,
     pub base_mint: Pubkey,

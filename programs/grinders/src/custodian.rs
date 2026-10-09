@@ -50,14 +50,6 @@ pub fn assert_protocol_owner(
     Ok(())
 }
 
-pub fn require_custodian_kind(state: &CustodianState, expected: &[u8; 32]) -> Result<()> {
-    require!(
-        state.custodian_kind == *expected,
-        ErrorCode::CustodianKindMismatch
-    );
-    Ok(())
-}
-
 /// Read GRAI `liquidation` flag from raw account data (EVM `Custodian.liquidation()`).
 pub fn grai_liquidation_open(grai_state: &AccountInfo) -> Result<bool> {
     let data = grai_state.try_borrow_data()?;

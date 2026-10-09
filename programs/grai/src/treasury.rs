@@ -23,7 +23,7 @@ use anchor_spl::token::{
 
 use crate::metadata::{self, TREASURY_NFT_SEED};
 use crate::state::{create_account_absorb_prefund, register_referrer};
-use crate::tokenomics::{bps_of, BPS};
+use crate::tokenomics::{bps_ceil, bps_of, BPS};
 use crate::vault::transfer_from_vault;
 use crate::{ErrorCode, GraiState, Referrer};
 
@@ -476,8 +476,16 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
         seller,
         ErrorCode::InvalidDestination
     );
+    require_keys_eq!(
+        ctx.accounts.grinders_grai_ata.owner,
+        ctx.accounts.grinders_state.key(),
+        ErrorCode::InvalidDestination
+    );
 
-    if price > 0 {
+    // EVM `GRAI.poach`: `fee = ceil(price * poachFeeBps / BPS)` → Grinders; rest → referrer.
+    let fee = bps_ceil(price, ctx.accounts.grai_state.config.poach_fee_bps)?;
+    let to_referrer = price.checked_sub(fee).ok_or(ErrorCode::MathOverflow)?;
+    if to_referrer > 0 {
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -487,7 +495,20 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
                     authority: ctx.accounts.poacher.to_account_info(),
                 },
             ),
-            price,
+            to_referrer,
+        )?;
+    }
+    if fee > 0 {
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.poacher_grai_ata.to_account_info(),
+                    to: ctx.accounts.grinders_grai_ata.to_account_info(),
+                    authority: ctx.accounts.poacher.to_account_info(),
+                },
+            ),
+            fee,
         )?;
     }
 
@@ -658,7 +679,14 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
         store_referrer(&ctx.accounts.new_l2_book.to_account_info(), &new_book)?;
     }
 
-    msg!("poach locker={} poacher={} price={}", locker, poacher, price);
+    msg!(
+        "poach locker={} poacher={} price={} fee={} to_referrer={}",
+        locker,
+        poacher,
+        price,
+        fee,
+        to_referrer
+    );
     Ok(())
 }
 

@@ -38,9 +38,9 @@ Tokenomics overview: [docs.grindurus.xyz](https://docs.grindurus.xyz/general/ove
 | `initialize` | owner | Create `GraiState`, take mint authority, Metaplex metadata |
 | `set_beneficiar` | owner | Claim-time treasury beneficiary |
 | `set_royalty_bps` / `set_revenue_share_bps` | owner | Configure sale royalty and affiliate revenue weights |
-| `poach` | poacher | Buy sticky referrer slot for `value + l1_value` GRAI |
+| `poach` | poacher | Buy sticky referrer slot for `value + l1_value` GRAI; `poach_fee_bps` → Grinders, rest → referrer |
 | `set_grinders` | owner | Deposit sink PDA; requires Grinders→this GRAI back-link |
-| `set_config` | owner | Tip, bribe premium, quorum, periods (yield cuts immutable; blocked in liquidation) |
+| `set_config` | owner | Tip, bribe premium, quorum, unlock/poach fees, periods (yield cuts immutable; blocked in liquidation) |
 | `set_bribeable` | owner | Mark listed mint as bribe payment currency (EVM `BRIBEABLE`) |
 | `set_feed` | owner | EVM `setFeed`: list / pause-only / replace-while-paused / delist (`SystemProgram` = FEED_NONE) |
 | `deposit` / `deposit_sol` | depositor | Open deposits → Grinders, mint GRAI, sticky `ReferralBook`; first bind mints Metaplex Treasury NFT (EVM `_ensure`); optional `lock` |

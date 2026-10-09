@@ -25,6 +25,9 @@ pub const DEFAULT_QUORUM_BPS: u16 = 6_667;
 /// EVM `unlockPenaltyBps` = 1% flat on every unlock.
 pub const DEFAULT_UNLOCK_PENALTY_BPS: u16 = 100;
 pub const MAX_UNLOCK_PENALTY_BPS: u16 = 1_000;
+/// EVM `poachFeeBps` = 1% of poach ask → Grinders.
+pub const DEFAULT_POACH_FEE_BPS: u16 = 100;
+pub const MAX_POACH_FEE_BPS: u16 = 1_000;
 pub const DEFAULT_LIQUIDATION_PERIOD: u32 = 24 * 60 * 60;
 pub const DEFAULT_REDEEM_PERIOD: u32 = 7 * 24 * 60 * 60;
 
@@ -37,6 +40,7 @@ pub fn default_protocol_config() -> Config {
         bribe_premium_bps: DEFAULT_BRIBE_PREMIUM_BPS,
         quorum_bps: DEFAULT_QUORUM_BPS,
         unlock_penalty_bps: DEFAULT_UNLOCK_PENALTY_BPS,
+        poach_fee_bps: DEFAULT_POACH_FEE_BPS,
         liquidation_period: DEFAULT_LIQUIDATION_PERIOD,
         redeem_period: DEFAULT_REDEEM_PERIOD,
     }
@@ -59,6 +63,10 @@ pub fn validate_protocol_config(cfg: &Config) -> Result<()> {
         cfg.unlock_penalty_bps <= MAX_UNLOCK_PENALTY_BPS,
         ErrorCode::BpsTooHigh
     );
+    require!(
+        cfg.poach_fee_bps <= MAX_POACH_FEE_BPS,
+        ErrorCode::BpsTooHigh
+    );
     // Symmetric bribe premium/discount must stay within BPS (EVM `2 * bribePremiumBps <= BPS`).
     require!(
         2 * (cfg.bribe_premium_bps as u32) <= BPS as u32,
@@ -79,6 +87,20 @@ pub fn validate_protocol_config(cfg: &Config) -> Result<()> {
 pub fn bps_of(amount: u64, bps: u16) -> Result<u64> {
     let cut = (amount as u128)
         .checked_mul(bps as u128)
+        .and_then(|v| v.checked_div(BPS as u128))
+        .ok_or(ErrorCode::MathOverflow)?;
+    require!(cut <= u64::MAX as u128, ErrorCode::MathOverflow);
+    Ok(cut as u64)
+}
+
+/// `ceil(amount * bps / BPS)` (EVM poach fee: `(price * poachFeeBps + BPS - 1) / BPS`).
+pub fn bps_ceil(amount: u64, bps: u16) -> Result<u64> {
+    if bps == 0 || amount == 0 {
+        return Ok(0);
+    }
+    let cut = (amount as u128)
+        .checked_mul(bps as u128)
+        .and_then(|v| v.checked_add((BPS as u128) - 1))
         .and_then(|v| v.checked_div(BPS as u128))
         .ok_or(ErrorCode::MathOverflow)?;
     require!(cut <= u64::MAX as u128, ErrorCode::MathOverflow);

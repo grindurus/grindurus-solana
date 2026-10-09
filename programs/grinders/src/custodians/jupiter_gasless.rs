@@ -1,13 +1,14 @@
-//! `grindurus.custodian.jupiter_gasless` — Jupiter gasless path; grinder must not pay SOL.
+//! `grinder.custodian.jupiter_gasless@solana:<ref>` — Jupiter gasless path; grinder must not pay SOL.
+//! Label is gated by `CustodianJupiterGaslessSwap` account constraints.
 //!
 //! Swap body will be filled in a future program upgrade (`/build` with grinders payer or `/order`).
 
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, TokenAccount};
 
-use crate::custodian::{assert_custodian_owner, require_custodian_kind};
+use crate::custodian::assert_custodian_owner;
 use crate::errors::ErrorCode;
-use crate::state::{CustodianState, JUPITER_GASLESS_CUSTODIAN_KIND};
+use crate::state::CustodianState;
 
 pub fn execute_jupiter_gasless_swap<'info>(
     owner: &Signer,
@@ -22,7 +23,6 @@ pub fn execute_jupiter_gasless_swap<'info>(
     _min_out_amount: u64,
     _ix_data: Vec<u8>,
 ) -> Result<()> {
-    require_custodian_kind(custodian_state, &JUPITER_GASLESS_CUSTODIAN_KIND)?;
     assert_custodian_owner(owner, custodian_state, owner_nft_ata)?;
     require_keys_neq!(fee_payer.key(), owner.key(), ErrorCode::GrinderMustNotPayGas);
 

@@ -53,6 +53,9 @@ pub struct Config {
     pub quorum_bps: u16,
     /// Flat unlock fee in bps of unlocked GRAI (EVM `unlockPenaltyBps`).
     pub unlock_penalty_bps: u16,
+    /// Flat poach fee in bps of the poach ask (`value + l1_value`); sent to Grinders
+    /// (EVM `poachFeeBps`).
+    pub poach_fee_bps: u16,
     /// Delay after liquidation opens before `redeem` is allowed.
     pub liquidation_period: u32,
     /// Extra window after `liquidation_period` before liquidation can be closed via `revive`.
@@ -401,7 +404,23 @@ pub struct Poach<'info> {
     )]
     pub seller_grai_ata: Account<'info, TokenAccount>,
 
+    /// CHECK: Linked Grinders state (`grai_state.grinders`) — receives poach fee.
+    #[account(
+        constraint = grinders_state.key() == grai_state.grinders @ ErrorCode::InvalidGrinders,
+    )]
+    pub grinders_state: UncheckedAccount<'info>,
+
+    /// Grinders ATA for the GRAI mint — receives `ceil(price * poach_fee_bps / BPS)`.
+    #[account(
+        init_if_needed,
+        payer = poacher,
+        associated_token::mint = grai_mint,
+        associated_token::authority = grinders_state,
+    )]
+    pub grinders_grai_ata: Account<'info, TokenAccount>,
+
     pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 

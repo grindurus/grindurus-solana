@@ -108,8 +108,8 @@ ERC-721-style **Grinders Custodians** Metaplex collection; each `mint` creates:
 
 | Kind                             | Label                                 | Instruction                                   |
 | -------------------------------- | ------------------------------------- | --------------------------------------------- |
-| `EXPLICIT_SWAP_CUSTODIAN_KIND`   | `grindurus.custodian.explicit_swap`   | `custodian_swap` — router CPI + `limit_price` |
-| `JUPITER_GASLESS_CUSTODIAN_KIND` | `grindurus.custodian.jupiter_gasless` | stub                                          |
+| `swap`                           | `grinder.custodian.swap@solana:<ref>`           | `custodian_swap` — router CPI + `limit_price` |
+| `jupiter_gasless`                | `grinder.custodian.jupiter_gasless@solana:<ref>` | stub                                          |
 
 
 **Owner:** `initialize`, `mint`, `allocate`, `withdraw` / `withdraw_token`.
@@ -138,7 +138,7 @@ Details: `[programs/grinders/README.md](programs/grinders/README.md)`.
 3. `grai.initialize(grinders_state_pda)` — authority, GRAI mint, Metaplex metadata.
 4. `grai.set_feed(paused, feed)` per mint (lists the asset); `grai.set_settlement_asset`.
 5. `grai.set_beneficiar`, `grai.set_config` (tip, revenue share, bribe premium, quorum, timing — not cuts).
-6. `grinders.mint(custodian_kind, grinder, base, quote)` — deploy custodian NFT + PDA wallet.
+6. `grinders.mint(label, grinder, base, quote)` — deploy custodian NFT + PDA wallet (`label` = CAIP Label ID hash).
 7. Users `deposit` / `deposit_sol`; owner `allocate`s working capital to custodians.
 
 Migrations: `[migrations/deploy.ts](migrations/deploy.ts)` / `[deployProtocol.ts](migrations/deployProtocol.ts)`

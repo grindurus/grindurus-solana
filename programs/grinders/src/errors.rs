@@ -10,10 +10,12 @@ pub enum ErrorCode {
     ToZero,
     #[msg("Custodian program is not executable")]
     InvalidCustodianProgram,
-    #[msg("Unknown custodian kind")]
+    #[msg("Unknown custodian label")]
     UnknownCustodianKind,
-    #[msg("Custodian kind does not match registered implementation")]
+    #[msg("Custodian label does not match registered implementation")]
     CustodianKindMismatch,
+    #[msg("Invalid CAIP-2 cluster reference")]
+    InvalidClusterRef,
     #[msg("Custodian wallet is not registered with this grinders program")]
     NotCustodianWallet,
     #[msg("NFT owner does not match custodian record")]
