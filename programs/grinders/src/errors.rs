@@ -4,8 +4,8 @@ use anchor_lang::prelude::*;
 pub enum ErrorCode {
     #[msg("Only the GRAI owner can perform this action")]
     Unauthorized,
-    #[msg("Only the grinders boss (or GRAI owner) can perform this action")]
-    NotBoss,
+    #[msg("Only the grinders toreador can perform this action")]
+    NotToreador,
     #[msg("Amount must be greater than zero")]
     AmountZero,
     #[msg("Recipient must be a valid pubkey")]
@@ -74,6 +74,6 @@ pub enum ErrorCode {
     NonZeroBalance,
     #[msg("GRAI program id cannot be default")]
     GraiTokenZero,
-    #[msg("Boss cannot be the default pubkey")]
-    BossZero,
+    #[msg("Toreador cannot be the default pubkey")]
+    ToreadorZero,
 }

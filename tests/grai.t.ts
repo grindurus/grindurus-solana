@@ -416,8 +416,7 @@ describe("GRAI tokenomics", () => {
         authority,
         grinder: authority,
         graiProgramId: program.programId,
-        graiState,
-        baseMint: usdcMint.publicKey,
+                baseMint: usdcMint.publicKey,
         quoteMint: NATIVE_MINT,
       });
     }
@@ -520,9 +519,9 @@ describe("GRAI tokenomics", () => {
       .rpc();
   }
 
-  async function restoreGrindersBoss() {
+  async function restoreGrindersToreador() {
     await grindersProgram.methods
-      .setBoss(authority)
+      .setToreador(authority)
       .accountsPartial({ owner: authority, grindersState, graiState })
       .rpc();
   }
@@ -1523,7 +1522,6 @@ describe("GRAI tokenomics", () => {
       .accountsPartial({
         authority,
         grindersState,
-        graiState,
         custodianState: custodian.custodianState,
         assetMint: usdcMint.publicKey,
         grindersAta: grindersUsdcAta,
@@ -1571,7 +1569,6 @@ describe("GRAI tokenomics", () => {
       .accountsPartial({
         authority,
         grindersState,
-        graiState,
         custodianState: custodian.custodianState,
         assetMint: usdcMint.publicKey,
         custodianAta,
@@ -1720,7 +1717,6 @@ describe("GRAI tokenomics", () => {
       .accountsPartial({
         authority,
         grindersState,
-        graiState,
         custodianState: custodian.custodianState,
         assetMint: NATIVE_MINT,
         grindersAta: grindersWsolAta,
@@ -1892,23 +1888,23 @@ describe("GRAI tokenomics", () => {
     await restoreOwner(next);
   });
 
-  it("Grinders setBoss: GRAI owner rotates boss; stranger cannot; heartbeat preserved", async () => {
-    const nextBoss = Keypair.generate();
+  it("Grinders setToreador: GRAI owner rotates toreador; stranger cannot; heartbeat preserved", async () => {
+    const nextToreador = Keypair.generate();
     const stranger = Keypair.generate();
-    await fundWallet(nextBoss);
+    await fundWallet(nextToreador);
     await fundWallet(stranger);
 
     await expectTransactionError(
       grindersProgram.methods
-        .setBoss(PublicKey.default)
+        .setToreador(PublicKey.default)
         .accountsPartial({ owner: authority, grindersState, graiState })
         .rpc(),
-      "BossZero",
+      "ToreadorZero",
     );
 
     await expectTransactionError(
       grindersProgram.methods
-        .setBoss(nextBoss.publicKey)
+        .setToreador(nextToreador.publicKey)
         .accountsPartial({
           owner: stranger.publicKey,
           grindersState,
@@ -1919,7 +1915,7 @@ describe("GRAI tokenomics", () => {
       "Unauthorized",
     );
 
-    // Operational allocate bumps heartbeat; setBoss must preserve it.
+    // Operational allocate bumps heartbeat; setToreador must preserve it.
     const custodian = await getUsdcCustodian();
     const grindersUsdc = grindersAta(usdcMint.publicKey);
     const custodianUsdc = getAssociatedTokenAddressSync(
@@ -1942,7 +1938,6 @@ describe("GRAI tokenomics", () => {
         .accountsPartial({
           authority,
           grindersState,
-          graiState,
           custodianState: custodian.custodianState,
           assetMint: usdcMint.publicKey,
           grindersAta: grindersUsdc,
@@ -1952,22 +1947,22 @@ describe("GRAI tokenomics", () => {
         .rpc();
     }
     let grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    const beforeSetBoss = BigInt(grinders.heartbeatAt.toString());
-    expect(beforeSetBoss > 0n).to.be.true;
+    const beforeSetToreador = BigInt(grinders.heartbeatAt.toString());
+    expect(beforeSetToreador > 0n).to.be.true;
 
     await grindersProgram.methods
-      .setBoss(nextBoss.publicKey)
+      .setToreador(nextToreador.publicKey)
       .accountsPartial({ owner: authority, grindersState, graiState })
       .rpc();
 
     grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.boss.toBase58()).to.equal(nextBoss.publicKey.toBase58());
+    expect(grinders.toreador.toBase58()).to.equal(nextToreador.publicKey.toBase58());
     expect(BigInt(grinders.heartbeatAt.toString())).to.equal(
-      beforeSetBoss,
-      "setBoss must not bump or clear heartbeat",
+      beforeSetToreador,
+      "setToreador must not bump or clear heartbeat",
     );
 
-    await restoreGrindersBoss();
+    await restoreGrindersToreador();
   });
 
   it("lock adds unvoted escrow, which is the dividend base", async () => {

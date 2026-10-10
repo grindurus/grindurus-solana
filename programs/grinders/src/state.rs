@@ -19,8 +19,8 @@ pub const LABEL_NAME_JUPITER_GASLESS: &str = "jupiter_gasless";
 #[account]
 #[derive(InitSpace)]
 pub struct GrindersState {
-    /// Hot-wallet / keeper role (EVM `Grinders.boss`). Protocol admin is `GraiState.owner`.
-    pub boss: Pubkey,
+    /// Hot-wallet / keeper role (EVM `Grinders.toreador`). Protocol admin is `GraiState.owner`.
+    pub toreador: Pubkey,
     /// Formerly `pending_owner`. Kept zeroed so GRAI raw heartbeat offsets stay stable.
     pub _reserved: Pubkey,
     /// Linked GRAI program id (immutable after initialize — no EVM `setGrai`).
@@ -41,7 +41,7 @@ pub struct GrindersState {
 impl GrindersState {
     pub const SEED: &'static [u8] = b"grinders";
     /// Borsh body (no discriminator).
-    /// `boss + reserved + grai + collection + next_id + heartbeat_at + grinding_period + bump + cluster_ref`
+    /// `toreador + reserved + grai + collection + next_id + heartbeat_at + grinding_period + bump + cluster_ref`
     /// = `32*4 + 8 + 8 + 4 + 1 + 32` = 181.
     pub const LEN: usize = Self::INIT_SPACE;
 
@@ -152,7 +152,7 @@ mod account_sizes {
     #[test]
     fn grinders_state_len_matches_borsh() {
         let state = GrindersState {
-            boss: Pubkey::new_unique(),
+            toreador: Pubkey::new_unique(),
             _reserved: Pubkey::default(),
             grai_program: Pubkey::new_unique(),
             next_custodian_id: 1,

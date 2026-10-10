@@ -224,8 +224,7 @@ describe("Treasury referrals / poach / NFT", () => {
         authority,
         grinder: authority,
         graiProgramId: program.programId,
-        graiState,
-        baseMint: usdcMint.publicKey,
+                baseMint: usdcMint.publicKey,
         quoteMint: NATIVE_MINT,
       });
     }

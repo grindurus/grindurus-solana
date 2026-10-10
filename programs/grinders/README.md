@@ -17,8 +17,8 @@ On-chain Grinders for Solana — mirrors [`Grinders.sol`](../../../grindurus-evm
 
 | Role | Source | Gates |
 |------|--------|-------|
-| Protocol owner | `GraiState.owner` (not stored on Grinders) | `set_boss`, `set_grind_period`, `withdraw` / `withdraw_token` |
-| Boss | `GrindersState.boss` (or GRAI owner) | `mint`, `allocate`, `set_assets`, `custodian_deallocate`, `custodian_distribute` |
+| Protocol owner | `GraiState.owner` (not stored on Grinders) | `set_toreador`, `set_grind_period`, `withdraw` / `withdraw_token` |
+| Toreador | `GrindersState.toreador` only | `mint`, `allocate`, `set_assets`, `custodian_deallocate`, `custodian_distribute` |
 
 There is **no** local Ownable2Step and **no** `set_grai` — `grai_program` is fixed at `initialize`.
 
@@ -39,15 +39,15 @@ Each `mint` creates a new `custodian_id` → separate wallet PDA + base/quote AT
 
 | Instruction | Who signs | Description |
 |-------------|-----------|-------------|
-| `initialize(cluster_ref, boss)` | payer | Create grinders state PDA, Metaplex collection parent NFT, GRAI program id, CAIP-2 ref; `boss=default` → payer |
-| `set_boss` | GRAI owner | Rotate ops boss (EVM `setBoss`) |
-| `mint(label, …)` | boss / GRAI owner | Init custodian wallet PDA, mint NFT into collection, register custodian |
-| `set_assets` | boss / GRAI owner | Retarget base/quote when custodian balances are zero (EVM `setAssets`) |
-| `allocate` | boss / GRAI owner | Move reserve from grinders ATA to custodian (event-only; no on-chain ledger) |
+| `initialize(cluster_ref, toreador)` | payer | Create grinders state PDA, Metaplex collection parent NFT, GRAI program id, CAIP-2 ref; `toreador=default` → payer |
+| `set_toreador` | GRAI owner | Rotate ops toreador (EVM `setToreador`) |
+| `mint(label, …)` | toreador only | Init custodian wallet PDA, mint NFT into collection, register custodian |
+| `set_assets` | toreador only | Retarget base/quote when custodian balances are zero (EVM `setAssets`) |
+| `allocate` | toreador only | Move reserve from grinders ATA to custodian (event-only; no on-chain ledger) |
 | `custodian_swap` | NFT holder (live ATA) | Swap label only: router CPI + on-chain `limit_price` |
 | `custodian_jupiter_gasless_swap` | NFT holder + `fee_payer` | Jupiter gasless label only (logic stub) |
-| `custodian_deallocate` | boss / GRAI owner | Return inventory to grinders (blocked while liquidation open) |
-| `custodian_distribute` | boss / GRAI owner | Route yield via GRAI `distribute` (blocked while liquidation open) |
+| `custodian_deallocate` | toreador only | Return inventory to grinders (blocked while liquidation open) |
+| `custodian_distribute` | toreador only | Route yield via GRAI `distribute` (blocked while liquidation open) |
 | `liquidate_idle` | anyone | Sweep idle Grinders ATAs into GRAI vaults while GRAI liquidation is open |
 | `liquidate_custodian` | anyone | Custodian → Grinders → GRAI vaults while GRAI liquidation is open |
 | `set_grind_period` | GRAI owner | Set heartbeat inactivity window (`1..30 days`) |
@@ -68,7 +68,7 @@ custodian_mint     = ["custodian_mint", custodian_id (u64 LE)]
 ## Module layout
 
 ```
-src/custodian.rs     # NFT owner gate, boss / protocol-owner gates, deallocate, distribute
+src/custodian.rs     # NFT owner gate, toreador / protocol-owner gates, deallocate, distribute
 src/custodians/
   explicit_swap.rs   # grinder.custodian.swap
   jupiter_gasless.rs # grinder.custodian.jupiter_gasless (stub)
@@ -79,7 +79,7 @@ Add a new label: adapter name in `state.rs`, whitelist in `is_known_label`, new 
 ## Setup flow
 
 1. Deploy `grinders` and GRAI on the same cluster
-2. `initialize(cluster_ref, boss)` with payer + GRAI program id (creates collection parent NFT held by grinders PDA)
+2. `initialize(cluster_ref, toreador)` with payer + GRAI program id (creates collection parent NFT held by grinders PDA)
 3. `grai.set_beneficiar(wallet)` — set the claim-time treasury payout recipient
 4. `grai.set_settlement_asset` — choose the bribe settlement mint (listed asset + feed)
 5. `mint(label, grinder, base_mint, quote_mint)` — label selects swap module; custodian wallet is a PDA

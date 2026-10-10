@@ -47,16 +47,15 @@ pub fn assert_protocol_owner(
     Ok(())
 }
 
-/// Boss or GRAI owner (EVM `Grinders._onlyBoss`).
-pub fn assert_boss(
+/// `toreador` only (EVM `Grinders._onlyToreador` — protocol owner cannot substitute).
+pub fn assert_toreador(
     authority: &Signer,
     grinders_state: &Account<GrindersState>,
-    grai_state: &Account<grai::GraiState>,
 ) -> Result<()> {
-    let key = authority.key();
-    require!(
-        key == grinders_state.boss || key == grai_state.owner,
-        ErrorCode::NotBoss
+    require_keys_eq!(
+        authority.key(),
+        grinders_state.toreador,
+        ErrorCode::NotToreador
     );
     Ok(())
 }
@@ -123,7 +122,7 @@ pub fn execute_custodian_deallocate<'info>(
     token_program: &Program<'info, Token>,
     amount: u64,
 ) -> Result<()> {
-    assert_boss(authority, grinders_state, grai_state)?;
+    assert_toreador(authority, grinders_state)?;
     require_keys_eq!(
         custodian_state.grinders,
         grinders_state.key(),
@@ -176,7 +175,7 @@ pub fn execute_custodian_distribute<'info>(
     system_program: &AccountInfo<'info>,
     yield_amount: u64,
 ) -> Result<()> {
-    assert_boss(authority, grinders_state, grai_state)?;
+    assert_toreador(authority, grinders_state)?;
     require_keys_eq!(
         custodian_state.grinders,
         grinders_state.key(),
@@ -240,18 +239,17 @@ pub fn execute_custodian_distribute<'info>(
     .map_err(Into::into)
 }
 
-/// Boss / GRAI owner retargets trading assets (EVM `Grinders.setAssets`).
+/// `toreador` retargets trading assets (EVM `Grinders.setAssets`).
 pub fn execute_set_assets(
     authority: &Signer,
     grinders_state: &Account<GrindersState>,
-    grai_state: &Account<grai::GraiState>,
     custodian_state: &mut Account<CustodianState>,
     base_custodian_ata: &Account<TokenAccount>,
     quote_custodian_ata: &Account<TokenAccount>,
     new_base_mint: Pubkey,
     new_quote_mint: Pubkey,
 ) -> Result<()> {
-    assert_boss(authority, grinders_state, grai_state)?;
+    assert_toreador(authority, grinders_state)?;
     require_keys_eq!(
         custodian_state.grinders,
         grinders_state.key(),

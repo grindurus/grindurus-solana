@@ -35,11 +35,11 @@ pub mod grinders {
     use super::*;
 
     /// Initialize grinders state. Protocol admin is `GraiState.owner` (not stored here).
-    /// `boss == default` → payer (EVM `boss_ = address(0)` → `msg.sender`).
+    /// `toreador == default` → payer (EVM `toreador_ = address(0)` → `msg.sender`).
     pub fn initialize(
         ctx: Context<Initialize>,
         cluster_ref: String,
-        boss: Pubkey,
+        toreador: Pubkey,
     ) -> Result<()> {
         require_keys_neq!(
             ctx.accounts.grai_program.key(),
@@ -47,10 +47,10 @@ pub mod grinders {
             ErrorCode::ToZero
         );
 
-        let boss = if boss == Pubkey::default() {
+        let toreador = if toreador == Pubkey::default() {
             ctx.accounts.payer.key()
         } else {
-            boss
+            toreador
         };
 
         let cluster_ref_bytes = encode_cluster_ref(&cluster_ref)?;
@@ -58,7 +58,7 @@ pub mod grinders {
         let grinders_state_info = ctx.accounts.grinders_state.to_account_info();
         {
             let grinders = &mut ctx.accounts.grinders_state;
-            grinders.boss = boss;
+            grinders.toreador = toreador;
             grinders._reserved = Pubkey::default();
             grinders.grai_program = ctx.accounts.grai_program.key();
             grinders.next_custodian_id = 0;
@@ -85,8 +85,8 @@ pub mod grinders {
 
         let grinders = &ctx.accounts.grinders_state;
         msg!(
-            "grinders initialized boss={} grai={} collection={} cluster={}",
-            grinders.boss,
+            "grinders initialized toreador={} grai={} collection={} cluster={}",
+            grinders.toreador,
             grinders.grai_program,
             grinders.collection_mint,
             grinders.cluster_ref_str()
@@ -106,11 +106,11 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Set the ops `boss` (GRAI owner only — EVM `setBoss`).
-    pub fn set_boss(ctx: Context<SetBoss>, boss: Pubkey) -> Result<()> {
-        require_keys_neq!(boss, Pubkey::default(), ErrorCode::BossZero);
-        ctx.accounts.grinders_state.boss = boss;
-        emit!(BossUpdate { boss });
+    /// Set the ops `toreador` (GRAI owner only — EVM `setToreador`).
+    pub fn set_toreador(ctx: Context<SetToreador>, toreador: Pubkey) -> Result<()> {
+        require_keys_neq!(toreador, Pubkey::default(), ErrorCode::ToreadorZero);
+        ctx.accounts.grinders_state.toreador = toreador;
+        emit!(ToreadorUpdate { toreador });
         Ok(())
     }
 
@@ -312,14 +312,13 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Boss / GRAI owner sets base/quote trading assets (EVM `Grinders.setAssets`).
+    /// `toreador` sets base/quote trading assets (EVM `Grinders.setAssets`).
     pub fn set_assets(ctx: Context<SetAssets>) -> Result<()> {
         let new_base = ctx.accounts.new_base_mint.key();
         let new_quote = ctx.accounts.new_quote_mint.key();
         custodian::execute_set_assets(
             &ctx.accounts.authority,
             &ctx.accounts.grinders_state,
-            &ctx.accounts.grai_state,
             &mut ctx.accounts.custodian_state,
             &ctx.accounts.base_custodian_ata,
             &ctx.accounts.quote_custodian_ata,
@@ -677,9 +676,9 @@ pub struct SetGrindPeriod<'info> {
     pub grai_state: Account<'info, grai::GraiState>,
 }
 
-/// GRAI owner sets ops boss (EVM `setBoss`).
+/// GRAI owner sets ops toreador (EVM `setToreador`).
 #[derive(Accounts)]
-pub struct SetBoss<'info> {
+pub struct SetToreador<'info> {
     #[account(
         constraint = owner.key() == grai_state.owner @ ErrorCode::Unauthorized,
     )]
@@ -794,11 +793,10 @@ pub struct Initialize<'info> {
 #[derive(Accounts)]
 #[instruction(label: [u8; 32])]
 pub struct MintCustodian<'info> {
-    /// Boss or GRAI owner (EVM `_onlyBoss`).
+    /// `toreador` only (EVM `_onlyToreador`).
     #[account(
         mut,
-        constraint = authority.key() == grinders_state.boss
-            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
+        constraint = authority.key() == grinders_state.toreador @ ErrorCode::NotToreador,
     )]
     pub authority: Signer<'info>,
 
@@ -811,13 +809,6 @@ pub struct MintCustodian<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Box<Account<'info, GrindersState>>,
-
-    #[account(
-        seeds = [grai::GraiState::SEED],
-        bump = grai_state.bump,
-        seeds::program = grinders_state.grai_program,
-    )]
-    pub grai_state: Box<Account<'info, grai::GraiState>>,
 
     /// CHECK: GRAI program id from grinders state.
     #[account(
@@ -1139,10 +1130,9 @@ pub struct CustodianJupiterGaslessSwap<'info> {
 
 #[derive(Accounts)]
 pub struct Allocate<'info> {
-    /// Boss or GRAI owner (EVM `_onlyBoss`).
+    /// `toreador` only (EVM `_onlyToreador`).
     #[account(
-        constraint = authority.key() == grinders_state.boss
-            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
+        constraint = authority.key() == grinders_state.toreador @ ErrorCode::NotToreador,
     )]
     pub authority: Signer<'info>,
 
@@ -1152,13 +1142,6 @@ pub struct Allocate<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
-
-    #[account(
-        seeds = [grai::GraiState::SEED],
-        bump = grai_state.bump,
-        seeds::program = grinders_state.grai_program,
-    )]
-    pub grai_state: Account<'info, grai::GraiState>,
 
     #[account(
         seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
@@ -1188,10 +1171,9 @@ pub struct Allocate<'info> {
 
 #[derive(Accounts)]
 pub struct SetAssets<'info> {
-    /// Boss or GRAI owner (EVM `_onlyBoss`).
+    /// `toreador` only (EVM `_onlyToreador`).
     #[account(
-        constraint = authority.key() == grinders_state.boss
-            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
+        constraint = authority.key() == grinders_state.toreador @ ErrorCode::NotToreador,
     )]
     pub authority: Signer<'info>,
 
@@ -1200,13 +1182,6 @@ pub struct SetAssets<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
-
-    #[account(
-        seeds = [grai::GraiState::SEED],
-        bump = grai_state.bump,
-        seeds::program = grinders_state.grai_program,
-    )]
-    pub grai_state: Account<'info, grai::GraiState>,
 
     #[account(
         mut,
@@ -1236,10 +1211,9 @@ pub struct SetAssets<'info> {
 
 #[derive(Accounts)]
 pub struct CustodianDeallocate<'info> {
-    /// Boss or GRAI owner (EVM `_onlyBoss`).
+    /// `toreador` only (EVM `_onlyToreador`).
     #[account(
-        constraint = authority.key() == grinders_state.boss
-            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
+        constraint = authority.key() == grinders_state.toreador @ ErrorCode::NotToreador,
     )]
     pub authority: Signer<'info>,
 
@@ -1285,10 +1259,9 @@ pub struct CustodianDeallocate<'info> {
 
 #[derive(Accounts)]
 pub struct CustodianDistribute<'info> {
-    /// Boss or GRAI owner (EVM `_onlyBoss`).
+    /// `toreador` only (EVM `_onlyToreador`).
     #[account(
-        constraint = authority.key() == grinders_state.boss
-            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
+        constraint = authority.key() == grinders_state.toreador @ ErrorCode::NotToreador,
     )]
     pub authority: Signer<'info>,
 
@@ -1510,8 +1483,8 @@ pub struct AssetsUpdated {
 }
 
 #[event]
-pub struct BossUpdate {
-    pub boss: Pubkey,
+pub struct ToreadorUpdate {
+    pub toreador: Pubkey,
 }
 
 #[event]
