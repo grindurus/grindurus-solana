@@ -276,11 +276,7 @@ pub fn ensure_treasury_nft<'info>(
         nft.rent.clone(),
         grai_state.bump,
         grai_state.royalty_bps,
-        if grai_state.beneficiar == Pubkey::default() {
-            grai_state.owner
-        } else {
-            grai_state.beneficiar
-        },
+        grai_state.beneficiar,
     )?;
 
     require_locker_nft_ata(&nft.nft_ata, locker, &nft.mint.key(), true)?;
@@ -692,6 +688,7 @@ pub fn execute_poach<'info>(ctx: Context<'_, '_, 'info, 'info, crate::Poach<'inf
 
 pub fn execute_set_beneficiar(ctx: Context<crate::SetBeneficiar>, beneficiar: Pubkey) -> Result<()> {
     require!(!ctx.accounts.grai_state.liquidation, ErrorCode::LiquidationOpen);
+    require_keys_neq!(beneficiar, Pubkey::default(), ErrorCode::ZeroAddress);
     ctx.accounts.grai_state.beneficiar = beneficiar;
     msg!("set_beneficiar {}", beneficiar);
     Ok(())
@@ -1136,11 +1133,7 @@ pub fn distribute_claim_treasury<'info>(
             beneficiar_ata,
             grai_state_info,
             grai_bump,
-            &if grai_state.beneficiar == Pubkey::default() {
-                grai_state.owner
-            } else {
-                grai_state.beneficiar
-            },
+            &grai_state.beneficiar,
             net,
         )?;
         if ok {
@@ -1205,10 +1198,5 @@ pub fn close_treasury_vault_if_empty<'info>(
 /// Marketplace royalty (receiver, amount). Receiver matches Metaplex creators at mint.
 #[allow(dead_code)]
 pub fn royalty_info(grai_state: &GraiState, sale_price: u64) -> Result<(Pubkey, u64)> {
-    let receiver = if grai_state.beneficiar == Pubkey::default() {
-        grai_state.owner
-    } else {
-        grai_state.beneficiar
-    };
-    Ok((receiver, bps_of(sale_price, grai_state.royalty_bps)?))
+    Ok((grai_state.beneficiar, bps_of(sale_price, grai_state.royalty_bps)?))
 }

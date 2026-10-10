@@ -34,20 +34,32 @@ pub const DEFAULT_GRINDING_PERIOD: u32 = 7 * 24 * 60 * 60;
 pub mod grinders {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, cluster_ref: String) -> Result<()> {
+    /// Initialize grinders state. Protocol admin is `GraiState.owner` (not stored here).
+    /// `boss == default` → payer (EVM `boss_ = address(0)` → `msg.sender`).
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        cluster_ref: String,
+        boss: Pubkey,
+    ) -> Result<()> {
         require_keys_neq!(
             ctx.accounts.grai_program.key(),
             Pubkey::default(),
             ErrorCode::ToZero
         );
 
+        let boss = if boss == Pubkey::default() {
+            ctx.accounts.payer.key()
+        } else {
+            boss
+        };
+
         let cluster_ref_bytes = encode_cluster_ref(&cluster_ref)?;
         let grinders_bump = ctx.bumps.grinders_state;
         let grinders_state_info = ctx.accounts.grinders_state.to_account_info();
         {
             let grinders = &mut ctx.accounts.grinders_state;
-            grinders.owner = ctx.accounts.owner.key();
-            grinders.pending_owner = Pubkey::default();
+            grinders.boss = boss;
+            grinders._reserved = Pubkey::default();
             grinders.grai_program = ctx.accounts.grai_program.key();
             grinders.next_custodian_id = 0;
             grinders.collection_mint = ctx.accounts.collection_mint.key();
@@ -64,7 +76,7 @@ pub mod grinders {
             &ctx.accounts.collection_token_account.to_account_info(),
             &ctx.accounts.collection_metadata.to_account_info(),
             &ctx.accounts.collection_master_edition.to_account_info(),
-            &ctx.accounts.owner.to_account_info(),
+            &ctx.accounts.payer.to_account_info(),
             &ctx.accounts.token_program.to_account_info(),
             &ctx.accounts.token_metadata_program.to_account_info(),
             &ctx.accounts.system_program.to_account_info(),
@@ -73,8 +85,8 @@ pub mod grinders {
 
         let grinders = &ctx.accounts.grinders_state;
         msg!(
-            "grinders initialized owner={} grai={} collection={} cluster={}",
-            grinders.owner,
+            "grinders initialized boss={} grai={} collection={} cluster={}",
+            grinders.boss,
             grinders.grai_program,
             grinders.collection_mint,
             grinders.cluster_ref_str()
@@ -83,6 +95,7 @@ pub mod grinders {
     }
 
     /// Set the inactivity window (`1..=30 days`) for heartbeat-based liquidation gate.
+    /// GRAI owner only (EVM `setGrindPeriod` / `_onlyOwner`).
     pub fn set_grind_period(ctx: Context<SetGrindPeriod>, grind_period: u32) -> Result<()> {
         require!(
             grind_period >= 24 * 60 * 60 && grind_period <= 30 * 24 * 60 * 60,
@@ -93,33 +106,11 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Propose a new owner (EVM `Ownable2Step.transferOwnership`).
-    /// Pass `Pubkey::default()` to cancel; `owner` is unchanged until `accept_ownership`.
-    pub fn transfer_ownership(
-        ctx: Context<TransferOwnership>,
-        new_owner: Pubkey,
-    ) -> Result<()> {
-        require_keys_neq!(
-            new_owner,
-            ctx.accounts.owner.key(),
-            ErrorCode::InvalidPendingOwner
-        );
-        ctx.accounts.grinders_state.pending_owner = new_owner;
-        msg!(
-            "OwnershipTransferStarted owner={} pending={}",
-            ctx.accounts.grinders_state.owner,
-            new_owner
-        );
-        Ok(())
-    }
-
-    /// Pending owner takes over (EVM `Grinders.acceptOwnership`).
-    pub fn accept_ownership(ctx: Context<AcceptOwnership>) -> Result<()> {
-        let grinders = &mut ctx.accounts.grinders_state;
-        let new_owner = ctx.accounts.pending_owner.key();
-        grinders.owner = new_owner;
-        grinders.pending_owner = Pubkey::default();
-        msg!("OwnershipTransferred owner={}", new_owner);
+    /// Set the ops `boss` (GRAI owner only — EVM `setBoss`).
+    pub fn set_boss(ctx: Context<SetBoss>, boss: Pubkey) -> Result<()> {
+        require_keys_neq!(boss, Pubkey::default(), ErrorCode::BossZero);
+        ctx.accounts.grinders_state.boss = boss;
+        emit!(BossUpdate { boss });
         Ok(())
     }
 
@@ -205,7 +196,7 @@ pub mod grinders {
                     mint: ctx.accounts.custodian_mint.to_account_info(),
                     mint_authority: ctx.accounts.grinders_state.to_account_info(),
                     update_authority: ctx.accounts.grinders_state.to_account_info(),
-                    payer: ctx.accounts.owner.to_account_info(),
+                    payer: ctx.accounts.authority.to_account_info(),
                     system_program: ctx.accounts.system_program.to_account_info(),
                     rent: ctx.accounts.rent.to_account_info(),
                 },
@@ -230,7 +221,7 @@ pub mod grinders {
         collection::verify_custodian_collection(
             &ctx.accounts.grinders_state.to_account_info(),
             grinders_bump,
-            &ctx.accounts.owner.to_account_info(),
+            &ctx.accounts.authority.to_account_info(),
             &ctx.accounts.custodian_metadata.to_account_info(),
             &ctx.accounts.collection_mint.to_account_info(),
             &ctx.accounts.collection_metadata.to_account_info(),
@@ -321,13 +312,14 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Protocol owner sets base/quote trading assets (EVM `Grinders.setAssets`).
+    /// Boss / GRAI owner sets base/quote trading assets (EVM `Grinders.setAssets`).
     pub fn set_assets(ctx: Context<SetAssets>) -> Result<()> {
         let new_base = ctx.accounts.new_base_mint.key();
         let new_quote = ctx.accounts.new_quote_mint.key();
         custodian::execute_set_assets(
-            &ctx.accounts.owner,
+            &ctx.accounts.authority,
             &ctx.accounts.grinders_state,
+            &ctx.accounts.grai_state,
             &mut ctx.accounts.custodian_state,
             &ctx.accounts.base_custodian_ata,
             &ctx.accounts.quote_custodian_ata,
@@ -342,29 +334,15 @@ pub mod grinders {
         Ok(())
     }
 
-    /// Owner retargets the linked GRAI program (EVM `Grinders.setGrai`).
-    pub fn set_grai(ctx: Context<SetGrai>) -> Result<()> {
-        require_keys_neq!(
-            ctx.accounts.grai_program.key(),
-            Pubkey::default(),
-            ErrorCode::GraiTokenZero
-        );
-        ctx.accounts.grinders_state.grai_program = ctx.accounts.grai_program.key();
-        emit!(GraiTokenUpdate {
-            grai_program: ctx.accounts.grai_program.key(),
-        });
-        Ok(())
-    }
-
     pub fn custodian_deallocate(
         ctx: Context<CustodianDeallocate>,
         amount: u64,
     ) -> Result<()> {
         custodian::execute_custodian_deallocate(
-            &ctx.accounts.owner,
+            &ctx.accounts.authority,
             &ctx.accounts.grinders_state,
             &ctx.accounts.custodian_state,
-            &ctx.accounts.grai_state.to_account_info(),
+            &ctx.accounts.grai_state,
             &ctx.accounts.custodian_ata,
             &ctx.accounts.grinders_ata,
             &ctx.accounts.token_program,
@@ -384,12 +362,12 @@ pub mod grinders {
         yield_amount: u64,
     ) -> Result<()> {
         custodian::execute_custodian_distribute(
-            &ctx.accounts.owner,
+            &ctx.accounts.authority,
             &ctx.accounts.grinders_state,
             &ctx.accounts.custodian_state,
             &ctx.accounts.grai_program.to_account_info(),
             &ctx.accounts.payer,
-            &ctx.accounts.grai_state.to_account_info(),
+            &ctx.accounts.grai_state,
             &ctx.accounts.asset_mint,
             &ctx.accounts.asset_config.to_account_info(),
             &ctx.accounts.price_feed.to_account_info(),
@@ -678,9 +656,9 @@ pub mod grinders {
 
 #[derive(Accounts)]
 pub struct SetGrindPeriod<'info> {
+    /// GRAI protocol owner (EVM `Grinders.owner()`).
     #[account(
-        mut,
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = owner.key() == grai_state.owner @ ErrorCode::Unauthorized,
     )]
     pub owner: Signer<'info>,
 
@@ -690,6 +668,36 @@ pub struct SetGrindPeriod<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
+}
+
+/// GRAI owner sets ops boss (EVM `setBoss`).
+#[derive(Accounts)]
+pub struct SetBoss<'info> {
+    #[account(
+        constraint = owner.key() == grai_state.owner @ ErrorCode::Unauthorized,
+    )]
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [GrindersState::SEED],
+        bump = grinders_state.bump,
+    )]
+    pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 }
 
 /// Only linked GRAI protocol PDA may refresh heartbeat (signer via CPI from `grai::revive`).
@@ -711,47 +719,17 @@ pub struct Heartbeat<'info> {
     pub grai_state: Account<'info, grai::GraiState>,
 }
 
-/// EVM `transferOwnership` — current owner is the signer.
-#[derive(Accounts)]
-pub struct TransferOwnership<'info> {
-    pub owner: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [GrindersState::SEED],
-        bump = grinders_state.bump,
-        has_one = owner @ ErrorCode::Unauthorized,
-    )]
-    pub grinders_state: Account<'info, GrindersState>,
-}
-
-/// EVM `acceptOwnership` — pending owner is the signer.
-#[derive(Accounts)]
-pub struct AcceptOwnership<'info> {
-    pub pending_owner: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [GrindersState::SEED],
-        bump = grinders_state.bump,
-        constraint = grinders_state.pending_owner != Pubkey::default() @ ErrorCode::Unauthorized,
-        has_one = pending_owner @ ErrorCode::Unauthorized,
-    )]
-    pub grinders_state: Account<'info, GrindersState>,
-}
-
-
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub payer: Signer<'info>,
 
-    /// CHECK: GRAI program id configured at initialization.
+    /// CHECK: GRAI program id configured at initialization (immutable — no `setGrai`).
     pub grai_program: UncheckedAccount<'info>,
 
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + GrindersState::LEN,
         seeds = [GrindersState::SEED],
         bump,
@@ -760,7 +738,7 @@ pub struct Initialize<'info> {
 
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         mint::decimals = 0,
         mint::authority = grinders_state,
         mint::freeze_authority = grinders_state,
@@ -771,7 +749,7 @@ pub struct Initialize<'info> {
 
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         associated_token::mint = collection_mint,
         associated_token::authority = grinders_state,
     )]
@@ -816,11 +794,13 @@ pub struct Initialize<'info> {
 #[derive(Accounts)]
 #[instruction(label: [u8; 32])]
 pub struct MintCustodian<'info> {
+    /// Boss or GRAI owner (EVM `_onlyBoss`).
     #[account(
         mut,
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = authority.key() == grinders_state.boss
+            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
     )]
-    pub owner: Signer<'info>,
+    pub authority: Signer<'info>,
 
     /// CHECK: grinder operator receiving the custodian NFT.
     pub custodian_owner: UncheckedAccount<'info>,
@@ -831,6 +811,13 @@ pub struct MintCustodian<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Box<Account<'info, GrindersState>>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Box<Account<'info, grai::GraiState>>,
 
     /// CHECK: GRAI program id from grinders state.
     #[account(
@@ -843,7 +830,7 @@ pub struct MintCustodian<'info> {
 
     #[account(
         init,
-        payer = owner,
+        payer = authority,
         space = 8 + CustodianState::LEN,
         seeds = [CustodianState::SEED, grinders_state.key().as_ref(), grinders_state.next_custodian_id.to_le_bytes().as_ref()],
         bump,
@@ -887,7 +874,7 @@ pub struct MintCustodian<'info> {
 
     #[account(
         init,
-        payer = owner,
+        payer = authority,
         mint::decimals = 0,
         mint::authority = grinders_state,
         mint::freeze_authority = grinders_state,
@@ -898,7 +885,7 @@ pub struct MintCustodian<'info> {
 
     #[account(
         init,
-        payer = owner,
+        payer = authority,
         associated_token::mint = custodian_mint,
         associated_token::authority = custodian_owner,
     )]
@@ -920,7 +907,7 @@ pub struct MintCustodian<'info> {
     /// CHECK: base ATA for custodian wallet.
     #[account(
         init,
-        payer = owner,
+        payer = authority,
         associated_token::mint = base_mint,
         associated_token::authority = custodian_state,
     )]
@@ -929,7 +916,7 @@ pub struct MintCustodian<'info> {
     /// CHECK: quote ATA for custodian wallet.
     #[account(
         init,
-        payer = owner,
+        payer = authority,
         associated_token::mint = quote_mint,
         associated_token::authority = custodian_state,
     )]
@@ -985,8 +972,9 @@ pub struct TransferCustodianNft<'info> {
 
 #[derive(Accounts)]
 pub struct WithdrawSol<'info> {
+    /// GRAI protocol owner.
     #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = owner.key() == grai_state.owner @ ErrorCode::Unauthorized,
     )]
     pub owner: Signer<'info>,
 
@@ -996,6 +984,13 @@ pub struct WithdrawSol<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 
     /// CHECK: recipient wallet.
     #[account(mut)]
@@ -1006,8 +1001,9 @@ pub struct WithdrawSol<'info> {
 
 #[derive(Accounts)]
 pub struct WithdrawToken<'info> {
+    /// GRAI protocol owner.
     #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = owner.key() == grai_state.owner @ ErrorCode::Unauthorized,
     )]
     pub owner: Signer<'info>,
 
@@ -1017,6 +1013,13 @@ pub struct WithdrawToken<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 
     pub asset_mint: Account<'info, Mint>,
 
@@ -1136,10 +1139,12 @@ pub struct CustodianJupiterGaslessSwap<'info> {
 
 #[derive(Accounts)]
 pub struct Allocate<'info> {
+    /// Boss or GRAI owner (EVM `_onlyBoss`).
     #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = authority.key() == grinders_state.boss
+            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
     )]
-    pub owner: Signer<'info>,
+    pub authority: Signer<'info>,
 
     #[account(
         mut,
@@ -1147,6 +1152,13 @@ pub struct Allocate<'info> {
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 
     #[account(
         seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
@@ -1175,35 +1187,26 @@ pub struct Allocate<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SetGrai<'info> {
-    #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
-    )]
-    pub owner: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [GrindersState::SEED],
-        bump = grinders_state.bump,
-    )]
-    pub grinders_state: Account<'info, GrindersState>,
-
-    /// CHECK: new GRAI program id.
-    pub grai_program: UncheckedAccount<'info>,
-}
-
-#[derive(Accounts)]
 pub struct SetAssets<'info> {
+    /// Boss or GRAI owner (EVM `_onlyBoss`).
     #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = authority.key() == grinders_state.boss
+            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
     )]
-    pub owner: Signer<'info>,
+    pub authority: Signer<'info>,
 
     #[account(
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
+
+    #[account(
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 
     #[account(
         mut,
@@ -1233,24 +1236,26 @@ pub struct SetAssets<'info> {
 
 #[derive(Accounts)]
 pub struct CustodianDeallocate<'info> {
+    /// Boss or GRAI owner (EVM `_onlyBoss`).
     #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = authority.key() == grinders_state.boss
+            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
     )]
-    pub owner: Signer<'info>,
+    pub authority: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
     )]
     pub grinders_state: Account<'info, GrindersState>,
 
-    /// CHECK: GRAI state for liquidation gate (EVM `Custodian.liquidation()`).
     #[account(
         seeds = [grai::GraiState::SEED],
-        bump,
+        bump = grai_state.bump,
         seeds::program = grinders_state.grai_program,
     )]
-    pub grai_state: UncheckedAccount<'info>,
+    pub grai_state: Account<'info, grai::GraiState>,
 
     #[account(
         seeds = [CustodianState::SEED, custodian_state.grinders.as_ref(), &custodian_state.custodian_id.to_le_bytes()],
@@ -1280,15 +1285,18 @@ pub struct CustodianDeallocate<'info> {
 
 #[derive(Accounts)]
 pub struct CustodianDistribute<'info> {
+    /// Boss or GRAI owner (EVM `_onlyBoss`).
     #[account(
-        constraint = owner.key() == grinders_state.owner @ ErrorCode::Unauthorized,
+        constraint = authority.key() == grinders_state.boss
+            || authority.key() == grai_state.owner @ ErrorCode::NotBoss,
     )]
-    pub owner: Signer<'info>,
+    pub authority: Signer<'info>,
 
     #[account(mut)]
     pub payer: Signer<'info>,
 
     #[account(
+        mut,
         seeds = [GrindersState::SEED],
         bump = grinders_state.bump,
     )]
@@ -1306,9 +1314,13 @@ pub struct CustodianDistribute<'info> {
     #[account(address = custodian_state.grai_program)]
     pub grai_program: UncheckedAccount<'info>,
 
-    /// CHECK: GRAI state PDA.
-    #[account(mut)]
-    pub grai_state: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [grai::GraiState::SEED],
+        bump = grai_state.bump,
+        seeds::program = grinders_state.grai_program,
+    )]
+    pub grai_state: Account<'info, grai::GraiState>,
 
     pub asset_mint: Account<'info, Mint>,
 
@@ -1498,8 +1510,8 @@ pub struct AssetsUpdated {
 }
 
 #[event]
-pub struct GraiTokenUpdate {
-    pub grai_program: Pubkey,
+pub struct BossUpdate {
+    pub boss: Pubkey,
 }
 
 #[event]

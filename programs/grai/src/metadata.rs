@@ -147,7 +147,7 @@ pub fn mint_treasury_nft<'info>(
     Ok(())
 }
 
-/// `beneficiar` (or owner) gets 100% of `seller_fee_basis_points` on secondary sales.
+/// `beneficiar` gets 100% of `seller_fee_basis_points` on secondary sales.
 ///
 /// `verified` is true only when the payee is the metadata update authority (`GraiState`),
 /// which signs this CPI. A wallet beneficiar cannot be verified at mint — they do not

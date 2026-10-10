@@ -117,8 +117,9 @@ export function loadGrindersProgram(
 
 export async function ensureGrindersInitialized(
   grindersProgram: Program<Grinders>,
-  owner: PublicKey,
+  payer: PublicKey,
   graiProgramId: PublicKey,
+  boss: PublicKey = PublicKey.default,
 ): Promise<PublicKey> {
   const grindersState = grindersStatePda(grindersProgram.programId);
   const existing = await grindersProgram.provider.connection.getAccountInfo(
@@ -134,9 +135,9 @@ export async function ensureGrindersInitialized(
       ASSOCIATED_TOKEN_PROGRAM_ID,
     );
     await grindersProgram.methods
-      .initialize(LOCALNET_CLUSTER_REF)
+      .initialize(LOCALNET_CLUSTER_REF, boss)
       .accountsPartial({
-        owner,
+        payer,
         graiProgram: graiProgramId,
         grindersState,
         collectionMint,
@@ -157,9 +158,11 @@ export async function ensureGrindersInitialized(
 export async function mintExplicitSwapCustodian(
   grindersProgram: Program<Grinders>,
   params: {
-    owner: PublicKey;
+    /** Boss or GRAI owner signer. */
+    authority: PublicKey;
     grinder: PublicKey;
     graiProgramId: PublicKey;
+    graiState: PublicKey;
     baseMint: PublicKey;
     quoteMint: PublicKey;
   },
@@ -208,9 +211,10 @@ export async function mintExplicitSwapCustodian(
   await grindersProgram.methods
     .mint(label)
     .accountsPartial({
-      owner: params.owner,
+      authority: params.authority,
       custodianOwner: params.grinder,
       grindersState,
+      graiState: params.graiState,
       graiProgram: params.graiProgramId,
       baseMint: params.baseMint,
       quoteMint: params.quoteMint,

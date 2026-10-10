@@ -86,7 +86,7 @@ pub struct GraiState {
     pub grai_mint: Pubkey,
     pub config: Config,
     /// Secondary-sale royalty in bps written to Treasury NFT Metaplex metadata.
-    /// Receiver is `beneficiar` (or `owner` if unset), snapshotted at mint.
+    /// Receiver is `beneficiar` (EVM `Treasury.beneficiar`), snapshotted at mint.
     pub royalty_bps: u16,
     /// Active affiliate referrer levels (`affiliate_share_bps[0..affiliate_levels]`).
     pub affiliate_levels: u8,

@@ -221,9 +221,10 @@ describe("Treasury referrals / poach / NFT", () => {
   async function getUsdcCustodian(): Promise<MintedCustodian> {
     if (!usdcCustodian) {
       usdcCustodian = await mintExplicitSwapCustodian(grindersProgram, {
-        owner: authority,
+        authority,
         grinder: authority,
         graiProgramId: program.programId,
+        graiState,
         baseMint: usdcMint.publicKey,
         quoteMint: NATIVE_MINT,
       });
@@ -516,7 +517,7 @@ describe("Treasury referrals / poach / NFT", () => {
     await grindersProgram.methods
       .custodianDistribute(new anchor.BN(amount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         payer: authority,
         grindersState,
         custodianState: custodian.custodianState,

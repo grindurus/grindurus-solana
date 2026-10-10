@@ -413,9 +413,10 @@ describe("GRAI tokenomics", () => {
   async function getUsdcCustodian(): Promise<MintedCustodian> {
     if (!usdcCustodian) {
       usdcCustodian = await mintExplicitSwapCustodian(grindersProgram, {
-        owner: authority,
+        authority,
         grinder: authority,
         graiProgramId: program.programId,
+        graiState,
         baseMint: usdcMint.publicKey,
         quoteMint: NATIVE_MINT,
       });
@@ -519,15 +520,10 @@ describe("GRAI tokenomics", () => {
       .rpc();
   }
 
-  async function restoreGrindersOwner(currentOwner: Keypair) {
+  async function restoreGrindersBoss() {
     await grindersProgram.methods
-      .transferOwnership(authority)
-      .accountsPartial({ owner: currentOwner.publicKey, grindersState })
-      .signers([currentOwner])
-      .rpc();
-    await grindersProgram.methods
-      .acceptOwnership()
-      .accountsPartial({ pendingOwner: authority, grindersState })
+      .setBoss(authority)
+      .accountsPartial({ owner: authority, grindersState, graiState })
       .rpc();
   }
 
@@ -1525,8 +1521,9 @@ describe("GRAI tokenomics", () => {
     await grindersProgram.methods
       .allocate(new anchor.BN(allocateAmount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         grindersState,
+        graiState,
         custodianState: custodian.custodianState,
         assetMint: usdcMint.publicKey,
         grindersAta: grindersUsdcAta,
@@ -1572,7 +1569,7 @@ describe("GRAI tokenomics", () => {
     await grindersProgram.methods
       .custodianDeallocate(new anchor.BN(deallocateAmount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         grindersState,
         graiState,
         custodianState: custodian.custodianState,
@@ -1653,7 +1650,7 @@ describe("GRAI tokenomics", () => {
     await grindersProgram.methods
       .custodianDistribute(new anchor.BN(yieldAmount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         payer: authority,
         grindersState,
         custodianState: custodian.custodianState,
@@ -1721,8 +1718,9 @@ describe("GRAI tokenomics", () => {
     await grindersProgram.methods
       .allocate(new anchor.BN(allocateAmount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         grindersState,
+        graiState,
         custodianState: custodian.custodianState,
         assetMint: NATIVE_MINT,
         grindersAta: grindersWsolAta,
@@ -1772,7 +1770,7 @@ describe("GRAI tokenomics", () => {
     await grindersProgram.methods
       .custodianDistribute(new anchor.BN(yieldAmount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         payer: authority,
         grindersState,
         custodianState: custodian.custodianState,
@@ -1894,48 +1892,34 @@ describe("GRAI tokenomics", () => {
     await restoreOwner(next);
   });
 
-  it("Grinders Ownable2Step: transfer sets pending, accept hands off and preserves heartbeat", async () => {
-    const next = Keypair.generate();
+  it("Grinders setBoss: GRAI owner rotates boss; stranger cannot; heartbeat preserved", async () => {
+    const nextBoss = Keypair.generate();
     const stranger = Keypair.generate();
-    await fundWallet(next);
+    await fundWallet(nextBoss);
     await fundWallet(stranger);
 
     await expectTransactionError(
       grindersProgram.methods
-        .transferOwnership(authority)
-        .accountsPartial({ owner: authority, grindersState })
+        .setBoss(PublicKey.default)
+        .accountsPartial({ owner: authority, grindersState, graiState })
         .rpc(),
-      "InvalidPendingOwner",
+      "BossZero",
     );
-
-    await grindersProgram.methods
-      .transferOwnership(next.publicKey)
-      .accountsPartial({ owner: authority, grindersState })
-      .rpc();
-
-    let grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.owner.toBase58()).to.equal(authority.toBase58());
-    expect(grinders.pendingOwner.toBase58()).to.equal(next.publicKey.toBase58());
 
     await expectTransactionError(
       grindersProgram.methods
-        .acceptOwnership()
-        .accountsPartial({ pendingOwner: stranger.publicKey, grindersState })
+        .setBoss(nextBoss.publicKey)
+        .accountsPartial({
+          owner: stranger.publicKey,
+          grindersState,
+          graiState,
+        })
         .signers([stranger])
         .rpc(),
       "Unauthorized",
     );
 
-    await grindersProgram.methods
-      .transferOwnership(PublicKey.default)
-      .accountsPartial({ owner: authority, grindersState })
-      .rpc();
-    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.pendingOwner.toBase58()).to.equal(
-      PublicKey.default.toBase58(),
-    );
-
-    // Operational allocate bumps heartbeat; ownership handoff must preserve it.
+    // Operational allocate bumps heartbeat; setBoss must preserve it.
     const custodian = await getUsdcCustodian();
     const grindersUsdc = grindersAta(usdcMint.publicKey);
     const custodianUsdc = getAssociatedTokenAddressSync(
@@ -1956,8 +1940,9 @@ describe("GRAI tokenomics", () => {
       await grindersProgram.methods
         .allocate(new anchor.BN(1))
         .accountsPartial({
-          owner: authority,
+          authority,
           grindersState,
+          graiState,
           custodianState: custodian.custodianState,
           assetMint: usdcMint.publicKey,
           grindersAta: grindersUsdc,
@@ -1966,31 +1951,23 @@ describe("GRAI tokenomics", () => {
         })
         .rpc();
     }
-    grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    const beforeHandoff = BigInt(grinders.heartbeatAt.toString());
-    expect(beforeHandoff > 0n).to.be.true;
+    let grinders = await grindersProgram.account.grindersState.fetch(grindersState);
+    const beforeSetBoss = BigInt(grinders.heartbeatAt.toString());
+    expect(beforeSetBoss > 0n).to.be.true;
 
     await grindersProgram.methods
-      .transferOwnership(next.publicKey)
-      .accountsPartial({ owner: authority, grindersState })
-      .rpc();
-    await grindersProgram.methods
-      .acceptOwnership()
-      .accountsPartial({ pendingOwner: next.publicKey, grindersState })
-      .signers([next])
+      .setBoss(nextBoss.publicKey)
+      .accountsPartial({ owner: authority, grindersState, graiState })
       .rpc();
 
     grinders = await grindersProgram.account.grindersState.fetch(grindersState);
-    expect(grinders.owner.toBase58()).to.equal(next.publicKey.toBase58());
-    expect(grinders.pendingOwner.toBase58()).to.equal(
-      PublicKey.default.toBase58(),
-    );
+    expect(grinders.boss.toBase58()).to.equal(nextBoss.publicKey.toBase58());
     expect(BigInt(grinders.heartbeatAt.toString())).to.equal(
-      beforeHandoff,
-      "ownership handoff must not bump or clear heartbeat",
+      beforeSetBoss,
+      "setBoss must not bump or clear heartbeat",
     );
 
-    await restoreGrindersOwner(next);
+    await restoreGrindersBoss();
   });
 
   it("lock adds unvoted escrow, which is the dividend base", async () => {
@@ -2081,7 +2058,7 @@ describe("GRAI tokenomics", () => {
     await grindersProgram.methods
       .custodianDistribute(new anchor.BN(yieldAmount.toString()))
       .accountsPartial({
-        owner: authority,
+        authority,
         payer: authority,
         grindersState,
         custodianState: custodian.custodianState,

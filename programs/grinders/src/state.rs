@@ -19,9 +19,11 @@ pub const LABEL_NAME_JUPITER_GASLESS: &str = "jupiter_gasless";
 #[account]
 #[derive(InitSpace)]
 pub struct GrindersState {
-    pub owner: Pubkey,
-    /// Two-step handoff target (EVM `Ownable2Step.pendingOwner`). Default = none.
-    pub pending_owner: Pubkey,
+    /// Hot-wallet / keeper role (EVM `Grinders.boss`). Protocol admin is `GraiState.owner`.
+    pub boss: Pubkey,
+    /// Formerly `pending_owner`. Kept zeroed so GRAI raw heartbeat offsets stay stable.
+    pub _reserved: Pubkey,
+    /// Linked GRAI program id (immutable after initialize — no EVM `setGrai`).
     pub grai_program: Pubkey,
     pub next_custodian_id: u64,
     /// Metaplex collection parent for all custodian NFTs (mirrors ERC-721 contract).
@@ -39,7 +41,7 @@ pub struct GrindersState {
 impl GrindersState {
     pub const SEED: &'static [u8] = b"grinders";
     /// Borsh body (no discriminator).
-    /// `owner + pending + grai + collection + next_id + heartbeat_at + grinding_period + bump + cluster_ref`
+    /// `boss + reserved + grai + collection + next_id + heartbeat_at + grinding_period + bump + cluster_ref`
     /// = `32*4 + 8 + 8 + 4 + 1 + 32` = 181.
     pub const LEN: usize = Self::INIT_SPACE;
 
@@ -150,8 +152,8 @@ mod account_sizes {
     #[test]
     fn grinders_state_len_matches_borsh() {
         let state = GrindersState {
-            owner: Pubkey::new_unique(),
-            pending_owner: Pubkey::default(),
+            boss: Pubkey::new_unique(),
+            _reserved: Pubkey::default(),
             grai_program: Pubkey::new_unique(),
             next_custodian_id: 1,
             collection_mint: Pubkey::new_unique(),

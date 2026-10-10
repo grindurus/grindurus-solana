@@ -8,7 +8,7 @@ use crate::tokenomics::{has_quorum, liquidate_value, preview_liquidate_share};
 use crate::{AssetConfig, ErrorCode, Liquidate, Redeem};
 
 /// Offsets in `GrindersState` after the 8-byte Anchor discriminator:
-/// owner(32) + pending_owner(32) + grai_program(32) + next_custodian_id(8) + collection_mint(32).
+/// boss(32) + _reserved(32) + grai_program(32) + next_custodian_id(8) + collection_mint(32).
 const GRINDERS_HEARTBEAT_AT_OFFSET: usize = 8 + 32 + 32 + 32 + 8 + 32;
 const GRINDERS_GRINDING_PERIOD_OFFSET: usize = GRINDERS_HEARTBEAT_AT_OFFSET + 8;
 

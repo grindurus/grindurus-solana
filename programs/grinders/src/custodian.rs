@@ -37,15 +37,26 @@ pub fn assert_custodian_owner(
     Ok(())
 }
 
-/// Protocol owner gate (EVM `Grinders.onlyOwner`) for inventory/yield admin ops.
+/// Protocol admin = `GraiState.owner` (EVM `Grinders.owner()` → `grai.owner()`).
+#[allow(dead_code)]
 pub fn assert_protocol_owner(
-    owner: &Signer,
-    grinders_state: &Account<GrindersState>,
+    authority: &Signer,
+    grai_state: &Account<grai::GraiState>,
 ) -> Result<()> {
-    require_keys_eq!(
-        grinders_state.owner,
-        owner.key(),
-        ErrorCode::Unauthorized
+    require_keys_eq!(authority.key(), grai_state.owner, ErrorCode::Unauthorized);
+    Ok(())
+}
+
+/// Boss or GRAI owner (EVM `Grinders._onlyBoss`).
+pub fn assert_boss(
+    authority: &Signer,
+    grinders_state: &Account<GrindersState>,
+    grai_state: &Account<grai::GraiState>,
+) -> Result<()> {
+    let key = authority.key();
+    require!(
+        key == grinders_state.boss || key == grai_state.owner,
+        ErrorCode::NotBoss
     );
     Ok(())
 }
@@ -103,22 +114,22 @@ pub fn execute_allocate<'info>(
 /// `Custodian.deallocate`). Not capped by prior allocations — after swaps the returned
 /// token/size need not match what was sent. Blocked while GRAI liquidation is open.
 pub fn execute_custodian_deallocate<'info>(
-    owner: &Signer,
+    authority: &Signer,
     grinders_state: &Account<'info, GrindersState>,
     custodian_state: &Account<'info, CustodianState>,
-    grai_state: &AccountInfo<'info>,
+    grai_state: &Account<'info, grai::GraiState>,
     custodian_ata: &Account<'info, TokenAccount>,
     grinders_ata: &Account<'info, TokenAccount>,
     token_program: &Program<'info, Token>,
     amount: u64,
 ) -> Result<()> {
-    assert_protocol_owner(owner, grinders_state)?;
+    assert_boss(authority, grinders_state, grai_state)?;
     require_keys_eq!(
         custodian_state.grinders,
         grinders_state.key(),
         ErrorCode::NotCustodianWallet
     );
-    require_not_liquidation(grai_state)?;
+    require_not_liquidation(&grai_state.to_account_info())?;
     require!(amount > 0, ErrorCode::AmountZero);
 
     let custodian_id_bytes = custodian_state.custodian_id.to_le_bytes();
@@ -147,12 +158,12 @@ pub fn execute_custodian_deallocate<'info>(
 
 /// Custodian pushes yield into GRAI `distribute` (mirrors EVM `Custodian.distribute`).
 pub fn execute_custodian_distribute<'info>(
-    owner: &Signer<'info>,
+    authority: &Signer<'info>,
     grinders_state: &Account<'info, GrindersState>,
     custodian_state: &Account<'info, CustodianState>,
     grai_program: &AccountInfo<'info>,
     payer: &Signer<'info>,
-    grai_state: &AccountInfo<'info>,
+    grai_state: &Account<'info, grai::GraiState>,
     asset_mint: &Account<'info, Mint>,
     asset_config: &AccountInfo<'info>,
     price_feed: &AccountInfo<'info>,
@@ -165,13 +176,13 @@ pub fn execute_custodian_distribute<'info>(
     system_program: &AccountInfo<'info>,
     yield_amount: u64,
 ) -> Result<()> {
-    assert_protocol_owner(owner, grinders_state)?;
+    assert_boss(authority, grinders_state, grai_state)?;
     require_keys_eq!(
         custodian_state.grinders,
         grinders_state.key(),
         ErrorCode::NotCustodianWallet
     );
-    require_not_liquidation(grai_state)?;
+    require_not_liquidation(&grai_state.to_account_info())?;
     require!(yield_amount > 0, ErrorCode::AmountZero);
 
     let custodian_id_bytes = custodian_state.custodian_id.to_le_bytes();
@@ -186,6 +197,7 @@ pub fn execute_custodian_distribute<'info>(
     data[..8].copy_from_slice(&GRAI_DISTRIBUTE_DISCRIMINATOR);
     data[8..].copy_from_slice(&yield_amount.to_le_bytes());
 
+    let grai_state_info = grai_state.to_account_info();
     let ix = Instruction {
         program_id: grai_program.key(),
         accounts: vec![
@@ -211,7 +223,7 @@ pub fn execute_custodian_distribute<'info>(
         &[
             custodian_state.to_account_info(),
             payer.to_account_info(),
-            grai_state.clone(),
+            grai_state_info,
             asset_mint.to_account_info(),
             asset_config.clone(),
             price_feed.clone(),
@@ -228,17 +240,18 @@ pub fn execute_custodian_distribute<'info>(
     .map_err(Into::into)
 }
 
-/// Protocol owner retargets trading assets (mirrors EVM `Grinders.setAssets` / `Custodian.setAssets`).
+/// Boss / GRAI owner retargets trading assets (EVM `Grinders.setAssets`).
 pub fn execute_set_assets(
-    owner: &Signer,
+    authority: &Signer,
     grinders_state: &Account<GrindersState>,
+    grai_state: &Account<grai::GraiState>,
     custodian_state: &mut Account<CustodianState>,
     base_custodian_ata: &Account<TokenAccount>,
     quote_custodian_ata: &Account<TokenAccount>,
     new_base_mint: Pubkey,
     new_quote_mint: Pubkey,
 ) -> Result<()> {
-    assert_protocol_owner(owner, grinders_state)?;
+    assert_boss(authority, grinders_state, grai_state)?;
     require_keys_eq!(
         custodian_state.grinders,
         grinders_state.key(),
