@@ -101,6 +101,11 @@ impl SetSale<'_> {
             recipient != ctx.accounts.sale_escrow.key(),
             OFTError::InvalidRecipient
         );
+        // EVM `InvalidAssetAmount`: unbuyable open lots rejected; `0/0` placeholders OK.
+        require!(
+            !(grs_amount > 0 && asset_amount == 0),
+            OFTError::InvalidAssetAmount
+        );
 
         let oft_store = ctx.accounts.oft_store.key();
         let id_bytes = id.to_le_bytes();
@@ -233,6 +238,33 @@ impl SetSale<'_> {
     }
 }
 
+/// Peek spoke sale PDA: `(previous_grs_amount, known)`.
+/// `known` is true when the account already exists (distinguishes close from never-opened).
+pub fn peek_sale_account(
+    sale_info: &AccountInfo,
+    program_id: &Pubkey,
+    oft_store: Pubkey,
+    id: u64,
+) -> Result<(u64, bool)> {
+    require!(id > 0, OFTError::UnknownSale);
+    let id_bytes = id.to_le_bytes();
+    let (expected, _) = Pubkey::find_program_address(
+        &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes],
+        program_id,
+    );
+    require_keys_eq!(sale_info.key(), expected, OFTError::InvalidRemainingAccounts);
+    if sale_info.data_is_empty() {
+        return Ok((0, false));
+    }
+    require_keys_eq!(*sale_info.owner, *program_id, OFTError::InvalidRemainingAccounts);
+    let data = sale_info.try_borrow_data()?;
+    let existing = SaleAccount::try_deserialize(&mut &data[..])
+        .map_err(|_| error!(OFTError::InvalidRemainingAccounts))?;
+    require_keys_eq!(existing.oft_store, oft_store, OFTError::InvalidRemainingAccounts);
+    require!(existing.id == id, OFTError::InvalidRemainingAccounts);
+    Ok((existing.grs_amount, true))
+}
+
 /// Create or overwrite a spoke sale PDA from an LZ sale message (`UncheckedAccount` + seeds check).
 pub fn upsert_sale_account<'info>(
     sale_info: &AccountInfo<'info>,
@@ -245,7 +277,7 @@ pub fn upsert_sale_account<'info>(
     asset_amount: u64,
     grs_amount: u64,
     recipient: Pubkey,
-) -> Result<u64> {
+) -> Result<()> {
     require!(id > 0, OFTError::UnknownSale);
     let id_bytes = id.to_le_bytes();
     let (expected, bump) = Pubkey::find_program_address(
@@ -254,7 +286,7 @@ pub fn upsert_sale_account<'info>(
     );
     require_keys_eq!(sale_info.key(), expected, OFTError::InvalidRemainingAccounts);
 
-    let previous = if sale_info.data_is_empty() {
+    if sale_info.data_is_empty() {
         let space = 8 + SaleAccount::INIT_SPACE;
         let lamports = Rent::get()?.minimum_balance(space);
         let seeds: &[&[u8]] = &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes, &[bump]];
@@ -271,7 +303,6 @@ pub fn upsert_sale_account<'info>(
             space as u64,
             program_id,
         )?;
-        0
     } else {
         require_keys_eq!(*sale_info.owner, *program_id, OFTError::InvalidRemainingAccounts);
         let data = sale_info.try_borrow_data()?;
@@ -279,8 +310,7 @@ pub fn upsert_sale_account<'info>(
             .map_err(|_| error!(OFTError::InvalidRemainingAccounts))?;
         require_keys_eq!(existing.oft_store, oft_store, OFTError::InvalidRemainingAccounts);
         require!(existing.id == id, OFTError::InvalidRemainingAccounts);
-        existing.grs_amount
-    };
+    }
 
     {
         let mut data = sale_info.try_borrow_mut_data()?;
@@ -295,5 +325,5 @@ pub fn upsert_sale_account<'info>(
         };
         account.try_serialize(&mut &mut data[..])?;
     }
-    Ok(previous)
+    Ok(())
 }

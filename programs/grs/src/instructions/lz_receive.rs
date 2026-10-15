@@ -4,7 +4,7 @@ use anchor_lang::system_program::{self, CreateAccount};
 use anchor_spl::{
     associated_token::AssociatedToken,
     token_2022::spl_token_2022::{self, solana_program::program_option::COption},
-    token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked},
+    token_interface::{self, Burn, Mint, TokenAccount, TokenInterface, TransferChecked},
 };
 use oapp::endpoint::{
     cpi::accounts::Clear,
@@ -131,7 +131,19 @@ impl LzReceive<'_> {
             require!(recipient != crate::ID, OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
             require!(recipient != ctx.accounts.sale_escrow.key(), OFTError::InvalidRecipient);
-            let previous = upsert_sale_account(
+
+            let (previous, known) = peek_sale_account(
+                &ctx.accounts.sale.to_account_info(),
+                ctx.program_id,
+                ctx.accounts.oft_store.key(),
+                id,
+            )?;
+            // EVM parity: unordered Close then Open — keep closed row; never remint a revoked lot.
+            if known && previous == 0 && grs_amount != 0 {
+                return Ok(());
+            }
+
+            upsert_sale_account(
                 &ctx.accounts.sale.to_account_info(),
                 &ctx.accounts.payer.to_account_info(),
                 &ctx.accounts.system_program.to_account_info(),
@@ -153,7 +165,7 @@ impl LzReceive<'_> {
                 grs_amount,
                 recipient,
             });
-            if previous == 0 {
+            if !known {
                 if grs_amount > 0 {
                     Self::credit_sale_escrow(ctx, grs_amount)?;
                     ctx.accounts.grs_config.sales_reserved = ctx
@@ -164,21 +176,29 @@ impl LzReceive<'_> {
                         .ok_or(error!(OFTError::InsufficientInventory))?;
                 }
             } else if grs_amount != previous {
-                // Republish adjusts earmark; escrow is not reminted on this path (EVM parity).
+                // Republish: mint delta on increase; burn escrow on decrease/close (EVM parity).
                 if grs_amount > previous {
+                    let minted = grs_amount
+                        .checked_sub(previous)
+                        .ok_or(error!(OFTError::InsufficientInventory))?;
+                    Self::credit_sale_escrow(ctx, minted)?;
                     ctx.accounts.grs_config.sales_reserved = ctx
                         .accounts
                         .grs_config
                         .sales_reserved
-                        .checked_add(grs_amount - previous)
+                        .checked_add(minted)
                         .ok_or(error!(OFTError::InsufficientInventory))?;
                 } else {
+                    let burned = previous
+                        .checked_sub(grs_amount)
+                        .ok_or(error!(OFTError::InsufficientInventory))?;
                     ctx.accounts.grs_config.sales_reserved = ctx
                         .accounts
                         .grs_config
                         .sales_reserved
-                        .checked_sub(previous - grs_amount)
+                        .checked_sub(burned)
                         .ok_or(error!(OFTError::InsufficientInventory))?;
+                    Self::debit_sale_escrow(ctx, burned)?;
                 }
             }
             return Ok(());
@@ -189,6 +209,9 @@ impl LzReceive<'_> {
             let (to, amount_ld, start, cliff_seconds, duration_seconds, _bucket) =
                 msg_codec::decode_grant(&params.message)?;
             require!(to != Pubkey::default(), OFTError::InvalidRecipient);
+            require!(to != crate::ID, OFTError::InvalidRecipient);
+            require!(to != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
+            require!(to != ctx.accounts.sale_escrow.key(), OFTError::InvalidRecipient);
             require!(
                 !(cliff_seconds == 0 && duration_seconds == 0),
                 OFTError::InvalidSchedule
@@ -403,6 +426,56 @@ impl LzReceive<'_> {
             )?;
         } else {
             return Err(OFTError::InvalidMintAuthority.into());
+        }
+        Ok(())
+    }
+
+    /// Reverse of `credit_sale_escrow` on close/reduce (EVM spoke `_burn` of sale escrow).
+    fn debit_sale_escrow(ctx: &mut Context<LzReceive>, amount_ld: u64) -> Result<()> {
+        if amount_ld == 0 {
+            return Ok(());
+        }
+        let oft_store_key = ctx.accounts.oft_store.key();
+        let grs_seeds: &[&[u8]] = &[
+            GrsConfig::SEED,
+            oft_store_key.as_ref(),
+            &[ctx.accounts.grs_config.bump],
+        ];
+
+        if ctx.accounts.oft_store.oft_type == OFTType::Adapter {
+            ctx.accounts.oft_store.tvl_ld = ctx
+                .accounts
+                .oft_store
+                .tvl_ld
+                .checked_add(amount_ld)
+                .ok_or(OFTError::InvalidFee)?;
+            token_interface::transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.sale_escrow.to_account_info(),
+                        mint: ctx.accounts.token_mint.to_account_info(),
+                        to: ctx.accounts.token_escrow.to_account_info(),
+                        authority: ctx.accounts.grs_config.to_account_info(),
+                    },
+                    &[grs_seeds],
+                ),
+                amount_ld,
+                ctx.accounts.token_mint.decimals,
+            )?;
+        } else {
+            token_interface::burn(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Burn {
+                        mint: ctx.accounts.token_mint.to_account_info(),
+                        from: ctx.accounts.sale_escrow.to_account_info(),
+                        authority: ctx.accounts.grs_config.to_account_info(),
+                    },
+                    &[grs_seeds],
+                ),
+                amount_ld,
+            )?;
         }
         Ok(())
     }

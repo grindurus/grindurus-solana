@@ -65,6 +65,10 @@ impl Vest<'_> {
         duration_seconds: u64,
     ) -> Result<()> {
         require!(to != Pubkey::default(), OFTError::InvalidRecipient);
+        // EVM `grant` bans `address(this)` — reject program / store / escrow sinks.
+        require!(to != crate::ID, OFTError::InvalidRecipient);
+        require!(to != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
+        require!(to != ctx.accounts.vest_escrow.key(), OFTError::InvalidRecipient);
         require!(amount_ld > 0, OFTError::ZeroAmount);
         require!(
             !(cliff_seconds == 0 && duration_seconds == 0),

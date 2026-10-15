@@ -166,7 +166,7 @@ pub mod grs {
 
     /// LZ-publish an existing home sale (EVM `_openSale` / close LZ). Open: burn from
     /// `sale_escrow`, spoke mints escrow, home row zeroed. Close republish: home already zero —
-    /// send zero row so spoke unlists (`sales_reserved` adjust; escrow stays as float).
+    /// send zero row so spoke unlists, frees `sales_reserved`, and burns remaining escrow.
     pub fn publish_sale(
         mut ctx: Context<PublishSale>,
         dst_eid: u32,

@@ -73,7 +73,7 @@ impl PublishSale<'_> {
 
         let row = ctx.accounts.sale.row();
         // Open publish: burn + earmark release. Close republish (EVM `_closeSale` + LZ): both
-        // amounts already 0 after local `sale(id)` or a prior publish — send zero row, no burn.
+        // amounts already 0 after local `sale(id)` or a prior publish — send zero row (spoke burns).
         let is_close = row.grs_amount == 0 && row.asset_amount == 0;
         if !is_close {
             require!(row.grs_amount > 0 && row.asset_amount > 0, OFTError::SaleClosed);

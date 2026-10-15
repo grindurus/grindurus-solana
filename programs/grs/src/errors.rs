@@ -35,6 +35,8 @@ pub enum OFTError {
     /// Paged `get_vestings`: `offset` is past the book (same as EVM `UnknownVesting`).
     UnknownVesting,
     SaleClosed,
+    /// Create-path quote unusable (`asset_amount == 0` with `grs_amount > 0`) — EVM `InvalidAssetAmount`.
+    InvalidAssetAmount,
     /// `buy` asks for more GRS than this sale id still has.
     SaleExceeded,
     InvalidPayment,
