@@ -710,6 +710,91 @@ describe("grs oft", () => {
     expect(registry.saleCount.toNumber()).to.equal(1);
   });
 
+  it("close local sale releases sales_reserved (EVM sale(id!=0))", async () => {
+    const mint = await createMint();
+    const { oftStore, grsConfig } = await initGrs(mint, true);
+    const { saleRegistry, saleEscrow, sale } = salePdas(oftStore, 1);
+    const inventory = 10n * 1_000_000_000n;
+    const adminAta = await mintToAdmin(mint, inventory);
+    const assetAmount = new anchor.BN(100_000_000);
+
+    // id == 0 appends (PDA must still be for next id)
+    await program.methods
+      .sale(new anchor.BN(0), PublicKey.default, assetAmount, new anchor.BN(inventory.toString()), PublicKey.default)
+      .accounts({
+        admin,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        sale,
+        saleEscrow,
+        inventorySource: adminAta,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    expect((await program.account.grsConfig.fetch(grsConfig)).salesReserved.toString()).to.equal(
+      inventory.toString(),
+    );
+
+    await program.methods
+      .sale(new anchor.BN(1), PublicKey.default, new anchor.BN(0), new anchor.BN(0), PublicKey.default)
+      .accounts({
+        admin,
+        oftStore,
+        grsConfig,
+        saleRegistry,
+        sale,
+        saleEscrow,
+        inventorySource: adminAta,
+        tokenMint: mint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const cfg = await program.account.grsConfig.fetch(grsConfig);
+    expect(cfg.salesReserved.toString()).to.equal("0");
+    const row = await program.account.saleAccount.fetch(sale);
+    expect(row.grsAmount.toString()).to.equal("0");
+    expect(row.assetAmount.toNumber()).to.equal(0);
+    // Escrow float stays (unlistable inventory).
+    expect((await getAccount(provider.connection, saleEscrow)).amount).to.equal(inventory);
+
+    const buyer = Keypair.generate();
+    const air = await provider.connection.requestAirdrop(buyer.publicKey, 2_000_000_000);
+    await provider.connection.confirmTransaction(air);
+    try {
+      await program.methods
+        .buy(new anchor.BN(1), new anchor.BN(inventory.toString()))
+        .accounts({
+          buyer: buyer.publicKey,
+          oftStore,
+          grsConfig,
+          sale,
+          payee: admin,
+          to: buyer.publicKey,
+          saleEscrow,
+          tokenDest: getAssociatedTokenAddressSync(mint, buyer.publicKey),
+          tokenMint: mint,
+          quoteMint: null,
+          quoteSource: null,
+          quoteDest: null,
+          quoteTokenProgram: null,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer])
+        .rpc();
+      expect.fail("buy on closed sale");
+    } catch (e: any) {
+      expect(`${e?.error?.errorCode?.code ?? ""} ${e}`).to.match(/SaleClosed/);
+    }
+  });
+
   it("buy spl quote, closed sale, spoke owner can sell", async () => {
     const mint = await createMint();
     const { oftStore, grsConfig } = await initGrs(mint, true);

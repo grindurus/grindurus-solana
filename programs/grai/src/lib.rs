@@ -147,13 +147,15 @@ pub struct AssetConfig {
     pub asset_mint: Pubkey,
     pub price_feed: Pubkey,
     pub paused: bool,
-    /// When true, mint may be used as bribe payment (EVM `AssetConfig.bribeable`).
+    /// When true, mint may be used as bribe payment (EVM `Asset.bribeable`).
     pub bribeable: bool,
     pub id: u32,
-    /// Dividend index per unvoted locked GRAI, scaled by 1e18 (EVM `TotalPosition.accShare`).
+    /// Dividend index per unvoted locked GRAI, scaled by 1e18 (EVM `Asset.accShare`).
     pub acc_share: u128,
     /// Vault inventory reserved for locker claims (excluded from redeem / revive).
     pub total_claimable: u64,
+    /// Lifetime yield credited via `distribute` for this asset (never decreases).
+    pub total_yielded: u64,
     pub bump: u8,
     /// Pyth push price id (EVM `Feed.data`). Zero for custom / Chainlink / legacy Pyth.
     pub pyth_feed_id: [u8; 32],
@@ -195,7 +197,7 @@ impl Escrow {
 /// Per-account, per-asset ledger (EVM `Position`).
 ///
 /// Locker dividends use `debt` / `claimable` vs `AssetConfig.acc_share`.
-/// Custodian `distribute` increments `yielded`.
+/// Custodian `distribute` increments Position.`yielded` and AssetConfig.`total_yielded`.
 #[account]
 #[derive(InitSpace)]
 pub struct Position {

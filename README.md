@@ -33,7 +33,7 @@ liquidate → redeem → revive  →  scoop dead GRAI, open window, burn for pro
 
 | Program             | Role                                                                                      | Devnet / localnet ID                           |
 | ------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `grai`              | GRAI mint, oracles, deposits, lock/vote/bribe/liquidation                                 | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` |
+| `grai`              | GRAI mint, oracles, deposits, lock/vote/bribe/liquidation                                 | `DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS` |
 | `grinders`          | Metaplex custodian NFT collection, allocate/deallocate, swap CPI, liquidateIdle/Custodian | `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v` |
 | `custom_price_feed` | Test/dev SPL price feed account (Chainlink/Pyth also supported on `add_asset`)            | `BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1` |
 | `grs`               | LayerZero OFT for GRS (9 local / 6 shared decimals, 1B home genesis)                       | `BGWdAUzjxAZtFzxRTSy88k6r9iYotkhga449vB2tRNTy` |
@@ -102,7 +102,7 @@ Chainlink transmissions accounts, or Pyth push feeds (see `tests/oracles.t.ts`).
 ERC-721-style **Grinders Custodians** Metaplex collection; each `mint` creates:
 
 - custodian **NFT** (collection-verified metadata + on-chain GrinderArt URI)
-- **custodian wallet PDA** (`SwapCustodian`-style) with base/quote ATAs
+- **custodian wallet PDA** (`PathCustodian`-style) with base/quote ATAs
 - `CustodianState` wallet PDAs (custody + NFT registry)
 
 
@@ -112,12 +112,14 @@ ERC-721-style **Grinders Custodians** Metaplex collection; each `mint` creates:
 | `jupiter_gasless`                | `grinder.custodian.jupiter_gasless@solana:<ref>` | stub                                          |
 
 
-**Owner:** `initialize`, `mint`, `allocate`, `withdraw` / `withdraw_token`.
+**Payer:** `initialize` (sets `toreador`; protocol admin is `GraiState.owner`).
+
+**GRAI owner:** `set_toreador`, `set_grind_period`, `withdraw` / `withdraw_token`.
+
+**Toreador:** `mint`, `allocate`, `custodian_deallocate`, `custodian_distribute`
+(CPI to GRAI `distribute`), `set_assets` (protocol owner cannot substitute).
 
 **NFT holder:** `custodian_swap`, `transfer_custodian_nft`.
-
-**Protocol owner:** `allocate`, `custodian_deallocate`, `custodian_distribute` (CPI to GRAI
-`distribute`), `set_assets`, `set_grai`.
 
 **Liquidation helpers:** `liquidate_idle` (sweep idle Grinders ATAs), `liquidate_custodian`
 (return custodian base/quote to GRAI vaults while liquidation is open).
@@ -134,7 +136,7 @@ Details: `[programs/grinders/README.md](programs/grinders/README.md)`.
 ### Typical setup flow
 
 1. Deploy `grai`, `grinders`, `custom_price_feed` (if needed).
-2. `grinders.initialize` — owner, GRAI program id, Metaplex collection parent NFT.
+2. `grinders.initialize` — toreador (default payer), GRAI program id, Metaplex collection parent NFT.
 3. `grai.initialize(grinders_state_pda)` — authority, GRAI mint, Metaplex metadata.
 4. `grai.set_feed(paused, feed)` per mint (lists the asset); `grai.set_settlement_asset`.
 5. `grai.set_beneficiar`, `grai.set_config` (tip, revenue share, bribe premium, quorum, timing — not cuts).
@@ -156,7 +158,7 @@ Migrations: `[migrations/deploy.ts](migrations/deploy.ts)` / `[deployProtocol.ts
 | Dead-GRAI sweep  | on `liquidate` open → caller | on `liquidate` open (`grai_vault - total_locked` → caller) |
 | Bribe ask        | atomic on-chain              | atomic on-chain (no slippage arg)                          |
 | Upgrades         | UUPS proxy                   | BPF upgrade authority                                      |
-| Access control   | `AccessControl` roles        | `grai_state.owner`, `grinders_state.owner`                 |
+| Access control   | GRAI owner + Grinders toreador   | `grai_state.owner`, `grinders_state.toreador`                  |
 
 
 ### Tests
@@ -226,7 +228,7 @@ Programs are **upgradeable BPF**. Program IDs are in `Anchor.toml` (`[programs.d
 
 | Program             | Devnet ID                                      |
 | ------------------- | ---------------------------------------------- |
-| `grai`              | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` |
+| `grai`              | `DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS` |
 | `grinders`          | `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v` |
 | `custom_price_feed` | `BKNrLd3u7VpuGCfLYUvUyrfKNApt9nXEFtfozdsHSUc1` |
 
@@ -254,7 +256,7 @@ For deploy/upgrade, pass `**--provider.cluster devnet**` (or `mainnet`) on every
 ```bash
 export ANCHOR_PROVIDER_URL=https://api.devnet.solana.com
 export ANCHOR_WALLET=~/.config/solana/id.json
-export GRAI_PROGRAM_ID=3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh
+export GRAI_PROGRAM_ID=DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS
 ```
 
 ### 3. Upgrade on-chain bytecode
@@ -263,7 +265,7 @@ Upgrade **all** deployed programs when account layouts change:
 
 ```bash
 anchor upgrade target/deploy/grai.so \
-  --program-id 3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh \
+  --program-id DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS \
   --provider.cluster devnet
 
 anchor upgrade target/deploy/grinders.so \
@@ -295,7 +297,7 @@ Uploads or upgrades the Anchor IDL account and checks it matches `target/idl/gra
 
 ```bash
 npm run status
-solana program show 3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh
+solana program show DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS
 ```
 
 ### Breaking changes

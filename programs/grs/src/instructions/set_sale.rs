@@ -2,11 +2,11 @@ use crate::*;
 use anchor_lang::system_program::{self, CreateAccount};
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
 
-/// Originates a sale on home. `id` must be `sale_count + 1` (PDA `["sale", oft_store, id]`).
-/// Earmarks `grs_amount` against `sale_escrow` (EVM `salesReserved`); tops up from
-/// `inventory_source` when unreserved escrow float is short.
+/// Home book: create (`id == 0` or `id == sale_count + 1`) or close (`id` in `1..=sale_count`).
+/// EVM `sale(id, …)` parity — LZ hop stays in `publish_sale` (EVM folds it into `dstEid`).
+/// Create earmarks `grs_amount` (`sales_reserved`); tops up `sale_escrow` from `inventory_source`
+/// when unreserved float is short. Close releases any remaining earmark and zeros the row.
 #[derive(Accounts)]
-#[instruction(id: u64)]
 pub struct SetSale<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -30,14 +30,10 @@ pub struct SetSale<'info> {
         has_one = oft_store
     )]
     pub sale_registry: Account<'info, SaleRegistry>,
-    #[account(
-        init,
-        payer = admin,
-        space = 8 + SaleAccount::INIT_SPACE,
-        seeds = [SaleAccount::SEED, oft_store.key().as_ref(), &id.to_le_bytes()],
-        bump
-    )]
-    pub sale: Account<'info, SaleAccount>,
+    /// CHECK: PDA `["sale", oft_store, id_le]`. Created on append; mutated on close.
+    /// For create with `id == 0`, pass the PDA for `sale_count + 1`.
+    #[account(mut)]
+    pub sale: UncheckedAccount<'info>,
     #[account(
         init_if_needed,
         payer = admin,
@@ -48,7 +44,7 @@ pub struct SetSale<'info> {
         token::token_program = token_program
     )]
     pub sale_escrow: InterfaceAccount<'info, TokenAccount>,
-    /// Admin (or other) ATA used to top up `sale_escrow` when listing `grs_amount > 0`.
+    /// Admin ATA used to top up `sale_escrow` when listing `grs_amount > 0` (unused on close).
     #[account(
         mut,
         token::mint = token_mint,
@@ -80,13 +76,57 @@ impl SetSale<'_> {
             .sale_count
             .checked_add(1)
             .ok_or(error!(OFTError::InvalidSaleId))?;
-        require!(id == next, OFTError::InvalidSaleId);
+
+        if id == 0 || id == next {
+            Self::append(ctx, next, asset, asset_amount, grs_amount, recipient)
+        } else if id > 0 && id <= ctx.accounts.sale_registry.sale_count {
+            // Close: create args ignored (EVM parity).
+            Self::close(ctx, id)
+        } else {
+            err!(OFTError::InvalidSaleId)
+        }
+    }
+
+    fn append(
+        ctx: &mut Context<SetSale>,
+        id: u64,
+        asset: Pubkey,
+        asset_amount: u64,
+        grs_amount: u64,
+        recipient: Pubkey,
+    ) -> Result<u64> {
         require!(recipient != crate::ID, OFTError::InvalidRecipient);
         require!(recipient != ctx.accounts.oft_store.key(), OFTError::InvalidRecipient);
         require!(
             recipient != ctx.accounts.sale_escrow.key(),
             OFTError::InvalidRecipient
         );
+
+        let oft_store = ctx.accounts.oft_store.key();
+        let id_bytes = id.to_le_bytes();
+        let (expected, bump) = Pubkey::find_program_address(
+            &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes],
+            ctx.program_id,
+        );
+        require_keys_eq!(ctx.accounts.sale.key(), expected, OFTError::InvalidSaleId);
+        require!(ctx.accounts.sale.data_is_empty(), OFTError::InvalidSaleId);
+
+        let space = 8 + SaleAccount::INIT_SPACE;
+        let lamports = Rent::get()?.minimum_balance(space);
+        let seeds: &[&[u8]] = &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes, &[bump]];
+        system_program::create_account(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                CreateAccount {
+                    from: ctx.accounts.admin.to_account_info(),
+                    to: ctx.accounts.sale.to_account_info(),
+                },
+                &[seeds],
+            ),
+            lamports,
+            space as u64,
+            ctx.program_id,
+        )?;
 
         if grs_amount > 0 {
             let free = ctx
@@ -124,10 +164,19 @@ impl SetSale<'_> {
                 .ok_or(error!(OFTError::InsufficientInventory))?;
         }
 
-        ctx.accounts.sale.id = id;
-        ctx.accounts.sale.oft_store = ctx.accounts.oft_store.key();
-        ctx.accounts.sale.write_row(asset, asset_amount, grs_amount, recipient);
-        ctx.accounts.sale.bump = ctx.bumps.sale;
+        {
+            let mut data = ctx.accounts.sale.try_borrow_mut_data()?;
+            let account = SaleAccount {
+                id,
+                oft_store,
+                asset,
+                asset_amount,
+                grs_amount,
+                recipient,
+                bump,
+            };
+            account.try_serialize(&mut &mut data[..])?;
+        }
         ctx.accounts.sale_registry.sale_count = id;
 
         emit!(SaleSet {
@@ -135,6 +184,49 @@ impl SetSale<'_> {
             asset,
             asset_amount,
             grs_amount,
+            recipient,
+        });
+        Ok(id)
+    }
+
+    /// EVM `_closeSale(..., dstEid=0)`: release local earmark, zero the row.
+    fn close(ctx: &mut Context<SetSale>, id: u64) -> Result<u64> {
+        let oft_store = ctx.accounts.oft_store.key();
+        let id_bytes = id.to_le_bytes();
+        let (expected, _bump) = Pubkey::find_program_address(
+            &[SaleAccount::SEED, oft_store.as_ref(), &id_bytes],
+            ctx.program_id,
+        );
+        require_keys_eq!(ctx.accounts.sale.key(), expected, OFTError::UnknownSale);
+        require!(!ctx.accounts.sale.data_is_empty(), OFTError::UnknownSale);
+        require_keys_eq!(*ctx.accounts.sale.owner, *ctx.program_id, OFTError::UnknownSale);
+
+        let mut data = ctx.accounts.sale.try_borrow_mut_data()?;
+        let mut account = SaleAccount::try_deserialize(&mut &data[..])
+            .map_err(|_| error!(OFTError::UnknownSale))?;
+        require_keys_eq!(account.oft_store, oft_store, OFTError::UnknownSale);
+        require!(account.id == id, OFTError::UnknownSale);
+
+        let unsold = account.grs_amount;
+        if unsold > 0 {
+            ctx.accounts.grs_config.sales_reserved = ctx
+                .accounts
+                .grs_config
+                .sales_reserved
+                .checked_sub(unsold)
+                .ok_or(error!(OFTError::InsufficientInventory))?;
+        }
+        account.grs_amount = 0;
+        account.asset_amount = 0;
+        let asset = account.asset;
+        let recipient = account.recipient;
+        account.try_serialize(&mut &mut data[..])?;
+
+        emit!(SaleSet {
+            id,
+            asset,
+            asset_amount: 0,
+            grs_amount: 0,
             recipient,
         });
         Ok(id)

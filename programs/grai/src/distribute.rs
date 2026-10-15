@@ -55,6 +55,13 @@ pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result
         )?;
     }
 
+    ctx.accounts.asset_config.total_yielded = ctx
+        .accounts
+        .asset_config
+        .total_yielded
+        .checked_add(yield_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
+
     let position = &mut ctx.accounts.position;
     position.yielded = position
         .yielded

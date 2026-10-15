@@ -10,7 +10,7 @@ pub const LABEL_NAMESPACE: &str = "grinder.custodian";
 /// CAIP-2 namespace for Solana.
 pub const CAIP2_SOLANA: &str = "solana";
 
-/// Adapter local name for router CPI swaps (EVM `SwapCustodian` → `grinder.custodian.swap`).
+/// Adapter local name for router CPI swaps (EVM `PathCustodian` → `grinder.custodian.path`).
 pub const LABEL_NAME_SWAP: &str = "swap";
 
 /// Adapter local name for Jupiter gasless path.

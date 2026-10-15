@@ -317,6 +317,7 @@ fn ensure_asset_config<'info>(
         id,
         acc_share: 0,
         total_claimable: 0,
+        total_yielded: 0,
         bump,
         pyth_feed_id,
     };

@@ -139,10 +139,10 @@ pub mod grs {
         WithdrawFee::apply(&mut ctx, &params)
     }
 
-    /// Append a sale. `id` must be `sale_count + 1`. Home admin only. Local book.
-    /// Earmarks `grs_amount` (`sales_reserved`); tops up `sale_escrow` from `inventory_source`
-    /// when unreserved float is short. EVM folds LZ into `sale(..., dstEid)`; here the hop is
-    /// `publish_sale`.
+    /// Home book create/close (EVM `sale(id, …)` local half). `id == 0` or `id == sale_count + 1`
+    /// appends; existing `id` closes (releases `sales_reserved`, zeros the row). Create earmarks
+    /// `grs_amount` and may top up `sale_escrow` from `inventory_source`. LZ hop is `publish_sale`
+    /// (EVM folds that into `dstEid`).
     pub fn sale(
         mut ctx: Context<SetSale>,
         id: u64,
@@ -154,7 +154,8 @@ pub mod grs {
         SetSale::apply(&mut ctx, id, asset, asset_amount, grs_amount, recipient)
     }
 
-    /// Native LZ fee for `publish_sale(dst_eid, id)` (EVM `quoteSale(..., dstEid)`).
+    /// Native LZ fee for `publish_sale(dst_eid, id)` (EVM `quoteSale(id, …, dstEid)`).
+    /// Works for open publish and close republish (zeroed home row).
     pub fn quote_sale(
         ctx: Context<QuoteSale>,
         dst_eid: u32,
@@ -163,8 +164,9 @@ pub mod grs {
         QuoteSale::apply(&ctx, dst_eid, id)
     }
 
-    /// LZ-publish an existing home sale: burn from `sale_escrow`, spoke mints that GRS,
-    /// home row remaining is zeroed so local `buy` cannot fill the same lot.
+    /// LZ-publish an existing home sale (EVM `_openSale` / close LZ). Open: burn from
+    /// `sale_escrow`, spoke mints escrow, home row zeroed. Close republish: home already zero —
+    /// send zero row so spoke unlists (`sales_reserved` adjust; escrow stays as float).
     pub fn publish_sale(
         mut ctx: Context<PublishSale>,
         dst_eid: u32,

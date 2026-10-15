@@ -2091,6 +2091,10 @@ describe("GRAI tokenomics", () => {
       BigInt(assetAfter.totalClaimable.toString()) -
         BigInt(assetBefore.totalClaimable.toString()),
     ).to.be.oneOf([dividend, dividend - 1n, dividend + 1n]);
+    expect(
+      BigInt(assetAfter.totalYielded.toString()) -
+        BigInt(assetBefore.totalYielded.toString()),
+    ).to.equal(yieldAmount);
     const treasuryDelta = treasuryAfter - treasuryBefore;
     expect(
       treasuryDelta === treasuryShare ||

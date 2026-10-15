@@ -377,6 +377,7 @@ mod account_sizes {
                 id: 0,
                 acc_share: 0,
                 total_claimable: 0,
+                total_yielded: 0,
                 bump: 0,
                 pyth_feed_id: [0; 32],
             },

@@ -8,7 +8,7 @@ On-chain Grinders for Solana — mirrors [`Grinders.sol`](../../../grindurus-evm
 
 - Maintains per-custodian wallet PDAs (`CustodianState` = custodian + registry)
 - Creates a Metaplex **collection parent** NFT (`"Grinders Custodians"`, symbol `GRINDERS`) — mirrors EVM `ERC721` contract metadata
-- Mints custodian NFTs into that collection (Metaplex metadata URI → `https://grindurus.xyz/solana/custodian/{id}`) and inits custodian wallet PDAs (`SwapCustodian`-style custodian wallet)
+- Mints custodian NFTs into that collection (Metaplex metadata URI → `https://grindurus.xyz/solana/custodian/{id}`) and inits custodian wallet PDAs (`PathCustodian`-style custodian wallet)
 - Per-label swap logic under `src/custodians/` (shared custodian hooks in `src/custodian.rs`)
 - Lets the GRAI owner withdraw SOL (`withdraw`) or SPL tokens (`withdraw_token`) from the grinders PDA
 - Holds unlock-penalty GRAI in the Grinders GRAI ATA when lockers call `grai::unlock` (ordinary SPL balance; withdrawable by GRAI owner)

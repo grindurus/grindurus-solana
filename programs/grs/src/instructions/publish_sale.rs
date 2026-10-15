@@ -72,9 +72,13 @@ impl PublishSale<'_> {
         );
 
         let row = ctx.accounts.sale.row();
-        require!(row.grs_amount > 0 && row.asset_amount > 0, OFTError::SaleClosed);
-        require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
-        if row.grs_amount > 0 {
+        // Open publish: burn + earmark release. Close republish (EVM `_closeSale` + LZ): both
+        // amounts already 0 after local `sale(id)` or a prior publish — send zero row, no burn.
+        let is_close = row.grs_amount == 0 && row.asset_amount == 0;
+        if !is_close {
+            require!(row.grs_amount > 0 && row.asset_amount > 0, OFTError::SaleClosed);
+            require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
+
             let spent = ctx
                 .accounts
                 .grs_config
@@ -134,7 +138,8 @@ impl PublishSale<'_> {
     }
 }
 
-/// Native LZ fee for the same payload `publish_sale` sends (EVM `quoteSale(..., dstEid)`).
+/// Native LZ fee for the same payload `publish_sale` sends (EVM `quoteSale(id, …, dstEid)`).
+/// Quotes open publish or close republish (zeroed row).
 #[derive(Accounts)]
 #[instruction(dst_eid: u32, id: u64)]
 pub struct QuoteSale<'info> {
@@ -171,7 +176,11 @@ impl QuoteSale<'_> {
         require!(!ctx.accounts.oft_store.paused, OFTError::Paused);
         require!(ctx.accounts.sale.id == id, OFTError::UnknownSale);
         let row = ctx.accounts.sale.row();
-        require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
+        let is_close = row.grs_amount == 0 && row.asset_amount == 0;
+        if !is_close {
+            require!(row.grs_amount > 0 && row.asset_amount > 0, OFTError::SaleClosed);
+            require!(row.grs_amount % GRS_LD2SD_RATE == 0, OFTError::InvalidSaleMessage);
+        }
         let message = msg_codec::encode_sale(id, row.asset, row.asset_amount, row.grs_amount, row.recipient);
         oapp::endpoint_cpi::quote(
             ctx.accounts.oft_store.endpoint_program,
