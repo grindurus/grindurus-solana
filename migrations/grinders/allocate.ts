@@ -5,38 +5,27 @@ import {
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
-import { Program } from "@coral-xyz/anchor";
-import { Grinders } from "../target/types/grinders";
+import { PublicKey } from "@solana/web3.js";
 import {
-  allocationPda,
   GRAI_PROGRAM_ID,
   GRINDERS_PROGRAM_ID,
   grindersStatePda,
+  loadGrindersProgram,
   loadProvider,
-  resolveGrindersCustodianRecordPda,
+  assertGrindersCustodianWallet,
   runScript,
-} from "./_common";
-import * as fs from "fs";
-import * as path from "path";
+} from "../0_common";
 
 const ALLOCATE_AMOUNT = BigInt(process.env.ALLOCATE_AMOUNT ?? "500000"); // 0.0005 wSOL
 
-function resolveCustodyWallet(): PublicKey {
-  if (!process.env.CUSTODY_WALLET) {
-    throw new Error("CUSTODY_WALLET must be a grinders custodian wallet PDA");
+function resolveCustodianWallet(): PublicKey {
+  const raw = process.env.CUSTODIAN_WALLET ?? process.env.CUSTODY_WALLET;
+  if (!raw) {
+    throw new Error(
+      "CUSTODIAN_WALLET (or legacy CUSTODY_WALLET) must be a grinders custodian wallet PDA",
+    );
   }
-  return new PublicKey(process.env.CUSTODY_WALLET);
-}
-
-function loadGrindersProgram(provider: anchor.AnchorProvider): Program<Grinders> {
-  const idl = JSON.parse(
-    fs.readFileSync(
-      path.join(__dirname, "..", "target", "idl", "grinders.json"),
-      "utf8",
-    ),
-  );
-  return new Program(idl, provider) as Program<Grinders>;
+  return new PublicKey(raw);
 }
 
 async function main(): Promise<void> {
@@ -48,14 +37,13 @@ async function main(): Promise<void> {
   const assetMint = process.env.ASSET_MINT
     ? new PublicKey(process.env.ASSET_MINT)
     : NATIVE_MINT;
-  const custodyWallet = resolveCustodyWallet();
-  await resolveGrindersCustodianRecordPda(
+  const custodianWallet = resolveCustodianWallet();
+  await assertGrindersCustodianWallet(
     provider.connection,
-    custodyWallet,
+    custodianWallet,
   );
 
   const grindersState = grindersStatePda(GRINDERS_PROGRAM_ID);
-  const allocation = allocationPda(custodyWallet, assetMint);
   const grindersAta = getAssociatedTokenAddressSync(
     assetMint,
     grindersState,
@@ -63,9 +51,9 @@ async function main(): Promise<void> {
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
-  const custodyAta = getAssociatedTokenAddressSync(
+  const custodianAta = getAssociatedTokenAddressSync(
     assetMint,
-    custodyWallet,
+    custodianWallet,
     true,
     TOKEN_PROGRAM_ID,
     ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -88,39 +76,33 @@ async function main(): Promise<void> {
   console.log(`  owner: ${authority.toBase58()}`);
   console.log(`  asset_mint: ${assetMint.toBase58()}`);
   console.log(`  amount: ${ALLOCATE_AMOUNT}`);
-  console.log(`  custody_wallet: ${custodyWallet.toBase58()}`);
+  console.log(`  custodian_wallet: ${custodianWallet.toBase58()}`);
   console.log(`  grinders_ata: ${grindersAta.toBase58()}`);
-  console.log(`  custody_ata: ${custodyAta.toBase58()}`);
+  console.log(`  custodian_ata: ${custodianAta.toBase58()}`);
 
   const signature = await grindersProgram.methods
     .allocate(new anchor.BN(ALLOCATE_AMOUNT.toString()))
     .accountsPartial({
-      owner: authority,
+      authority,
       grindersState,
-      custodianState: custodyWallet,
+      custodianState: custodianWallet,
       assetMint,
-      allocation,
       grindersAta,
-      custodyAta,
+      custodianAta,
       tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
     })
     .rpc();
 
-  const allocationAccount = await grindersProgram.account.allocation.fetch(
-    allocation,
-  );
   const grindersAtaAfter = BigInt(
     (await provider.connection.getTokenAccountBalance(grindersAta)).value.amount,
   );
-  const custodyAtaAfter = BigInt(
-    (await provider.connection.getTokenAccountBalance(custodyAta)).value.amount,
+  const custodianAtaAfter = BigInt(
+    (await provider.connection.getTokenAccountBalance(custodianAta)).value.amount,
   );
 
   console.log(`allocate confirmed: ${signature}`);
   console.log(`  grinders_ata: ${grindersAtaBefore} → ${grindersAtaAfter}`);
-  console.log(`  custody_ata balance: ${custodyAtaAfter}`);
-  console.log(`  allocated_amount: ${allocationAccount.allocatedAmount.toString()}`);
+  console.log(`  custodian_ata balance: ${custodianAtaAfter}`);
 }
 
 runScript(main);

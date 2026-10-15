@@ -8,7 +8,7 @@
     "deployGrai": "tsx migrations/1_DeployGRAI.ts",
     "deployGrinders": "tsx migrations/2_DeployGrinders.ts",
     "setGrinders": "tsx migrations/grai/setGrinders.ts",
-    "deployGrs": "tsx migrations/4_DeployGRS.ts",
+    "deployGrs": "tsx migrations/3_DeployGRS.ts",
     "setPeer": "tsx migrations/grs/setPeer.ts",
     "wire": "tsx migrations/grs/wire.ts",
     "wireGrs": "tsx migrations/grs/wire.ts",
