@@ -83,9 +83,12 @@ pub fn execute_bribe<'info>(
         &bribe_price,
     )?;
 
-    // Accrue the voter's listed-asset dividends. Vote and lock shrink together, so the unvoted
-    // dividend base is unchanged — this only flushes index drift into `claimable`.
-    let unvoted = ctx.accounts.escrow.unvoted();
+    // Accrue on the pre-bribe lock, then rebase debt to the post-bribe lock (EVM
+    // `_accrueDividends` + shrink + `_syncDividendDebts`). Preserves pre-bribe claimable.
+    let old_locked = ctx.accounts.escrow.amount;
+    let new_locked = old_locked
+        .checked_sub(grai_amount)
+        .ok_or(ErrorCode::MathOverflow)?;
     {
         let asset_mints = ctx.accounts.grai_state.asset_mints.clone();
         let payer = ctx.accounts.briber.to_account_info();
@@ -94,8 +97,8 @@ pub fn execute_bribe<'info>(
             ctx.remaining_accounts,
             &asset_mints,
             &voter_key,
-            unvoted,
-            unvoted,
+            old_locked,
+            new_locked,
             &payer,
             &system_program,
             ctx.program_id,
@@ -174,11 +177,7 @@ pub fn execute_bribe<'info>(
     let (treasury_cut, dividend_cut) =
         split_cuts(cut_pool, &ctx.accounts.grai_state.config)?;
 
-    let eligible = ctx
-        .accounts
-        .grai_state
-        .total_locked
-        .saturating_sub(ctx.accounts.grai_state.total_voted);
+    let eligible = ctx.accounts.grai_state.total_locked;
 
     let dust = if dividend_cut > 0 {
         distribute_dividend(

@@ -32,7 +32,14 @@ pub fn execute_deposit<'info>(
     let total_value = ctx.accounts.grai_state.total_value;
     // A zero book with live shares would bootstrap-mint and tax the new capital.
     require!(total_value > 0 || supply == 0, ErrorCode::InsolventBook);
-    let grai_out = preview_deposit(value, supply, total_value)?;
+    let grai_out = preview_deposit(
+        value,
+        supply,
+        total_value,
+        ctx.accounts.grai_state.config.mint_premium_bps_per_year,
+        ctx.accounts.grai_state.mint_premium_at,
+        clock.unix_timestamp,
+    )?;
 
     transfer_from_signer(
         &ctx.accounts.token_program.to_account_info(),
@@ -182,7 +189,14 @@ pub fn execute_deposit_sol<'info>(
     let supply = ctx.accounts.grai_mint.supply;
     let total_value = ctx.accounts.grai_state.total_value;
     require!(total_value > 0 || supply == 0, ErrorCode::InsolventBook);
-    let grai_out = preview_deposit(value, supply, total_value)?;
+    let grai_out = preview_deposit(
+        value,
+        supply,
+        total_value,
+        ctx.accounts.grai_state.config.mint_premium_bps_per_year,
+        ctx.accounts.grai_state.mint_premium_at,
+        clock.unix_timestamp,
+    )?;
 
     transfer_from_signer(
         &ctx.accounts.token_program.to_account_info(),

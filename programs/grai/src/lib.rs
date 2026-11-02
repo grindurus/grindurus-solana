@@ -32,18 +32,19 @@ use anchor_spl::token::{Mint, Token, TokenAccount};
 
 declare_id!("DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS");
 
-/// Yield split, bribe premium, liquidation quorum, unlock penalty, and timing.
+/// Yield split, bribe premium, liquidation quorum, unlock penalty, mint premium, and timing.
 ///
 /// Mirrors the EVM `Config`. `dividend_cut_bps + treasury_cut_bps` MUST sum to `BPS` (10_000).
 /// Yield cuts are immutable after `initialize`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, Default, InitSpace)]
 pub struct Config {
-    /// Share of distributed yield / bribe cut pool paid as dividends on unvoted locked GRAI, in bps.
+    /// Share of distributed yield / bribe cut pool paid as dividends on locked GRAI, in bps.
+    /// Voted GRAI still earns (EVM: index on `totalLocked`).
     pub dividend_cut_bps: u16,
     /// Share of distributed yield / bribe cut pool sent to the in-program treasury vault, in bps.
     pub treasury_cut_bps: u16,
     /// Affiliate slice of treasury income allocated on claim (`claimed * this / dividend_cut`).
-    /// EVM default `5_55` (~5.55% of yield → affiliates).
+    /// EVM default `5_00` (5% of yield → affiliates).
     pub revenue_share_bps: u16,
     /// Share of each `claim` paid to the caller as a tip, in bps of claimed amount (max 5%).
     pub claim_tip_bps: u16,
@@ -60,6 +61,9 @@ pub struct Config {
     pub liquidation_period: u32,
     /// Extra window after `liquidation_period` before liquidation can be closed via `revive`.
     pub redeem_period: u32,
+    /// Compound mint premium per full year, in bps (`500` = +5%/year on deposit ask).
+    /// EVM `mintPremiumBpsPerYear`.
+    pub mint_premium_bps_per_year: u16,
 }
 
 impl Config {
@@ -77,11 +81,14 @@ pub struct GraiState {
     pub beneficiar: Pubkey,
     pub grinders: Pubkey,
     pub total_value: u128,
-    /// Total escrowed GRAI (`total_locked - total_voted` is the dividend base).
+    /// Total escrowed GRAI — also the dividend base (voted GRAI still earns; EVM `totalLocked`).
     pub total_locked: u64,
     pub total_voted: u64,
     pub liquidation: bool,
     pub liquidation_at: i64,
+    /// Unix time when mint-premium compounding starts (`0` = premium off, mint at book).
+    /// EVM `mintPremiumAt`. Rate lives in `config.mint_premium_bps_per_year`.
+    pub mint_premium_at: i64,
     /// Canonical share mint created in `initialize` (C-01). Never inferred from mint authority.
     pub grai_mint: Pubkey,
     pub config: Config,
@@ -116,6 +123,7 @@ impl GraiState {
         + 8
         + 1
         + 8
+        + 8 // mint_premium_at
         + 32
         + Config::LEN
         + 2
@@ -150,7 +158,7 @@ pub struct AssetConfig {
     /// When true, mint may be used as bribe payment (EVM `Asset.bribeable`).
     pub bribeable: bool,
     pub id: u32,
-    /// Dividend index per unvoted locked GRAI, scaled by 1e18 (EVM `Asset.accShare`).
+    /// Dividend index per locked GRAI, scaled by 1e18 (EVM `Asset.accShare` on `totalLocked`).
     pub acc_share: u128,
     /// Vault inventory reserved for locker claims (excluded from redeem / revive).
     pub total_claimable: u64,
@@ -171,9 +179,9 @@ impl AssetConfig {
 #[account]
 #[derive(InitSpace)]
 pub struct Escrow {
-    /// Actively locked GRAI (max voting capacity; `amount - voted` earns dividends).
+    /// Actively locked GRAI — full amount earns dividends; also the max voting capacity.
     pub amount: u64,
-    /// GRAI counted toward liquidation quorum (<= amount).
+    /// GRAI counted toward liquidation quorum (<= amount). Voting does not forfeit dividends.
     pub voted: u64,
     /// Timestamp of the latest `vote`.
     pub voted_at: i64,
@@ -187,11 +195,6 @@ pub struct Escrow {
 impl Escrow {
     pub const SEED: &'static [u8] = b"escrow";
     pub const LEN: usize = Self::INIT_SPACE;
-
-    /// Dividend base: only unvoted escrow earns dividends (EVM `_unvoted`).
-    pub fn unvoted(&self) -> u64 {
-        self.amount.saturating_sub(self.voted)
-    }
 }
 
 /// Per-account, per-asset ledger (EVM `Position`).
@@ -946,7 +949,7 @@ pub struct Lock<'info> {
 /// Unlock escrowed GRAI (minus the flat unlock penalty, which is sent to Grinders).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset
-/// (settle dividend debts when the unvoted base shrinks). Yield payouts use `claim`.
+/// (settle dividend debts when the lock shrinks). Yield payouts use `claim`.
 #[derive(Accounts)]
 pub struct Unlock<'info> {
     #[account(mut)]

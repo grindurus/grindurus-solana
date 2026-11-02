@@ -459,12 +459,12 @@ describe("Treasury referrals / poach / NFT", () => {
     const info = await provider.connection.getAccountInfo(escrow);
     if (!info) return;
     const e = await program.account.escrow.fetch(escrow);
-    const unvoted = BigInt(e.amount.toString()) - BigInt(e.voted.toString());
-    if (unvoted === 0n) return;
+    const locked = BigInt(e.amount.toString());
+    if (locked === 0n) return;
     const graiAta = await ensureAta(graiMint.publicKey, user);
     const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
     let builder = program.methods
-      .unlock(new anchor.BN(unvoted.toString()))
+      .unlock(new anchor.BN(locked.toString()))
       .accountsPartial({
         account: user,
         graiState,
@@ -484,7 +484,7 @@ describe("Treasury referrals / poach / NFT", () => {
     await unlockUser(authority);
   }
 
-  /** Sole-locker claim setup: clear authority unvoted so dividend math matches EVM. */
+  /** Sole-locker claim setup: clear authority lock so dividend math matches EVM. */
   async function prepareSoleLockerClaim(locker: Keypair) {
     await unlockAuthorityIfNeeded();
     await unlockUser(locker.publicKey, locker);
@@ -753,8 +753,10 @@ describe("Treasury referrals / poach / NFT", () => {
         quorumBps: current.quorumBps,
         revenueShareBps: REVENUE_SHARE_BPS,
         unlockPenaltyBps: current.unlockPenaltyBps,
+        poachFeeBps: current.poachFeeBps,
         liquidationPeriod: current.liquidationPeriod,
         redeemPeriod: current.redeemPeriod,
+        mintPremiumBpsPerYear: current.mintPremiumBpsPerYear,
       })
       .accountsPartial({ owner: authority, graiState })
       .rpc();

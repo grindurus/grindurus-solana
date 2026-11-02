@@ -47,7 +47,7 @@ pub fn execute_get_voters<'info>(
 ///
 /// Remaining, for `M` lockers in `[from, to)` and `N` listed mints:
 /// `[referrer] × M`, `[escrow] × M`, `[asset_config] × N`, then `[position]` locker-major.
-/// Escrow / position PDAs may be empty (unvoted 0 / stored claimable 0).
+/// Escrow / position PDAs may be empty (locked 0 / stored claimable 0).
 pub fn execute_get_lockers_data<'info>(
     ctx: Context<'_, '_, 'info, 'info, GetLockersData<'info>>,
     from_id: u32,
@@ -84,7 +84,7 @@ pub fn execute_get_lockers_data<'info>(
     let mut out = Vec::with_capacity(m);
     for (i, locker) in lockers.iter().enumerate() {
         let mut row = read_referrer_row(&referrer_infos[i], locker, ctx.program_id)?;
-        let unvoted = read_escrow_unvoted(&escrow_infos[i], locker, ctx.program_id)?;
+        let locked = read_escrow_locked(&escrow_infos[i], locker, ctx.program_id)?;
         let mut assets = Vec::with_capacity(n);
         let mut claimable = Vec::with_capacity(n);
         for (j, mint) in mints.iter().enumerate() {
@@ -93,7 +93,7 @@ pub fn execute_get_lockers_data<'info>(
                 &position_infos[i * n + j],
                 locker,
                 mint,
-                unvoted,
+                locked,
                 ctx.program_id,
             )?;
             assets.push(*mint);
@@ -140,7 +140,7 @@ fn read_referrer_row<'info>(
     Ok(row)
 }
 
-fn read_escrow_unvoted<'info>(
+fn read_escrow_locked<'info>(
     escrow_info: &AccountInfo<'info>,
     locker: &Pubkey,
     program_id: &Pubkey,
@@ -153,7 +153,7 @@ fn read_escrow_unvoted<'info>(
     let data = escrow_info.try_borrow_data()?;
     let escrow = Escrow::try_deserialize(&mut &data[..])
         .map_err(|_| error!(ErrorCode::InvalidRemainingAccounts))?;
-    Ok(escrow.unvoted())
+    Ok(escrow.amount)
 }
 
 fn read_escrow_range<'info>(

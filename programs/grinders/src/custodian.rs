@@ -11,11 +11,6 @@ use crate::state::{CustodianState, GrindersState};
 /// Anchor discriminator for `grai::distribute` (sha256("global:distribute")[..8]).
 const GRAI_DISTRIBUTE_DISCRIMINATOR: [u8; 8] = [191, 44, 223, 207, 164, 236, 126, 61];
 
-/// Offset of `liquidation: bool` in `GraiState` after 8-byte Anchor discriminator.
-/// Layout: owner(32) pending_owner(32) beneficiar(32) grinders(32) settlement(32)
-///         total_value(16) total_locked(8) total_voted(8) liquidation(1) …
-const GRAI_STATE_LIQUIDATION_OFFSET: usize = 8 + 32 + 32 + 32 + 32 + 32 + 16 + 8 + 8;
-
 /// EVM `ownerOf(custodianId)`: signer must hold the custodian's 1/1 NFT (`amount >= 1`).
 /// `CustodianState.nft_owner` is a cache only — marketplace SPL transfers are authoritative.
 pub fn assert_custodian_owner(
@@ -60,18 +55,11 @@ pub fn assert_toreador(
     Ok(())
 }
 
-/// Read GRAI `liquidation` flag from raw account data (EVM `Custodian.liquidation()`).
-pub fn grai_liquidation_open(grai_state: &AccountInfo) -> Result<bool> {
-    let data = grai_state.try_borrow_data()?;
-    require!(
-        data.len() > GRAI_STATE_LIQUIDATION_OFFSET,
-        ErrorCode::NotGrai
-    );
-    Ok(data[GRAI_STATE_LIQUIDATION_OFFSET] != 0)
-}
-
-pub fn require_not_liquidation(grai_state: &AccountInfo) -> Result<()> {
-    require!(!grai_liquidation_open(grai_state)?, ErrorCode::LiquidationOpen);
+/// Block while GRAI liquidation is open (EVM `Custodian.liquidation()`).
+/// Uses the typed `GraiState.liquidation` field — do not reintroduce raw byte offsets
+/// (a prior `settlement` pubkey in the layout made a hard-coded offset drift to `grai_mint`).
+pub fn require_not_liquidation(grai_state: &Account<grai::GraiState>) -> Result<()> {
+    require!(!grai_state.liquidation, ErrorCode::LiquidationOpen);
     Ok(())
 }
 
@@ -128,7 +116,7 @@ pub fn execute_custodian_deallocate<'info>(
         grinders_state.key(),
         ErrorCode::NotCustodianWallet
     );
-    require_not_liquidation(&grai_state.to_account_info())?;
+    require_not_liquidation(grai_state)?;
     require!(amount > 0, ErrorCode::AmountZero);
 
     let custodian_id_bytes = custodian_state.custodian_id.to_le_bytes();
@@ -181,7 +169,7 @@ pub fn execute_custodian_distribute<'info>(
         grinders_state.key(),
         ErrorCode::NotCustodianWallet
     );
-    require_not_liquidation(&grai_state.to_account_info())?;
+    require_not_liquidation(grai_state)?;
     require!(yield_amount > 0, ErrorCode::AmountZero);
 
     let custodian_id_bytes = custodian_state.custodian_id.to_le_bytes();

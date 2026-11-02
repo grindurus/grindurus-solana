@@ -7,12 +7,12 @@ use crate::tokenomics::DIVIDEND_PRECISION;
 use crate::vault::transfer_from_vault;
 use crate::{AssetConfig, ErrorCode, Position};
 
-/// Accrue a dividend cut of `asset` to unvoted lockers via the MasterChef index (EVM `_distribute`).
+/// Accrue a dividend cut of `asset` to all locks via the MasterChef index (EVM `_distribute`).
 ///
 /// Returns the amount that must go to the treasury vault: the full cut when there is no eligible
 /// base / the index bump would reserve nothing, or index dust (`amount - reserved`) otherwise.
 ///
-/// `eligible` is `total_locked - total_voted`: voted GRAI earns no dividends.
+/// `eligible` is `total_locked` — voted GRAI still earns dividends.
 pub fn distribute_dividend(asset: &mut AssetConfig, amount: u64, eligible: u64) -> Result<u64> {
     if amount == 0 {
         return Ok(0);
@@ -62,17 +62,17 @@ pub fn distribute_dividend(asset: &mut AssetConfig, amount: u64, eligible: u64) 
     Ok(amount.saturating_sub(reserved))
 }
 
-/// MasterChef checkpoint: settle a position from `old_unvoted` to `new_unvoted` GRAI.
+/// MasterChef checkpoint: settle a position from `old_locked` to `new_locked` GRAI.
 ///
-/// `claimable += old_unvoted * acc / 1e18 - debt`, then `debt = new_unvoted * acc / 1e18`.
-/// Only unvoted escrow earns dividends, so voting moves GRAI out of the dividend base.
+/// `claimable += old_locked * acc / 1e18 - debt`, then `debt = new_locked * acc / 1e18`.
+/// Dividend base is the full lock (voted GRAI still earns).
 pub fn settle(
     acc_share: u128,
-    old_unvoted: u64,
-    new_unvoted: u64,
+    old_locked: u64,
+    new_locked: u64,
     position: &mut Position,
 ) -> Result<()> {
-    let accumulated_old = (old_unvoted as u128)
+    let accumulated_old = (old_locked as u128)
         .checked_mul(acc_share)
         .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
         .ok_or(ErrorCode::MathOverflow)?;
@@ -84,7 +84,7 @@ pub fn settle(
         .checked_add(delta as u64)
         .ok_or(ErrorCode::MathOverflow)?;
 
-    let accumulated_new = (new_unvoted as u128)
+    let accumulated_new = (new_locked as u128)
         .checked_mul(acc_share)
         .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
         .ok_or(ErrorCode::MathOverflow)?;
@@ -152,7 +152,7 @@ pub(crate) fn require_holder_ata(
 }
 
 /// Load an existing `Position`, or create (init) the PDA if it does not exist yet.
-/// Returns `(position, is_new)`; a freshly created position must be settled from `old_unvoted == 0`
+/// Returns `(position, is_new)`; a freshly created position must be settled from `old_locked == 0`
 /// so it never claims dividends that accrued before it existed.
 pub fn load_or_init_position<'info>(
     position_info: &AccountInfo<'info>,
@@ -204,7 +204,7 @@ pub(crate) fn store_position(position_info: &AccountInfo, position: &Position) -
     Ok(())
 }
 
-/// Settle every listed asset's dividend position for `user` from `old_unvoted` to `new_unvoted`.
+/// Settle every listed asset's dividend position for `user` from `old_locked` to `new_locked`.
 ///
 /// `remaining` are pairs `[asset_config, position]` per asset in `asset_mints` order.
 /// `asset_config` may be read-only here: nothing on it is mutated.
@@ -213,8 +213,8 @@ pub fn settle_all_pairs<'info>(
     remaining: &[AccountInfo<'info>],
     asset_mints: &[Pubkey],
     user: &Pubkey,
-    old_unvoted: u64,
-    new_unvoted: u64,
+    old_locked: u64,
+    new_locked: u64,
     payer: &AccountInfo<'info>,
     system_program: &AccountInfo<'info>,
     program_id: &Pubkey,
@@ -229,8 +229,8 @@ pub fn settle_all_pairs<'info>(
         let acc = load_asset_config(asset_info, mint, program_id)?.acc_share;
         let (mut pos, is_new) =
             load_or_init_position(position_info, user, mint, payer, system_program, program_id)?;
-        let effective_old = if is_new { 0 } else { old_unvoted };
-        settle(acc, effective_old, new_unvoted, &mut pos)?;
+        let effective_old = if is_new { 0 } else { old_locked };
+        settle(acc, effective_old, new_locked, &mut pos)?;
         store_position(position_info, &pos)?;
     }
     Ok(())
@@ -247,8 +247,8 @@ pub fn settle_all_quads<'info>(
     remaining: &[AccountInfo<'info>],
     asset_mints: &[Pubkey],
     user: &Pubkey,
-    old_unvoted: u64,
-    new_unvoted: u64,
+    old_locked: u64,
+    new_locked: u64,
     pay: bool,
     token_program: &AccountInfo<'info>,
     grai_state: &AccountInfo<'info>,
@@ -272,8 +272,8 @@ pub fn settle_all_quads<'info>(
         require_holder_ata(holder_info, user, mint)?;
         let (mut pos, is_new) =
             load_or_init_position(position_info, user, mint, payer, system_program, program_id)?;
-        let effective_old = if is_new { 0 } else { old_unvoted };
-        settle(asset.acc_share, effective_old, new_unvoted, &mut pos)?;
+        let effective_old = if is_new { 0 } else { old_locked };
+        settle(asset.acc_share, effective_old, new_locked, &mut pos)?;
 
         if pay && pos.claimable > 0 {
             let vault_data = vault_info.try_borrow_data()?;

@@ -30,7 +30,7 @@ Previous v2 program (superseded): `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh`
 - Lists assets with price feeds (custom / Chainlink / Pyth) and vault ATAs
 - Mints GRAI on deposit (assets go to Grinders); book NAV in `total_value`
 - Splits custodian yield via `distribute` (50/50 dividend / in-program treasury vault)
-- Escrows GRAI for lock / vote / bribe; dividends accrue to **unvoted** locks; unlock penalty → Grinders GRAI ATA
+- Escrows GRAI for lock / vote / bribe; dividends accrue to the **full lock** (voted still earns); unlock penalty → Grinders GRAI ATA; deposit ask compounds mint premium
 - Opens liquidation (stale Grinders heartbeat + vote quorum), scoops stray vault GRAI to the opener, then `redeem` / `revive`
 
 ## Instructions
@@ -92,13 +92,16 @@ self-owned seller or L2 slot.
 | `bribe_premium_bps` | `200` |
 | `quorum_bps` | `6667` |
 | `unlock_penalty_bps` | `100` (1%, flat) |
+| `mint_premium_bps_per_year` | `500` (+5%/year compound ask) |
 | `liquidation_period` / `redeem_period` | 1d / 7d |
 
 ## Tokenomics (short)
 
-- **Mint:** `graiOut = depositValue * supply / totalValue` (1:1 on empty book)
-- **Distribute:** 50/50 cut; dividend indexes **unvoted** lock (`total_locked - total_voted`);
-  with no unvoted base — or index dust that rounds to zero — the dividend leg goes to the treasury vault
+- **Mint:** book `graiOut = depositValue * supply / totalValue` (1:1 on empty book), then mint-premium ask
+- **Distribute:** 50/50 cut; dividend indexes **full** lock (`total_locked`; voted still earns);
+  with no locks — or index dust that rounds to zero — the dividend leg goes to the treasury vault
+- **Mint premium:** `mint_premium_bps_per_year` (default 5%) compounds once per full year since
+  `mint_premium_at`; `grai_out = book * BPS / priceBps` while full USD still credits `total_value`
 - **Treasury:** per-mint vaults retain the treasury cut until claim; claim credits sticky
   referral books with `claimedValue` (poach ask tracks yield), then pays cashflow owners /
   `beneficiar`. Affiliate depth is fixed at 2 (`set_revenue_share_bps` requires `len == 2`).

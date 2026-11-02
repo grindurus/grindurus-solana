@@ -30,6 +30,12 @@ pub const DEFAULT_POACH_FEE_BPS: u16 = 100;
 pub const MAX_POACH_FEE_BPS: u16 = 1_000;
 pub const DEFAULT_LIQUIDATION_PERIOD: u32 = 24 * 60 * 60;
 pub const DEFAULT_REDEEM_PERIOD: u32 = 7 * 24 * 60 * 60;
+/// EVM `mintPremiumBpsPerYear` = 5%/year compound on deposit ask.
+pub const DEFAULT_MINT_PREMIUM_BPS_PER_YEAR: u16 = 500;
+/// Cap compound years (EVM clamps at 100).
+pub const MAX_MINT_PREMIUM_YEARS: u64 = 100;
+/// Seconds in a premium year (EVM `365 days`).
+pub const MINT_PREMIUM_YEAR_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 pub fn default_protocol_config() -> Config {
     Config {
@@ -43,6 +49,7 @@ pub fn default_protocol_config() -> Config {
         poach_fee_bps: DEFAULT_POACH_FEE_BPS,
         liquidation_period: DEFAULT_LIQUIDATION_PERIOD,
         redeem_period: DEFAULT_REDEEM_PERIOD,
+        mint_premium_bps_per_year: DEFAULT_MINT_PREMIUM_BPS_PER_YEAR,
     }
 }
 
@@ -79,6 +86,10 @@ pub fn validate_protocol_config(cfg: &Config) -> Result<()> {
     require!(
         cfg.liquidation_period != 0 && cfg.redeem_period != 0,
         ErrorCode::PeriodZero
+    );
+    require!(
+        cfg.mint_premium_bps_per_year <= BPS,
+        ErrorCode::BpsTooHigh
     );
     Ok(())
 }
@@ -160,15 +171,15 @@ pub fn preview_unlock(
     Ok((unlock_amount, penalty))
 }
 
-/// Pending yield including unrealized accrual vs `acc_share` on unvoted lock
-/// (EVM `previewClaim` pending before the amount clamp).
+/// Pending yield including unrealized accrual vs `acc_share` on the full lock
+/// (EVM `previewClaim` pending before the amount clamp; voted GRAI still earns).
 pub fn pending_dividend(
-    unvoted: u64,
+    locked: u64,
     acc_share: u128,
     debt: u128,
     claimable: u64,
 ) -> Result<u64> {
-    let accumulated = (unvoted as u128)
+    let accumulated = (locked as u128)
         .checked_mul(acc_share)
         .and_then(|v| v.checked_div(DIVIDEND_PRECISION))
         .ok_or(ErrorCode::MathOverflow)?;
@@ -239,9 +250,9 @@ pub fn settlement_amount(
     Ok(amount as u64)
 }
 
-/// Book-value mint: `grai_out = total_value > 0 ? value * supply / total_value : value`.
-/// Returns 0 for dust instead of reverting (EVM `previewDeposit`).
-pub fn preview_deposit_soft(value: u128, total_supply: u64, total_value: u128) -> Result<u64> {
+/// Book-value mint: `book = total_value > 0 ? value * supply / total_value : value`.
+/// Returns 0 for dust instead of reverting (EVM book half of `previewDeposit`).
+pub fn preview_deposit_book(value: u128, total_supply: u64, total_value: u128) -> Result<u64> {
     let grai_out = if total_value > 0 {
         value
             .checked_mul(total_supply as u128)
@@ -254,9 +265,66 @@ pub fn preview_deposit_soft(value: u128, total_supply: u64, total_value: u128) -
     Ok(grai_out as u64)
 }
 
-/// Book-value mint for the deposit path: rejects a zero mint (EVM `deposit`).
-pub fn preview_deposit(value: u128, total_supply: u64, total_value: u128) -> Result<u64> {
-    let grai_out = preview_deposit_soft(value, total_supply, total_value)?;
+/// Apply compound mint-premium ask to book shares (EVM `previewDeposit` premium leg).
+///
+/// `priceBps = BPS * (BPS + rate)^n / BPS^n` for `n` full years since `mint_premium_at`, then
+/// `grai_out = book * BPS / priceBps`. Par while rate/clock off or year 0.
+pub fn apply_mint_premium(
+    book: u64,
+    rate_bps: u16,
+    mint_premium_at: i64,
+    now: i64,
+) -> Result<u64> {
+    if book == 0 || rate_bps == 0 || mint_premium_at == 0 || now < mint_premium_at {
+        return Ok(book);
+    }
+    let elapsed = (now - mint_premium_at) as u64;
+    let mut years = elapsed / (MINT_PREMIUM_YEAR_SECONDS as u64);
+    if years == 0 {
+        return Ok(book);
+    }
+    if years > MAX_MINT_PREMIUM_YEARS {
+        years = MAX_MINT_PREMIUM_YEARS;
+    }
+    let mut price_bps = BPS as u128;
+    for _ in 0..years {
+        price_bps = price_bps
+            .checked_mul((BPS as u128) + (rate_bps as u128))
+            .and_then(|v| v.checked_div(BPS as u128))
+            .ok_or(ErrorCode::MathOverflow)?;
+    }
+    let grai_out = (book as u128)
+        .checked_mul(BPS as u128)
+        .and_then(|v| v.checked_div(price_bps))
+        .ok_or(ErrorCode::MathOverflow)?;
+    require!(grai_out <= u64::MAX as u128, ErrorCode::MathOverflow);
+    Ok(grai_out as u64)
+}
+
+/// Soft deposit mint: book shares after mint-premium ask. Returns 0 for dust.
+pub fn preview_deposit_soft(
+    value: u128,
+    total_supply: u64,
+    total_value: u128,
+    rate_bps: u16,
+    mint_premium_at: i64,
+    now: i64,
+) -> Result<u64> {
+    let book = preview_deposit_book(value, total_supply, total_value)?;
+    apply_mint_premium(book, rate_bps, mint_premium_at, now)
+}
+
+/// Deposit mint path: rejects a zero mint (EVM `deposit`).
+pub fn preview_deposit(
+    value: u128,
+    total_supply: u64,
+    total_value: u128,
+    rate_bps: u16,
+    mint_premium_at: i64,
+    now: i64,
+) -> Result<u64> {
+    let grai_out =
+        preview_deposit_soft(value, total_supply, total_value, rate_bps, mint_premium_at, now)?;
     require!(grai_out > 0, ErrorCode::AmountZero);
     Ok(grai_out)
 }

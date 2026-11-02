@@ -7,7 +7,7 @@ use crate::{Distribute, ErrorCode};
 
 /// Pull custodian yield into the asset vault and split it per the configured cuts.
 ///
-/// Dividend cut accrues to unvoted locked GRAI (`total_locked - total_voted`); index dust and
+/// Dividend cut accrues to all locked GRAI (`total_locked`; voted still earns); index dust and
 /// cuts with no eligible base go to the in-program treasury vault (EVM `_distribute`).
 pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result<()> {
     require!(yield_amount > 0, ErrorCode::AmountZero);
@@ -29,11 +29,7 @@ pub fn execute_distribute(ctx: Context<Distribute>, yield_amount: u64) -> Result
     let (treasury_cut, dividend_cut) =
         split_cuts(yield_amount, &ctx.accounts.grai_state.config)?;
 
-    let eligible = ctx
-        .accounts
-        .grai_state
-        .total_locked
-        .saturating_sub(ctx.accounts.grai_state.total_voted);
+    let eligible = ctx.accounts.grai_state.total_locked;
 
     let dust = if dividend_cut > 0 {
         distribute_dividend(&mut ctx.accounts.asset_config, dividend_cut, eligible)?

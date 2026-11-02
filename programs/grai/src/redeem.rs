@@ -142,9 +142,6 @@ pub fn execute_redeem<'info>(
         ErrorCode::InvalidRemainingAccounts
     );
     {
-        let voted_after = ctx.accounts.escrow.voted.min(new_locked);
-        let old_unvoted = ctx.accounts.escrow.unvoted();
-        let new_unvoted = new_locked - voted_after;
         let token_program = ctx.accounts.token_program.to_account_info();
         let grai_state_info = ctx.accounts.grai_state.to_account_info();
         let payer = ctx.accounts.holder.to_account_info();
@@ -153,8 +150,8 @@ pub fn execute_redeem<'info>(
             remaining,
             &asset_mints,
             &holder_key,
-            old_unvoted,
-            new_unvoted,
+            locked,
+            new_locked,
             false,
             &token_program,
             &grai_state_info,

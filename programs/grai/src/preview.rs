@@ -56,12 +56,12 @@ pub(crate) fn pending_for_holder(
     position_info: &AccountInfo,
     user: &Pubkey,
     mint: &Pubkey,
-    unvoted: u64,
+    locked: u64,
     program_id: &Pubkey,
 ) -> Result<u64> {
     let acc = read_asset_acc_share(asset_info, mint, program_id)?;
     let (debt, claimable) = read_position_debt_claimable(position_info, user, mint, program_id)?;
-    pending_dividend(unvoted, acc, debt, claimable)
+    pending_dividend(locked, acc, debt, claimable)
 }
 
 /// EVM `previewDeposit(asset, amount) → (value, graiOut)`.
@@ -84,7 +84,14 @@ pub fn execute_preview_deposit(ctx: Context<PreviewDeposit>, amount: u64) -> Res
     if total_value == 0 && supply > 0 {
         return err!(ErrorCode::InsolventBook);
     }
-    let grai_out = preview_deposit(value, supply, total_value)?;
+    let grai_out = preview_deposit(
+        value,
+        supply,
+        total_value,
+        ctx.accounts.grai_state.config.mint_premium_bps_per_year,
+        ctx.accounts.grai_state.mint_premium_at,
+        clock.unix_timestamp,
+    )?;
     Ok(DepositQuote { value, grai_out })
 }
 
@@ -113,7 +120,7 @@ pub fn execute_preview_unlock<'info>(
 
 /// EVM `previewClaim`. `amount == u64::MAX` = full pending.
 pub fn execute_preview_claim(ctx: Context<PreviewClaim>, amount: u64) -> Result<u64> {
-    let unvoted = ctx.accounts.escrow.unvoted();
+    let locked = ctx.accounts.escrow.amount;
     let (debt, claimable) = if ctx.accounts.position.data_is_empty() {
         (0u128, 0u64)
     } else {
@@ -123,7 +130,7 @@ pub fn execute_preview_claim(ctx: Context<PreviewClaim>, amount: u64) -> Result<
         (pos.debt, pos.claimable)
     };
     let pending = pending_dividend(
-        unvoted,
+        locked,
         ctx.accounts.asset_config.acc_share,
         debt,
         claimable,
@@ -136,7 +143,7 @@ pub fn execute_preview_claim_all<'info>(
     ctx: Context<'_, '_, 'info, 'info, PreviewClaimAll<'info>>,
 ) -> Result<ClaimAllQuote> {
     let user = ctx.accounts.holder.key();
-    let unvoted = ctx.accounts.escrow.unvoted();
+    let locked = ctx.accounts.escrow.amount;
     let mints = &ctx.accounts.grai_state.asset_mints;
     let remaining = ctx.remaining_accounts;
     require!(
@@ -152,7 +159,7 @@ pub fn execute_preview_claim_all<'info>(
             &remaining[i * 2 + 1],
             &user,
             mint,
-            unvoted,
+            locked,
             ctx.program_id,
         )?;
         assets.push(*mint);

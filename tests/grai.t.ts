@@ -62,6 +62,7 @@ const DEFAULT_BRIBE_PREMIUM_BPS = 200; // 2%
 const DEFAULT_QUORUM_BPS = 6_667;
 const DEFAULT_UNLOCK_PENALTY_BPS = 100; // 1% flat
 const DEFAULT_POACH_FEE_BPS = 100; // 1% of poach ask → Grinders
+const DEFAULT_MINT_PREMIUM_BPS_PER_YEAR = 500; // +5%/year compound ask
 const SEVEN_DAYS = 7 * 24 * 60 * 60;
 const ONE_DAY = 24 * 60 * 60;
 const U64_MAX = new anchor.BN("18446744073709551615");
@@ -732,8 +733,12 @@ describe("GRAI tokenomics", () => {
       expect(grai.config.quorumBps).to.equal(DEFAULT_QUORUM_BPS);
       expect(grai.config.unlockPenaltyBps).to.equal(DEFAULT_UNLOCK_PENALTY_BPS);
       expect(grai.config.poachFeeBps).to.equal(DEFAULT_POACH_FEE_BPS);
+      expect(grai.config.mintPremiumBpsPerYear).to.equal(
+        DEFAULT_MINT_PREMIUM_BPS_PER_YEAR,
+      );
       expect(grai.config.liquidationPeriod).to.equal(ONE_DAY);
       expect(grai.config.redeemPeriod).to.equal(SEVEN_DAYS);
+      expect(Number(grai.mintPremiumAt)).to.be.greaterThan(0);
     }
 
     const mintInfo = await provider.connection.getParsedAccountInfo(graiMint.publicKey);
@@ -1606,7 +1611,7 @@ describe("GRAI tokenomics", () => {
 
     const yieldAmount = 100_000n;
     const { treasury: treasuryShare, dividend } = yieldCuts(yieldAmount);
-    // No unvoted lock yet → the dividend cut is dust and joins the treasury vault.
+    // No lock yet → the dividend cut is dust and joins the treasury vault.
     const toTreasury = treasuryShare + dividend;
 
     // Fund custodian with yield.
@@ -1681,7 +1686,7 @@ describe("GRAI tokenomics", () => {
 
     expect(custodianBefore - custodianAfter).to.equal(yieldAmount);
     expect(treasuryAfter - treasuryBefore).to.equal(toTreasury);
-    // No eligible unvoted lock → nothing stays reserved on the vault.
+    // No eligible lock → nothing stays reserved on the vault.
     expect(vaultAfter - vaultBefore).to.equal(0n);
     expect(BigInt(usdcAsset.totalClaimable.toString())).to.equal(0n);
     expect(positionAccount.yielded.toString()).to.equal(yieldAmount.toString());
@@ -1965,7 +1970,7 @@ describe("GRAI tokenomics", () => {
     await restoreGrindersToreador();
   });
 
-  it("lock adds unvoted escrow, which is the dividend base", async () => {
+  it("lock grows total_locked (dividend base includes voted GRAI)", async () => {
     const lockerGraiAta = await ensureAta(graiMint.publicKey, authority);
     const balance = BigInt(
       (await provider.connection.getTokenAccountBalance(lockerGraiAta)).value
@@ -1977,6 +1982,7 @@ describe("GRAI tokenomics", () => {
     const [escrow] = escrowPda(authority, program.programId);
     const [graiVaultAta] = vaultAtaPda(graiMint.publicKey, program.programId);
     const before = await program.account.escrow.fetch(escrow);
+    const stateBefore = await program.account.graiState.fetch(graiState);
 
     await program.methods
       .lock(new anchor.BN(lockAmount.toString()))
@@ -1998,16 +2004,17 @@ describe("GRAI tokenomics", () => {
     expect(
       BigInt(after.amount.toString()) - BigInt(before.amount.toString()),
     ).to.equal(lockAmount);
-    // The vote from the previous test is unchanged, so the new lock is all unvoted.
+    // Vote is unchanged; dividends still accrue on the full lock.
     expect(after.voted.toString()).to.equal(before.voted.toString());
 
     const state = await program.account.graiState.fetch(graiState);
-    const eligible =
-      BigInt(state.totalLocked.toString()) - BigInt(state.totalVoted.toString());
-    expect(eligible).to.equal(lockAmount);
+    expect(
+      BigInt(state.totalLocked.toString()) -
+        BigInt(stateBefore.totalLocked.toString()),
+    ).to.equal(lockAmount);
   });
 
-  it("distribute credits the dividend cut to unvoted lockers and reserves it", async () => {
+  it("distribute credits the dividend cut to lockers and reserves it", async () => {
     const custodian = await getUsdcCustodian();
     const custodianAta = getAssociatedTokenAddressSync(
       usdcMint.publicKey,
@@ -2082,7 +2089,7 @@ describe("GRAI tokenomics", () => {
         .amount,
     );
 
-    // Dividends index on unvoted lock; treasury cut leaves the vault.
+    // Dividends index on total_locked; treasury cut leaves the vault.
     expect(
       BigInt(assetAfter.accShare.toString()) >
         BigInt(assetBefore.accShare.toString()),
@@ -2375,6 +2382,7 @@ describe("GRAI tokenomics", () => {
       poachFeeBps: current.poachFeeBps,
       liquidationPeriod: current.liquidationPeriod,
       redeemPeriod: current.redeemPeriod,
+      mintPremiumBpsPerYear: current.mintPremiumBpsPerYear,
     };
     const send = (overrides: Partial<typeof base>) =>
       program.methods

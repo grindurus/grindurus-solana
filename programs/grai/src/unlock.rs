@@ -10,7 +10,7 @@ use crate::{ErrorCode, Unlock};
 /// The penalty GRAI is transferred to Grinders (EVM `unlock` → `address(grinders)`).
 ///
 /// Remaining accounts: quads `[asset_config, position, vault_ata, holder_ata]` per listed asset in
-/// registry order (needed to settle dividend debts when the unvoted base shrinks).
+/// registry order (needed to settle dividend debts when the lock shrinks).
 pub fn execute_unlock<'info>(
     ctx: Context<'_, '_, 'info, 'info, Unlock<'info>>,
     grai_amount: u64,
@@ -38,11 +38,7 @@ pub fn execute_unlock<'info>(
         ctx.accounts.grai_state.config.unlock_penalty_bps,
     )?;
 
-    // Unlocking shrinks the dividend base only for the unvoted part; a vote clamp below may
-    // shrink it further, so settle against the clamped result.
-    let voted_after = ctx.accounts.escrow.voted.min(new_amount);
-    let old_unvoted = ctx.accounts.escrow.unvoted();
-    let new_unvoted = new_amount - voted_after;
+    // Unlocking shrinks the dividend base (`locked`); settle old → new before mutating.
     {
         let token_program = ctx.accounts.token_program.to_account_info();
         let grai_state_info = ctx.accounts.grai_state.to_account_info();
@@ -52,8 +48,8 @@ pub fn execute_unlock<'info>(
             ctx.remaining_accounts,
             &asset_mints,
             &account_key,
-            old_unvoted,
-            new_unvoted,
+            old_amount,
+            new_amount,
             false,
             &token_program,
             &grai_state_info,

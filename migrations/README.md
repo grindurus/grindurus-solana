@@ -16,7 +16,7 @@ Scripts use `loadProvider()` from `0_common.ts`:
 | ---------------------- | ---------------------------------------------- | ------------------------------------------- |
 | `ANCHOR_PROVIDER_URL`  | `https://api.devnet.solana.com`                | RPC endpoint                                |
 | `ANCHOR_WALLET`        | `~/.config/solana/id.json`                     | Signer (must match on-chain authority/owner) |
-| `GRAI_PROGRAM_ID`      | `3Bc99GroACdqAVPbPUt7eHR8sPvKxh2m3suYfcnCtsCh` | Checked against `target/idl/grai.json`      |
+| `GRAI_PROGRAM_ID`      | `DBAmy36cyMnAdL1YMRM81mNSwRzGSVASjJYvaniyGiSS` | Checked against `target/idl/grai.json`      |
 | `GRINDERS_PROGRAM_ID`  | `7W9uhZZvmHSyhRmdDRnbZPZfaUdJaMbGMWsBLjSRWT5v` | Checked against `target/idl/grinders.json`  |
 
 Example — devnet:
@@ -35,8 +35,8 @@ For **mainnet**, set `ANCHOR_PROVIDER_URL=https://api.mainnet-beta.solana.com` a
 | `npm run deployProtocol`  | `deployProtocol.ts`   | Idempotent `grinders` + `grai` initialize (+ SOL, optional USDC) |
 | `npm run verify`          | `verify.ts`           | Publish/upgrade Anchor IDL for `grai` and `grinders`             |
 | `npm run status`          | `status.ts`           | Print protocol, grinders, vaults, oracles, balances              |
-| `npm run setSettlementAsset` | `grai/setSettlementAsset.ts` | Select the listed USDC settlement asset                        |
-| `npm run setFeed`    | `grai/setFeed.ts`     | List USDC via `set_feed(paused, feed)`                     |
+| `npm run setSettlementAsset` | `grai/setSettlementAsset.ts` | Mark listed USDC as bribeable (`set_bribeable`)              |
+| `npm run setFeed`    | `grai/setFeed.ts`     | List USDC/SOL via `set_feed`; USDC → also `set_bribeable` |
 | `npm run deposit`         | `grai/deposit.ts`     | Deposit USDC → mint GRAI (`LOCK=1` locks into escrow)            |
 | `npm run depositSol`      | `grai/depositSol.ts`  | Deposit SOL → mint GRAI                                          |
 | `npm run mint` / `mintSol`| aliases               | Same as `deposit` / `depositSol`                                 |
@@ -69,7 +69,7 @@ Bootstrap order (idempotent):
 2. `grai.initialize(grinders_state)` — authority, GRAI mint, metadata
 3. optional `set_beneficiar`
 4. `add_asset(SOL)` unless `SKIP_SOL_ASSET=1`
-5. optional `add_asset(USDC)` + `set_settlement_asset` when `ADD_USDC=1`
+5. optional `add_asset(USDC)` + `set_bribeable(USDC)` when `ADD_USDC=1` (or `npm run setFeed`)
 
 Run a script directly:
 

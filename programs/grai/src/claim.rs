@@ -8,7 +8,7 @@ use crate::tokenomics::{bps_of, preview_claim, usd_value};
 use crate::treasury;
 use crate::{AssetConfig, Claim, ClaimAll, ErrorCode, Position};
 
-/// Claim yield dividends accrued to the unvoted part of `holder`'s lock for one asset.
+/// Claim yield dividends accrued to `holder`'s full lock for one asset.
 ///
 /// `amount == u64::MAX` claims the full accrued balance (EVM `type(uint256).max`); otherwise
 /// claims `min(amount, claimable, vault, total_claimable)`. Cap vs vault / reserve covers
@@ -33,7 +33,7 @@ pub fn execute_claim<'info>(
     );
     let tip_bps = ctx.accounts.grai_state.config.claim_tip_bps;
     let acc = ctx.accounts.asset_config.acc_share;
-    let unvoted = ctx.accounts.escrow.unvoted();
+    let locked = ctx.accounts.escrow.amount;
     let bump = ctx.accounts.grai_state.bump;
 
     let position_info = ctx.accounts.position.to_account_info();
@@ -46,9 +46,9 @@ pub fn execute_claim<'info>(
         ctx.program_id,
     )?;
     if is_new {
-        settle(acc, 0, unvoted, &mut position)?;
+        settle(acc, 0, locked, &mut position)?;
     } else {
-        settle(acc, unvoted, unvoted, &mut position)?;
+        settle(acc, locked, locked, &mut position)?;
     }
 
     let claimable = position.claimable;
@@ -141,7 +141,7 @@ pub fn execute_claim_all<'info>(
     ctx: Context<'_, '_, 'info, 'info, ClaimAll<'info>>,
 ) -> Result<()> {
     let tip_bps = ctx.accounts.grai_state.config.claim_tip_bps;
-    let unvoted = ctx.accounts.escrow.unvoted();
+    let locked = ctx.accounts.escrow.amount;
     let bump = ctx.accounts.grai_state.bump;
     let program_id = *ctx.program_id;
     let holder = ctx.accounts.holder.key();
@@ -212,9 +212,9 @@ pub fn execute_claim_all<'info>(
                 &program_id,
             )?;
             if is_new {
-                settle(acc, 0, unvoted, &mut position)?;
+                settle(acc, 0, locked, &mut position)?;
             } else {
-                settle(acc, unvoted, unvoted, &mut position)?;
+                settle(acc, locked, locked, &mut position)?;
             }
             let claimable = position.claimable;
             let vault_bal = {

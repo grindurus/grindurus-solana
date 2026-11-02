@@ -30,6 +30,7 @@ pub fn execute_initialize(ctx: Context<Initialize>) -> Result<()> {
         grai_state.total_voted = 0;
         grai_state.liquidation = false;
         grai_state.liquidation_at = 0;
+        grai_state.mint_premium_at = Clock::get()?.unix_timestamp;
         grai_state.grai_mint = ctx.accounts.grai_mint.key();
         grai_state.config = default_protocol_config();
         grai_state.royalty_bps = DEFAULT_ROYALTY_BPS;

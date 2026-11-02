@@ -168,7 +168,7 @@ pub fn clamp_vote(
 /// Lock `add_amount` GRAI from `source_ata` into the GRAI vault and update the escrow / lists.
 ///
 /// Accrues (and re-syncs) all listed-asset dividend positions for `owner` across the change in
-/// unvoted escrow (`amount - voted`) using `remaining` pairs `[asset_config, position]`.
+/// locked escrow (`amount`) using `remaining` pairs `[asset_config, position]`.
 #[allow(clippy::too_many_arguments)]
 pub fn perform_lock<'info>(
     grai_state: &mut Account<'info, GraiState>,
@@ -189,16 +189,14 @@ pub fn perform_lock<'info>(
     let new_amount = old_amount
         .checked_add(add_amount)
         .ok_or(ErrorCode::MathOverflow)?;
-    let old_unvoted = escrow.unvoted();
-    let new_unvoted = new_amount.saturating_sub(escrow.voted);
 
     let asset_mints = grai_state.asset_mints.clone();
     dividend::settle_all_pairs(
         remaining,
         &asset_mints,
         &owner.key(),
-        old_unvoted,
-        new_unvoted,
+        old_amount,
+        new_amount,
         owner,
         system_program,
         program_id,
@@ -247,10 +245,10 @@ pub fn perform_lock<'info>(
 
 /// Commit `add_amount` of already-locked GRAI toward liquidation quorum.
 ///
-/// Voting removes GRAI from the dividend base, so listed-asset positions are re-settled from the
-/// pre-vote unvoted balance. Callers must ensure `escrow.amount >= escrow.voted + add_amount`
-/// (e.g. by calling `perform_lock` for the shortfall first). `payer` funds any new position /
-/// registry rent and need not be `account`.
+/// Voting does not forfeit dividends — the dividend base stays `escrow.amount`. Positions are
+/// flushed (accrue + sync at the same locked size). Callers must ensure
+/// `escrow.amount >= escrow.voted + add_amount` (e.g. by calling `perform_lock` for the shortfall
+/// first). `payer` funds any new position / registry rent and need not be `account`.
 #[allow(clippy::too_many_arguments)]
 pub fn perform_vote<'info>(
     grai_state: &mut Account<'info, GraiState>,
@@ -272,16 +270,14 @@ pub fn perform_vote<'info>(
         .ok_or(ErrorCode::MathOverflow)?;
     require!(escrow.amount >= new_voted, ErrorCode::InvalidAmount);
 
-    let old_unvoted = escrow.unvoted();
-    let new_unvoted = escrow.amount - new_voted;
-
+    let locked = escrow.amount;
     let asset_mints = grai_state.asset_mints.clone();
     dividend::settle_all_pairs(
         remaining,
         &asset_mints,
         &account,
-        old_unvoted,
-        new_unvoted,
+        locked,
+        locked,
         payer,
         system_program,
         program_id,
@@ -333,6 +329,7 @@ mod account_sizes {
             total_voted: 0,
             liquidation: false,
             liquidation_at: 0,
+            mint_premium_at: 0,
             grai_mint: Pubkey::default(),
             config: Config::default(),
             royalty_bps: 0,
@@ -414,7 +411,8 @@ mod account_sizes {
             },
             Referrer::LEN,
         );
-        assert_eq!(Config::LEN, 2 * 8 + 4 * 2);
+        // 9×u16 + 2×u32 (includes mint_premium_bps_per_year).
+        assert_eq!(Config::LEN, 2 * 9 + 4 * 2);
     }
 }
 
